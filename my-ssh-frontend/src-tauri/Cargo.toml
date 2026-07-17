@@ -1,0 +1,68 @@
+[package]
+name = "mjj-ssh"
+version = "0.1.0"
+description = "A multi-window SSH client with encrypted credential storage"
+authors = ["you"]
+license = "MIT"
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+# Tauri
+tauri = { version = "2.11.3", features = [] }
+tauri-plugin-log = "2"
+tauri-plugin-clipboard-manager = "2"
+
+# Serialization
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+
+# Logging
+log = "0.4"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+
+# OpenAI-compatible client (chat completions, SSE, and tool calling)
+async-openai = "0.26"
+futures-util = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+
+# SSH
+russh = { version = "0.62", default-features = false, features = ["ring"] }
+russh-sftp = "2.1.0"
+rand = "0.8"
+
+# Database
+rusqlite = { version = "0.31", features = ["bundled"] }
+
+# Encryption
+aes-gcm = "0.10"
+argon2 = "0.5"
+rand_core = { version = "0.6", features = ["std"] }
+
+# Shell command parsing
+# Keep authorization based on parsed command nodes rather than shell text heuristics.
+tree-sitter = "0.25"
+tree-sitter-bash = "0.25.1"
+
+# Utilities
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "2"
+anyhow = "1"
+zeroize = { version = "1", features = ["derive"] }
+hex = "0.4"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

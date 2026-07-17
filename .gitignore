@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Environment and local configuration
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Build artifacts
+dist/
+**/target/
+**/gen/schemas/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# App data
+*.db
+*.key
+
+# Internal
+.mimocode/
+
+# Local AI test configuration; never commit credentials
+docs/ai-test-conf.md
