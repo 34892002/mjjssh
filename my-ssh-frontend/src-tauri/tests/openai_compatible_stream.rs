@@ -1,6 +1,6 @@
 use app_lib::ai::client::{system_rules_for, AiClientError, OpenAiCompatibleClient};
 use app_lib::ai::models::{AiChatMessage, AiMessageRole, ExecutionMode};
-use app_lib::vault::AiProviderConfigSecret;
+use app_lib::vault::{AiModelConfig, AiProviderConfigSecret};
 use serde_json::Value;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -10,11 +10,28 @@ use tokio_util::sync::CancellationToken;
 
 const TEST_API_KEY: &str = "integration-test-key";
 
+fn test_model() -> AiModelConfig {
+    AiModelConfig {
+        id: "mock-model".into(),
+        name: "mock-model".into(),
+        max_context_tokens: None,
+        max_output_tokens: None,
+        supports_tools: true,
+        supports_images: false,
+        supports_parallel_tool_calls: false,
+        supports_prompt_caching: false,
+        supports_reasoning: false,
+        protocol: "chat_completions".into(),
+        reasoning_effort: None,
+        prompt_cache_key: None,
+    }
+}
+
 fn client_for(port: u16) -> OpenAiCompatibleClient {
     OpenAiCompatibleClient::from_config(AiProviderConfigSecret {
         base_url: format!("http://127.0.0.1:{port}/v1/"),
         api_key: TEST_API_KEY.into(),
-        model: "mock-model".into(),
+        model: test_model(),
         timeout_seconds: 10,
     })
 }
@@ -89,6 +106,7 @@ fn test_messages() -> [AiChatMessage; 1] {
     [AiChatMessage {
         role: AiMessageRole::User,
         content: "Test streamed response".into(),
+        images: Vec::new(),
     }]
 }
 
@@ -109,6 +127,7 @@ async fn sends_ordered_system_messages_and_streams_sse_deltas() {
     let messages = [AiChatMessage {
         role: AiMessageRole::User,
         content: "Inspect disk usage".into(),
+        images: Vec::new(),
     }];
     let mut deltas = Vec::new();
 
@@ -162,6 +181,7 @@ async fn provider_http_errors_do_not_start_a_stream() {
                 &[AiChatMessage {
                     role: AiMessageRole::User,
                     content: "Test provider failure".into(),
+                    images: Vec::new(),
                 }],
                 CancellationToken::new(),
                 |delta| deltas.push(delta),
@@ -266,7 +286,7 @@ async fn request_timeout_returns_an_error_without_output() {
     let config = AiProviderConfigSecret {
         base_url: format!("http://127.0.0.1:{port}/v1"),
         api_key: TEST_API_KEY.into(),
-        model: "mock-model".into(),
+        model: test_model(),
         timeout_seconds: 10,
     };
     let mut deltas = Vec::new();
@@ -310,6 +330,7 @@ async fn cancellation_stops_waiting_for_an_open_stream() {
                 &[AiChatMessage {
                     role: AiMessageRole::User,
                     content: "Wait for cancellation".into(),
+                    images: Vec::new(),
                 }],
                 task_token,
                 |_| {},

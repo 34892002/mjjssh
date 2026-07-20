@@ -24,6 +24,7 @@ let resizeObserver: ResizeObserver | null = null
 let unlistenData: UnlistenFn | null = null
 let unlistenDisconnected: UnlistenFn | null = null
 let resizeRegistrationTimer: ReturnType<typeof setTimeout> | null = null
+let fitFrame: number | null = null
 const decoder = new TextDecoder()
 let terminalUnavailable = false
 
@@ -84,7 +85,10 @@ onMounted(async () => {
       // 有选中文本 → 复制
       import('@tauri-apps/plugin-clipboard-manager').then(({ writeText }) => {
         writeText(selection)
-          .then(() => terminal.clearSelection())
+          .then(() => {
+            sessionStore.rememberTerminalSelection(props.sessionId, selection)
+            terminal.clearSelection()
+          })
           .catch(() => {})
       })
     } else {
@@ -115,11 +119,9 @@ onMounted(async () => {
     })
   }, 500)
 
-  // ResizeObserver 监听容器尺寸变化，自动 fit
+  // Wait for the browser to apply layout before calculating xterm's grid.
   resizeObserver = new ResizeObserver(() => {
-    if (containerRef.value && containerRef.value.offsetHeight > 0) {
-      fitAddon.fit()
-    }
+    scheduleFit()
   })
   resizeObserver.observe(containerRef.value)
 
@@ -141,23 +143,32 @@ watch(() => props.dark, () => {
 
 onBeforeUnmount(() => {
   if (resizeRegistrationTimer) clearTimeout(resizeRegistrationTimer)
+  if (fitFrame !== null) cancelAnimationFrame(fitFrame)
   const remainingText = decoder.decode()
   if (remainingText && terminal) terminal.write(remainingText)
   unlistenData?.()
   unlistenDisconnected?.()
   resizeObserver?.disconnect()
+  sessionStore.clearTerminalSelection(props.sessionId)
   terminal?.dispose()
 })
+
+function scheduleFit() {
+  if (fitFrame !== null) return
+
+  fitFrame = requestAnimationFrame(() => {
+    fitFrame = null
+    if (!fitAddon || !containerRef.value || containerRef.value.clientHeight === 0) return
+    fitAddon.fit()
+  })
+}
 
 function focus() {
   terminal?.focus()
 }
 
 function triggerResize() {
-  if (fitAddon && containerRef.value && containerRef.value.offsetHeight > 0) {
-    fitAddon.fit()
-    sessionStore.resize(props.sessionId, terminal.cols, terminal.rows)
-  }
+  scheduleFit()
 }
 
 defineExpose({ focus, triggerResize })
@@ -183,5 +194,11 @@ defineExpose({ focus, triggerResize })
 
 .terminal-container :deep(.xterm) {
   height: 100%;
+  overflow: hidden;
+}
+
+.terminal-container :deep(.xterm-viewport) {
+  overflow-x: hidden;
+  background: var(--app-terminal);
 }
 </style>

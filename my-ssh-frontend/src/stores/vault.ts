@@ -64,7 +64,13 @@ export const useVaultStore = defineStore('vault', () => {
     error.value = null
     try {
       const profile = await invoke<SshProfileView>('create_profile', { profile: req })
-      await loadProfiles()
+      const existingIndex = profiles.value.findIndex((item) => item.id === profile.id)
+      if (existingIndex >= 0) {
+        profiles.value.splice(existingIndex, 1, profile)
+      } else {
+        profiles.value.push(profile)
+      }
+      void loadProfiles()
       return profile
     } catch (e) {
       error.value = String(e)
@@ -80,6 +86,22 @@ export const useVaultStore = defineStore('vault', () => {
     try {
       const profile = await invoke<SshProfileView>('update_profile', { id, profile: req })
       await loadProfiles()
+      return profile
+    } catch (e) {
+      error.value = String(e)
+      return null
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function refreshProfileInfo(id: string): Promise<SshProfileView | null> {
+    loading.value = true
+    error.value = null
+    try {
+      const profile = await invoke<SshProfileView>('refresh_profile_info', { profileId: id })
+      const index = profiles.value.findIndex((item) => item.id === id)
+      if (index >= 0) profiles.value.splice(index, 1, profile)
       return profile
     } catch (e) {
       error.value = String(e)
@@ -179,6 +201,7 @@ export const useVaultStore = defineStore('vault', () => {
     loadProfiles,
     createProfile,
     updateProfile,
+    refreshProfileInfo,
     deleteProfile,
     loadKeys,
     createKey,

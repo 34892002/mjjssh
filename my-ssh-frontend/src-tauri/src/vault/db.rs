@@ -1,10 +1,11 @@
 use rusqlite::{params, Connection};
+use std::collections::HashSet;
 use std::path::Path;
 
 use super::crypto::{self, MasterKey, KEY_LEN, SALT_LEN};
 use super::models::{
-    AiAgentConfig, AiProviderConfigSecret, AiProviderConfigView, AuthType, CreateKeyRequest,
-    CreateProfileRequest, DecryptedCredential, SaveAiAgentConfigRequest,
+    AiAgentConfig, AiModelConfig, AiProviderConfigSecret, AiProviderConfigView, AuthType,
+    CreateKeyRequest, CreateProfileRequest, DecryptedCredential, SaveAiAgentConfigRequest,
     SaveAiProviderConfigRequest, SshKey, SshKeyView, SshProfile, UpdateProfileRequest,
 };
 
@@ -26,6 +27,8 @@ pub enum VaultError {
     ProfileNotFound(String),
     #[error("Invalid AI configuration: {0}")]
     InvalidAiConfig(String),
+    #[error("Invalid SSH key configuration: {0}")]
+    InvalidSshKeyConfig(String),
     #[error("AI Agent not found: {0}")]
     AiAgentNotFound(String),
     #[error("The default AI Agent cannot be deleted")]
@@ -292,30 +295,48 @@ impl Vault {
     }
 
     pub fn get_ai_config_view(&self) -> Result<AiProviderConfigView, VaultError> {
-        self.conn
-            .query_row(
-                "SELECT base_url, model, timeout_seconds FROM ai_provider_configs ORDER BY updated_at DESC LIMIT 1",
-                [],
-                |row| {
-                    Ok(AiProviderConfigView {
-                        configured: true,
-                        provider_type: "openai_compatible".into(),
-                        base_url: Some(row.get(0)?),
-                        model: Some(row.get(1)?),
-                        timeout_seconds: Some(row.get(2)?),
-                    })
-                },
-            )
-            .or_else(|error| match error {
-                rusqlite::Error::QueryReturnedNoRows => Ok(AiProviderConfigView {
-                    configured: false,
+        let config = self.conn.query_row(
+            "SELECT id, base_url, model, timeout_seconds, model_configs
+             FROM ai_provider_configs ORDER BY updated_at DESC LIMIT 1",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, u32>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        );
+
+        match config {
+            Ok((id, base_url, legacy_model, timeout_seconds, model_configs)) => {
+                let models = self.load_ai_model_configs(&id, &legacy_model, &model_configs)?;
+                let active_model = Self::active_ai_model(&models, &legacy_model);
+                let active_model_name = active_model.name.clone();
+                let active_model_id = active_model.id.clone();
+                Ok(AiProviderConfigView {
+                    configured: true,
                     provider_type: "openai_compatible".into(),
-                    base_url: None,
-                    model: None,
-                    timeout_seconds: None,
-                }),
-                other => Err(VaultError::Database(other)),
-            })
+                    base_url: Some(base_url),
+                    model: Some(active_model_name),
+                    timeout_seconds: Some(timeout_seconds),
+                    models,
+                    active_model_id: Some(active_model_id),
+                })
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(AiProviderConfigView {
+                configured: false,
+                provider_type: "openai_compatible".into(),
+                base_url: None,
+                model: None,
+                timeout_seconds: None,
+                models: Vec::new(),
+                active_model_id: None,
+            }),
+            Err(error) => Err(VaultError::Database(error)),
+        }
     }
 
     pub fn save_ai_config(&self, request: &SaveAiProviderConfigRequest) -> Result<(), VaultError> {
@@ -325,14 +346,32 @@ impl Vault {
                 "base_url must start with http:// or https://".into(),
             ));
         }
-        if request.model.trim().is_empty() {
-            return Err(VaultError::InvalidAiConfig("model is required".into()));
-        }
         if !(10..=300).contains(&request.timeout_seconds) {
             return Err(VaultError::InvalidAiConfig(
                 "timeout_seconds must be between 10 and 300".into(),
             ));
         }
+
+        let models = self.normalized_ai_models(request)?;
+        let active_model_id = request
+            .active_model_id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+            .or_else(|| {
+                models
+                    .iter()
+                    .find(|model| model.name == request.model.trim())
+                    .map(|model| model.id.as_str())
+            })
+            .unwrap_or("default");
+        let active_model = models
+            .iter()
+            .find(|model| model.id == active_model_id)
+            .ok_or_else(|| {
+                VaultError::InvalidAiConfig("active_model_id must select a model".into())
+            })?;
+        let model_configs = serde_json::to_string(&models)
+            .map_err(|error| VaultError::InvalidAiConfig(error.to_string()))?;
 
         let api_key = if request.api_key.trim().is_empty() {
             self.conn
@@ -352,37 +391,170 @@ impl Vault {
         };
         let now = chrono::Utc::now().to_rfc3339();
         self.conn.execute(
-            "INSERT INTO ai_provider_configs (id, provider_type, base_url, api_key, model, timeout_seconds, created_at, updated_at)
-             VALUES ('default', 'openai_compatible', ?1, ?2, ?3, ?4, ?5, ?5)
+            "INSERT INTO ai_provider_configs (id, provider_type, base_url, api_key, model, model_configs, timeout_seconds, created_at, updated_at)
+             VALUES ('default', 'openai_compatible', ?1, ?2, ?3, ?4, ?5, ?6, ?6)
              ON CONFLICT(id) DO UPDATE SET base_url = excluded.base_url, api_key = excluded.api_key,
-               model = excluded.model, timeout_seconds = excluded.timeout_seconds, updated_at = excluded.updated_at",
-            params![base_url, api_key, request.model.trim(), request.timeout_seconds, now],
+               model = excluded.model, model_configs = excluded.model_configs,
+               timeout_seconds = excluded.timeout_seconds, updated_at = excluded.updated_at",
+            params![base_url, api_key, active_model.name, model_configs, request.timeout_seconds, now],
         )?;
         Ok(())
     }
 
+    pub fn get_ai_config_secret_for_model(
+        &self,
+        model_id: Option<&str>,
+    ) -> Result<Option<AiProviderConfigSecret>, VaultError> {
+        let config = self.conn.query_row(
+            "SELECT id, base_url, api_key, model, timeout_seconds, model_configs
+             FROM ai_provider_configs WHERE id = 'default'",
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Vec<u8>>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, u32>(4)?,
+                    row.get::<_, String>(5)?,
+                ))
+            },
+        );
+
+        match config {
+            Ok((id, base_url, encrypted_api_key, legacy_model, timeout_seconds, model_configs)) => {
+                let models = self.load_ai_model_configs(&id, &legacy_model, &model_configs)?;
+                let model = match model_id.map(str::trim).filter(|id| !id.is_empty()) {
+                    Some(model_id) => models
+                        .iter()
+                        .find(|model| model.id == model_id)
+                        .ok_or_else(|| {
+                            VaultError::InvalidAiConfig(format!("unknown model id: {model_id}"))
+                        })?,
+                    None => Self::active_ai_model(&models, &legacy_model),
+                };
+                let api_key = crypto::decrypt_string(&self.master_key.key, &encrypted_api_key)?;
+                Ok(Some(AiProviderConfigSecret {
+                    base_url,
+                    api_key,
+                    model: model.clone(),
+                    timeout_seconds,
+                }))
+            }
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(error) => Err(VaultError::Database(error)),
+        }
+    }
+
     pub fn get_ai_config_secret(&self) -> Result<Option<AiProviderConfigSecret>, VaultError> {
-        self.conn
-            .query_row(
-                "SELECT base_url, api_key, model, timeout_seconds FROM ai_provider_configs WHERE id = 'default'",
-                [],
-                |row| {
-                    let encrypted_api_key: Vec<u8> = row.get(1)?;
-                    let api_key = crypto::decrypt_string(&self.master_key.key, &encrypted_api_key)
-                        .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?;
-                    Ok(AiProviderConfigSecret {
-                        base_url: row.get(0)?,
-                        api_key,
-                        model: row.get(2)?,
-                        timeout_seconds: row.get(3)?,
-                    })
-                },
-            )
-            .map(Some)
-            .or_else(|error| match error {
-                rusqlite::Error::QueryReturnedNoRows => Ok(None),
-                other => Err(VaultError::Database(other)),
-            })
+        self.get_ai_config_secret_for_model(None)
+    }
+
+    fn normalized_ai_models(
+        &self,
+        request: &SaveAiProviderConfigRequest,
+    ) -> Result<Vec<AiModelConfig>, VaultError> {
+        let mut models = if request.models.is_empty() {
+            let name = request.model.trim();
+            if name.is_empty() {
+                return Err(VaultError::InvalidAiConfig(
+                    "model is required when models is omitted".into(),
+                ));
+            }
+            vec![Self::legacy_ai_model(name)]
+        } else {
+            request.models.clone()
+        };
+
+        if !(1..=20).contains(&models.len()) {
+            return Err(VaultError::InvalidAiConfig(
+                "models must contain between 1 and 20 entries".into(),
+            ));
+        }
+
+        let mut ids = HashSet::new();
+        let mut names = HashSet::new();
+        for model in &mut models {
+            model.id = model.id.trim().to_owned();
+            model.name = model.name.trim().to_owned();
+            model.protocol = model.protocol.trim().to_owned();
+            model.reasoning_effort = model
+                .reasoning_effort
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned);
+            model.prompt_cache_key = model
+                .prompt_cache_key
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned);
+
+            if model.id.is_empty() || model.name.is_empty() {
+                return Err(VaultError::InvalidAiConfig(
+                    "each model requires a non-empty id and name".into(),
+                ));
+            }
+            if !ids.insert(model.id.clone()) || !names.insert(model.name.clone()) {
+                return Err(VaultError::InvalidAiConfig(
+                    "model ids and names must be unique".into(),
+                ));
+            }
+            if model.protocol != "chat_completions" && model.protocol != "responses" {
+                return Err(VaultError::InvalidAiConfig(
+                    "model protocol must be chat_completions or responses".into(),
+                ));
+            }
+        }
+        Ok(models)
+    }
+
+    fn legacy_ai_model(name: &str) -> AiModelConfig {
+        AiModelConfig {
+            id: "default".into(),
+            name: name.into(),
+            max_context_tokens: None,
+            max_output_tokens: None,
+            supports_tools: false,
+            supports_images: false,
+            supports_parallel_tool_calls: false,
+            supports_prompt_caching: false,
+            supports_reasoning: false,
+            protocol: "chat_completions".into(),
+            reasoning_effort: None,
+            prompt_cache_key: None,
+        }
+    }
+
+    fn load_ai_model_configs(
+        &self,
+        config_id: &str,
+        legacy_model: &str,
+        model_configs: &str,
+    ) -> Result<Vec<AiModelConfig>, VaultError> {
+        let models: Vec<AiModelConfig> = serde_json::from_str(model_configs).map_err(|error| {
+            VaultError::InvalidAiConfig(format!("invalid stored model_configs: {error}"))
+        })?;
+        if !models.is_empty() {
+            return Ok(models);
+        }
+
+        let models = vec![Self::legacy_ai_model(legacy_model)];
+        let serialized = serde_json::to_string(&models)
+            .map_err(|error| VaultError::InvalidAiConfig(error.to_string()))?;
+        self.conn.execute(
+            "UPDATE ai_provider_configs SET model_configs = ?1 WHERE id = ?2",
+            params![serialized, config_id],
+        )?;
+        Ok(models)
+    }
+
+    fn active_ai_model<'a>(models: &'a [AiModelConfig], legacy_model: &str) -> &'a AiModelConfig {
+        models
+            .iter()
+            .find(|model| model.name == legacy_model)
+            .unwrap_or(&models[0])
     }
 
     pub fn has_ai_executable_grant(
@@ -562,6 +734,10 @@ impl Vault {
                 cert_data BLOB,
                 key_id TEXT,
                 group_name TEXT,
+                icon TEXT,
+                color TEXT,
+                os TEXT,
+                location TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
             );
@@ -587,6 +763,7 @@ impl Vault {
                 base_url TEXT NOT NULL,
                 api_key BLOB NOT NULL,
                 model TEXT NOT NULL,
+                model_configs TEXT NOT NULL DEFAULT '[]',
                 timeout_seconds INTEGER NOT NULL DEFAULT 60,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -612,12 +789,25 @@ impl Vault {
             );",
         )?;
 
+        let has_model_configs = conn
+            .prepare("PRAGMA table_info(ai_provider_configs)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<Result<Vec<_>, _>>()?
+            .iter()
+            .any(|column| column == "model_configs");
+        if !has_model_configs {
+            conn.execute(
+                "ALTER TABLE ai_provider_configs ADD COLUMN model_configs TEXT NOT NULL DEFAULT '[]'",
+                [],
+            )?;
+        }
+
         Ok(())
     }
 
     fn read_all_profiles(conn: &Connection) -> Result<Vec<SshProfile>, VaultError> {
         let mut stmt = conn.prepare(
-            "SELECT id, name, host, port, username, auth_type, credential, private_key, cert_data, key_id, group_name, created_at, updated_at
+            "SELECT id, name, host, port, username, auth_type, credential, private_key, cert_data, key_id, group_name, icon, color, os, location, created_at, updated_at
              FROM profiles",
         )?;
 
@@ -640,8 +830,12 @@ impl Vault {
                     cert_data: row.get(8)?,
                     key_id: row.get(9)?,
                     group_name: row.get(10)?,
-                    created_at: row.get(11)?,
-                    updated_at: row.get(12)?,
+                    icon: row.get(11)?,
+                    color: row.get(12)?,
+                    os: row.get(13)?,
+                    location: row.get(14)?,
+                    created_at: row.get(15)?,
+                    updated_at: row.get(16)?,
                 })
             })?
             .collect::<Result<Vec<_>, _>>()?;
@@ -656,7 +850,7 @@ impl Vault {
     pub fn get_profile(&self, id: &str) -> Result<SshProfile, VaultError> {
         self.conn
             .query_row(
-                "SELECT id, name, host, port, username, auth_type, credential, private_key, cert_data, key_id, group_name, created_at, updated_at
+                "SELECT id, name, host, port, username, auth_type, credential, private_key, cert_data, key_id, group_name, icon, color, os, location, created_at, updated_at
                  FROM profiles WHERE id = ?1",
                 [id],
                 |row| {
@@ -677,8 +871,12 @@ impl Vault {
                         cert_data: row.get(8)?,
                         key_id: row.get(9)?,
                         group_name: row.get(10)?,
-                        created_at: row.get(11)?,
-                        updated_at: row.get(12)?,
+                        icon: row.get(11)?,
+                        color: row.get(12)?,
+                        os: row.get(13)?,
+                        location: row.get(14)?,
+                        created_at: row.get(15)?,
+                        updated_at: row.get(16)?,
                     })
                 },
             )
@@ -686,6 +884,7 @@ impl Vault {
     }
 
     pub fn create_profile(&self, req: &CreateProfileRequest) -> Result<SshProfile, VaultError> {
+        self.validate_certificate_key(&req.auth_type, req.key_id.as_deref())?;
         let id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now().to_rfc3339();
         let port = req.port.unwrap_or(22);
@@ -696,8 +895,8 @@ impl Vault {
         };
 
         self.conn.execute(
-            "INSERT INTO profiles (id, name, host, port, username, auth_type, credential, key_id, group_name, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO profiles (id, name, host, port, username, auth_type, credential, key_id, group_name, icon, color, os, location, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 id,
                 req.name,
@@ -708,6 +907,10 @@ impl Vault {
                 encrypted_credential,
                 req.key_id,
                 req.group_name,
+                req.icon,
+                req.color,
+                req.os,
+                req.location,
                 now,
                 now,
             ],
@@ -731,6 +934,12 @@ impl Vault {
         let auth_type = req.auth_type.as_ref().unwrap_or(&existing.auth_type);
         let key_id = req.key_id.as_deref().or(existing.key_id.as_deref());
         let group_name = req.group_name.as_deref().or(existing.group_name.as_deref());
+        let icon = req.icon.as_deref().or(existing.icon.as_deref());
+        let color = req.color.as_deref().or(existing.color.as_deref());
+        let os = req.os.as_deref().or(existing.os.as_deref());
+        let location = req.location.as_deref().or(existing.location.as_deref());
+
+        self.validate_certificate_key(auth_type, key_id)?;
 
         let credential = match &req.credential {
             Some(c) if !c.is_empty() => Some(crypto::encrypt_string(&self.master_key.key, c)?),
@@ -739,9 +948,9 @@ impl Vault {
         };
 
         self.conn.execute(
-            "UPDATE profiles SET name = ?1, host = ?2, port = ?3, username = ?4, auth_type = ?5, credential = ?6, key_id = ?7, group_name = ?8, updated_at = ?9
-             WHERE id = ?10",
-            params![name, host, port, username, auth_type.to_string(), credential, key_id, group_name, now, id],
+            "UPDATE profiles SET name = ?1, host = ?2, port = ?3, username = ?4, auth_type = ?5, credential = ?6, key_id = ?7, group_name = ?8, icon = ?9, color = ?10, os = ?11, location = ?12, updated_at = ?13
+             WHERE id = ?14",
+            params![name, host, port, username, auth_type.to_string(), credential, key_id, group_name, icon, color, os, location, now, id],
         )?;
 
         self.get_profile(id)
@@ -859,6 +1068,7 @@ impl Vault {
     }
 
     pub fn create_key(&self, req: &CreateKeyRequest) -> Result<SshKeyView, VaultError> {
+        Self::validate_key_request(req)?;
         let id = uuid::Uuid::new_v4().to_string();
         let now = chrono::Utc::now().to_rfc3339();
 
@@ -884,12 +1094,25 @@ impl Vault {
     }
 
     pub fn update_key(&self, id: &str, req: &CreateKeyRequest) -> Result<SshKeyView, VaultError> {
-        let now = chrono::Utc::now().to_rfc3339();
+        let existing = self.get_key(id)?;
+        let has_certificate = req
+            .cert_data
+            .as_deref()
+            .is_some_and(|cert| !cert.trim().is_empty())
+            || existing.cert_data.is_some();
+        Self::validate_key_fields(
+            &req.key_type,
+            &req.private_key,
+            has_certificate.then_some("certificate"),
+        )?;
 
+        let now = chrono::Utc::now().to_rfc3339();
         let encrypted_key = crypto::encrypt_string(&self.master_key.key, &req.private_key)?;
-        let encrypted_cert = match &req.cert_data {
-            Some(c) if !c.is_empty() => Some(crypto::encrypt_string(&self.master_key.key, c)?),
-            _ => None,
+        let encrypted_cert = match req.cert_data.as_deref() {
+            Some(cert) if !cert.is_empty() => {
+                Some(crypto::encrypt_string(&self.master_key.key, cert)?)
+            }
+            _ => existing.cert_data,
         };
 
         self.conn.execute(
@@ -905,6 +1128,49 @@ impl Vault {
             updated_at: now,
             ..Default::default()
         })
+    }
+
+    fn validate_certificate_key(
+        &self,
+        auth_type: &AuthType,
+        key_id: Option<&str>,
+    ) -> Result<(), VaultError> {
+        if *auth_type != AuthType::Certificate {
+            return Ok(());
+        }
+
+        let key_id = key_id.ok_or_else(|| {
+            VaultError::InvalidSshKeyConfig("certificate authentication requires a key".into())
+        })?;
+        let key = self.get_key(key_id)?;
+        if key.key_type != "certificate" || key.cert_data.is_none() {
+            return Err(VaultError::InvalidSshKeyConfig(
+                "certificate authentication requires a key with an SSH user certificate".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_key_request(req: &CreateKeyRequest) -> Result<(), VaultError> {
+        Self::validate_key_fields(&req.key_type, &req.private_key, req.cert_data.as_deref())
+    }
+
+    fn validate_key_fields(
+        key_type: &str,
+        private_key: &str,
+        cert_data: Option<&str>,
+    ) -> Result<(), VaultError> {
+        if private_key.trim().is_empty() {
+            return Err(VaultError::InvalidSshKeyConfig(
+                "private key is required".into(),
+            ));
+        }
+        if key_type == "certificate" && cert_data.is_none_or(|cert| cert.trim().is_empty()) {
+            return Err(VaultError::InvalidSshKeyConfig(
+                "an SSH user certificate is required for certificate keys".into(),
+            ));
+        }
+        Ok(())
     }
 
     pub fn delete_key(&self, id: &str) -> Result<(), VaultError> {
@@ -937,6 +1203,8 @@ mod tests {
                 api_key: "test-api-key".into(),
                 model: "gpt-5.6-terra".into(),
                 timeout_seconds: 60,
+                models: Vec::new(),
+                active_model_id: None,
             })
             .unwrap();
         vault
@@ -945,6 +1213,8 @@ mod tests {
                 api_key: String::new(),
                 model: "gpt-5.6-terra".into(),
                 timeout_seconds: 90,
+                models: Vec::new(),
+                active_model_id: None,
             })
             .unwrap();
 
@@ -952,6 +1222,107 @@ mod tests {
         assert_eq!(config.base_url, "https://ctmoai.com/v1");
         assert_eq!(config.api_key, "test-api-key");
         assert_eq!(config.timeout_seconds, 90);
+
+        let view = vault.get_ai_config_view().unwrap();
+        assert_eq!(view.active_model_id.as_deref(), Some("default"));
+        assert_eq!(view.models.len(), 1);
+        assert_eq!(view.models[0].name, "gpt-5.6-terra");
+
+        drop(vault);
+        std::fs::remove_dir_all(app_dir).unwrap();
+    }
+
+    #[test]
+    fn ai_config_uses_the_selected_model_from_the_model_list() {
+        let app_dir = test_app_dir();
+        std::fs::create_dir_all(&app_dir).unwrap();
+        let vault = Vault::setup(&app_dir, "test-password").unwrap();
+
+        vault
+            .save_ai_config(&SaveAiProviderConfigRequest {
+                base_url: "https://api.example.com/v1".into(),
+                api_key: "test-api-key".into(),
+                model: String::new(),
+                timeout_seconds: 60,
+                models: vec![
+                    AiModelConfig {
+                        id: "fast".into(),
+                        name: "fast-model".into(),
+                        max_context_tokens: Some(32_000),
+                        max_output_tokens: Some(4_000),
+                        supports_tools: true,
+                        supports_images: false,
+                        supports_parallel_tool_calls: true,
+                        supports_prompt_caching: true,
+                        supports_reasoning: false,
+                        protocol: "chat_completions".into(),
+                        reasoning_effort: None,
+                        prompt_cache_key: Some("workspace".into()),
+                    },
+                    AiModelConfig {
+                        id: "reasoning".into(),
+                        name: "reasoning-model".into(),
+                        max_context_tokens: Some(128_000),
+                        max_output_tokens: Some(8_000),
+                        supports_tools: true,
+                        supports_images: true,
+                        supports_parallel_tool_calls: false,
+                        supports_prompt_caching: false,
+                        supports_reasoning: true,
+                        protocol: "responses".into(),
+                        reasoning_effort: Some("high".into()),
+                        prompt_cache_key: None,
+                    },
+                ],
+                active_model_id: Some("reasoning".into()),
+            })
+            .unwrap();
+
+        let view = vault.get_ai_config_view().unwrap();
+        assert_eq!(view.active_model_id.as_deref(), Some("reasoning"));
+        assert_eq!(view.model.as_deref(), Some("reasoning-model"));
+        assert_eq!(view.models[1].protocol, "responses");
+
+        let secret = vault.get_ai_config_secret().unwrap().unwrap();
+        assert_eq!(secret.model.id, "reasoning");
+        assert_eq!(secret.model.name, "reasoning-model");
+        assert_eq!(secret.model.protocol, "responses");
+
+        drop(vault);
+        std::fs::remove_dir_all(app_dir).unwrap();
+    }
+
+    #[test]
+    fn ai_config_rejects_duplicate_model_ids_and_names() {
+        let app_dir = test_app_dir();
+        std::fs::create_dir_all(&app_dir).unwrap();
+        let vault = Vault::setup(&app_dir, "test-password").unwrap();
+        let model = AiModelConfig {
+            id: "duplicate".into(),
+            name: "duplicate-model".into(),
+            max_context_tokens: None,
+            max_output_tokens: None,
+            supports_tools: false,
+            supports_images: false,
+            supports_parallel_tool_calls: false,
+            supports_prompt_caching: false,
+            supports_reasoning: false,
+            protocol: "chat_completions".into(),
+            reasoning_effort: None,
+            prompt_cache_key: None,
+        };
+
+        let error = vault
+            .save_ai_config(&SaveAiProviderConfigRequest {
+                base_url: "https://api.example.com".into(),
+                api_key: "test-api-key".into(),
+                model: String::new(),
+                timeout_seconds: 60,
+                models: vec![model.clone(), model],
+                active_model_id: Some("duplicate".into()),
+            })
+            .unwrap_err();
+        assert!(matches!(error, VaultError::InvalidAiConfig(_)));
 
         drop(vault);
         std::fs::remove_dir_all(app_dir).unwrap();

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue'
+import { onBeforeUnmount, ref, watch, type Component } from 'vue'
 import { NModal, NButton, NSpace } from 'naive-ui'
 
 const props = defineProps<{
@@ -8,6 +8,8 @@ const props = defineProps<{
   port: number
   username: string
   profileName: string
+  icon: Component
+  color: string
   status: 'connecting' | 'authenticating' | 'success' | 'error'
   error?: string
   dark: boolean
@@ -20,8 +22,16 @@ const emit = defineEmits<{
 }>()
 
 const steps = ref<{ label: string; state: 'pending' | 'active' | 'done' | 'error' }[]>([])
+let successCloseTimer: ReturnType<typeof setTimeout> | null = null
+
+function clearSuccessCloseTimer() {
+  if (!successCloseTimer) return
+  clearTimeout(successCloseTimer)
+  successCloseTimer = null
+}
 
 watch(() => props.status, (s) => {
+  clearSuccessCloseTimer()
   if (s === 'connecting') {
     steps.value = [
       { label: '初始化安全通道...', state: 'done' },
@@ -40,8 +50,10 @@ watch(() => props.status, (s) => {
       { label: `已连接 ${props.host}:${props.port}`, state: 'done' },
       { label: 'SSH 认证完成', state: 'done' },
     ]
-    // 成功后自动关闭
-    setTimeout(() => emit('update:show', false), 800)
+    successCloseTimer = setTimeout(() => {
+      successCloseTimer = null
+      if (props.status === 'success') emit('update:show', false)
+    }, 800)
   } else if (s === 'error') {
     steps.value = [
       { label: '初始化安全通道...', state: 'done' },
@@ -50,18 +62,20 @@ watch(() => props.status, (s) => {
     ]
   }
 }, { immediate: true })
+
+watch(() => props.show, (show) => {
+  if (!show) clearSuccessCloseTimer()
+})
+
+onBeforeUnmount(clearSuccessCloseTimer)
 </script>
 
 <template>
   <n-modal :show="show" @update:show="emit('update:show', $event)" :closable="status === 'error'" mask-closable>
     <div class="conn-dialog" :class="{ 'theme-dark': dark }">
       <div class="conn-header">
-        <div class="conn-icon">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
-            <line x1="8" y1="21" x2="16" y2="21"/>
-            <line x1="12" y1="17" x2="12" y2="21"/>
-          </svg>
+        <div class="conn-icon" :style="{ '--profile-color': color }">
+          <component :is="icon" :size="24" :stroke-width="1.8" />
         </div>
         <div class="conn-info">
           <div class="conn-name">{{ profileName }}</div>
@@ -133,11 +147,11 @@ watch(() => props.status, (s) => {
   width: 40px;
   height: 40px;
   border-radius: 10px;
-  background: linear-gradient(135deg, #f38ba8, #eba0ac);
+  background: color-mix(in srgb, var(--profile-color) 20%, var(--app-panel));
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #fff;
+  color: var(--profile-color);
   flex-shrink: 0;
 }
 

@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import { defineAsyncComponent, ref, computed, onBeforeUnmount, onMounted, nextTick, watch } from 'vue'
+import { defineAsyncComponent, ref, computed, onBeforeUnmount, onMounted, nextTick, watch, type Component } from 'vue'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { Cloud, Copy, Cpu, Download, HardDrive, ListFilter, MemoryStick, Minus, Moon, Sparkles, Square, Sun, Upload, X, Zap } from '@lucide/vue'
+import { Archive, Box, Cloud, CloudCog, Code2, Container, Copy, Cpu, Database, Download, EthernetPort, FileCode2, Globe2, HardDrive, Layers3, ListFilter, MapPin, MemoryStick, MonitorCog, Moon, Network, RadioTower, Router, Server, ServerCog, ShieldCheck, Sparkles, Square, Sun, TerminalSquare, Upload, Waypoints, Workflow, X, Zap } from '@lucide/vue'
 import {
   darkTheme,
   NConfigProvider,
@@ -23,6 +23,7 @@ import {
 import { useVaultStore } from './stores/vault'
 import { useSessionStore } from './stores/session'
 import { useTransferStore } from './stores/transfer'
+import EntityCard from './components/EntityCard.vue'
 const Terminal = defineAsyncComponent(() => import('./components/Terminal.vue'))
 const ConnectionDialog = defineAsyncComponent(() => import('./components/ConnectionDialog.vue'))
 const KeysView = defineAsyncComponent(() => import('./components/KeysView.vue'))
@@ -118,6 +119,8 @@ const form = ref<CreateProfileRequest>({
   credential: '',
   key_id: undefined,
   group_name: '',
+  icon: 'monitor-cog',
+  color: '#3b82f6',
 })
 
 const authOptions = [
@@ -126,7 +129,33 @@ const authOptions = [
   { label: '证书认证', value: 'certificate' },
 ]
 
+const hostIconOptions: Array<{ id: string; label: string; icon: Component }> = [
+  { id: 'server', label: '服务器', icon: Server }, { id: 'server-cog', label: '管理服务器', icon: ServerCog },
+  { id: 'monitor-cog', label: '工作站', icon: MonitorCog }, { id: 'terminal', label: '终端', icon: TerminalSquare },
+  { id: 'cloud', label: '云主机', icon: Cloud }, { id: 'cloud-cog', label: '云服务', icon: CloudCog },
+  { id: 'database', label: '数据库', icon: Database }, { id: 'hard-drive', label: '存储', icon: HardDrive },
+  { id: 'container', label: '容器', icon: Container }, { id: 'box', label: '虚拟机', icon: Box },
+  { id: 'network', label: '网络', icon: Network }, { id: 'router', label: '路由器', icon: Router },
+  { id: 'ethernet-port', label: '交换机', icon: EthernetPort }, { id: 'radio-tower', label: '网关', icon: RadioTower },
+  { id: 'globe', label: '网站', icon: Globe2 }, { id: 'code', label: '开发环境', icon: Code2 },
+  { id: 'file-code', label: '代码服务', icon: FileCode2 }, { id: 'workflow', label: '自动化', icon: Workflow },
+  { id: 'layers', label: '集群', icon: Layers3 }, { id: 'waypoints', label: '代理', icon: Waypoints },
+  { id: 'cpu', label: '计算节点', icon: Cpu }, { id: 'archive', label: '备份', icon: Archive },
+  { id: 'shield', label: '安全服务', icon: ShieldCheck }, { id: 'zap', label: '边缘服务', icon: Zap },
+]
+const hostIconMap = new Map(hostIconOptions.map((option) => [option.id, option.icon]))
+const hostColorOptions = ['#3b82f6', '#14b8a6', '#22c55e', '#eab308', '#f97316', '#ef4444', '#ec4899', '#a855f7']
+const profileKeyOptions = computed(() => vaultStore.sshKeys
+  .filter((key) => form.value.auth_type !== 'certificate' || key.key_type === 'certificate')
+  .map((key) => ({ label: key.name, value: key.id })))
+
+function hostIcon(icon: string | null) {
+  return hostIconMap.get(icon ?? '') ?? MonitorCog
+}
+
 const isEditing = ref(false)
+const formError = ref<string | null>(null)
+const refreshingProfileId = ref<string | null>(null)
 
 const groupedProfiles = computed(() => {
   const groups = new Map<string, SshProfileView[]>()
@@ -170,7 +199,12 @@ watch(activeView, (view) => {
 })
 
 watch(() => form.value.auth_type, (authType) => {
-  if (authType !== 'password') void vaultStore.loadKeys()
+  if (authType === 'password') return
+  void vaultStore.loadKeys().then(() => {
+    if (authType !== 'certificate' || !form.value.key_id) return
+    const selectedKey = vaultStore.sshKeys.find((key) => key.id === form.value.key_id)
+    if (selectedKey?.key_type !== 'certificate') form.value.key_id = undefined
+  })
 })
 
 watch(() => transferStore.tasks.length, (count, previousCount) => {
@@ -182,6 +216,7 @@ watch(() => transferStore.tasks.length, (count, previousCount) => {
 function openCreateForm() {
   isEditing.value = false
   editingProfile.value = null
+  formError.value = null
   form.value = {
     name: '',
     host: '',
@@ -191,6 +226,8 @@ function openCreateForm() {
     credential: '',
     key_id: undefined,
     group_name: '',
+    icon: 'monitor-cog',
+    color: '#3b82f6',
   }
   showForm.value = true
 }
@@ -198,6 +235,7 @@ function openCreateForm() {
 function openEditForm(profile: SshProfileView) {
   isEditing.value = true
   editingProfile.value = profile
+  formError.value = null
   form.value = {
     name: profile.name,
     host: profile.host,
@@ -207,28 +245,29 @@ function openEditForm(profile: SshProfileView) {
     credential: '',
     key_id: profile.key_id || undefined,
     group_name: profile.group_name || '',
+    icon: profile.icon || 'monitor-cog',
+    color: profile.color || '#3b82f6',
   }
   showForm.value = true
 }
 
 async function handleFormSubmit() {
-  console.log('[Form] Submit clicked', JSON.stringify(form.value))
-  if (!form.value.name || !form.value.host || !form.value.username) {
-    console.log('[Form] Validation failed: missing required fields')
+  formError.value = null
+  if (!form.value.name.trim() || !form.value.host.trim() || !form.value.username.trim()) {
+    formError.value = '请填写名称、主机地址和用户名。'
     return
   }
 
-  // 验证认证方式
   if (form.value.auth_type === 'password') {
     if (!form.value.credential && !isEditing.value) {
-      console.log('[Form] Validation failed: no credential')
+      formError.value = '请填写密码。'
       return
     }
-  } else {
-    if (!form.value.key_id && !isEditing.value) {
-      console.log('[Form] Validation failed: no key_id')
-      return
-    }
+  } else if (!form.value.key_id) {
+    formError.value = form.value.auth_type === 'certificate'
+      ? '请选择包含 SSH 用户证书的密钥。'
+      : '请选择用于连接的密钥。'
+    return
   }
 
   const data: CreateProfileRequest = {
@@ -240,19 +279,31 @@ async function handleFormSubmit() {
     credential: form.value.auth_type === 'password' ? (form.value.credential || undefined) : undefined,
     key_id: form.value.auth_type !== 'password' ? form.value.key_id : undefined,
     group_name: form.value.group_name || undefined,
+    icon: form.value.icon || 'server',
+    color: form.value.color || '#3b82f6',
   }
 
-  console.log('[Form] Sending data:', JSON.stringify(data))
+  const profile = isEditing.value && editingProfile.value
+    ? await vaultStore.updateProfile(editingProfile.value.id, data)
+    : await vaultStore.createProfile(data)
 
-  if (isEditing.value && editingProfile.value) {
-    await vaultStore.updateProfile(editingProfile.value.id, data)
-  } else {
-    const result = await vaultStore.createProfile(data)
-    console.log('[Form] createProfile result:', result)
-    console.log('[Form] vaultStore.error:', vaultStore.error)
+  if (!profile) {
+    formError.value = vaultStore.error || '保存主机失败，请稍后重试。'
+    return
   }
+
   showForm.value = false
   editingProfile.value = null
+}
+
+async function refreshProfileInfo(profile: SshProfileView) {
+  if (refreshingProfileId.value) return
+  refreshingProfileId.value = profile.id
+  try {
+    await vaultStore.refreshProfileInfo(profile.id)
+  } finally {
+    refreshingProfileId.value = null
+  }
 }
 
 async function handleDeleteProfile(id: string) {
@@ -573,6 +624,11 @@ function openSettings() {
   showSettings.value = true
 }
 
+function openAiSettings() {
+  settingsSection.value = 'ai'
+  showSettings.value = true
+}
+
 watch(showSettings, (visible) => {
   if (visible && settingsSection.value === 'sync' && vaultStore.isDefaultPassword === null) {
     void vaultStore.loadDefaultPasswordStatus()
@@ -653,8 +709,10 @@ async function handleChangePassword() {
               <span class="tab-close" @click.stop="handleCloseTab(tab.sessionId)">×</span>
             </div>
 
-            <div class="tab new-tab" @click="sessionStore.activeTabId = null; activeTerminalInfo = null">
-              <span>+</span>
+            <div class="tab new-tab" title="主机列表" aria-label="主机列表" @click="sessionStore.activeTabId = null; activeTerminalInfo = null">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="M12 5v14M5 12h14" />
+              </svg>
             </div>
           </div>
           <div class="titlebar-drag-region" data-tauri-drag-region @mousedown="startWindowDrag" />
@@ -663,7 +721,7 @@ async function handleChangePassword() {
             <button class="titlebar-action" :title="isDarkTheme ? '切换为浅色主题' : '切换为深色主题'" aria-label="切换主题" @click="toggleTheme"><Sun v-if="isDarkTheme" :size="17" /><Moon v-else :size="17" /></button>
           </div>
           <div class="window-controls">
-            <button class="window-control" title="最小化" @click="minimizeWindow"><Minus :size="17" /></button>
+            <button class="window-control" title="最小化" aria-label="最小化" @click="minimizeWindow"><svg class="minimize-icon" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M2.5 7h9" /></svg></button>
             <button class="window-control" :title="isMaximized ? '还原' : '最大化'" @click="toggleMaximizeWindow"><Copy v-if="isMaximized" :size="14" /><Square v-else :size="13" /></button>
             <button class="window-control close" title="关闭" @click="closeWindow"><X :size="17" /></button>
           </div>
@@ -800,43 +858,36 @@ async function handleChangePassword() {
                   </div>
 
                   <div class="host-grid">
-                    <div
+                    <EntityCard
                       v-for="profile in items"
                       :key="profile.id"
                       class="host-card"
+                      :icon="hostIcon(profile.icon)"
+                      :color="profile.color || '#3b82f6'"
+                      :title="profile.name"
+                      :subtitle="`${profile.username}@${profile.host}`"
                       @dblclick="handleConnect(profile)"
                     >
-                      <div class="host-icon" :class="profile.auth_type">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                          <rect x="2" y="3" width="20" height="14" rx="2" ry="2"/>
-                          <line x1="8" y1="21" x2="16" y2="21"/>
-                          <line x1="12" y1="17" x2="12" y2="21"/>
-                        </svg>
-                      </div>
-                      <div class="host-info">
-                        <div class="host-name">{{ profile.name }}</div>
-                        <div class="host-detail">{{ profile.username }}@{{ profile.host }}</div>
-                      </div>
-                      <div class="host-actions" @click.stop>
-                          <n-button size="tiny" quaternary @click="openEditForm(profile)" style="color: #a6adc8">
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                              <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
-                              <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
-                            </svg>
+                      <template #actions>
+                        <div class="host-actions" @click.stop>
+                          <n-button size="tiny" quaternary title="编辑主机" aria-label="编辑主机" @click="openEditForm(profile)">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                           </n-button>
                           <n-popconfirm @positive-click="handleDeleteProfile(profile.id)">
                             <template #trigger>
-                              <n-button size="tiny" quaternary type="error" style="color: #f38ba8">
-                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                                  <polyline points="3 6 5 6 21 6"/>
-                                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-                                </svg>
-                              </n-button>
+                              <n-button size="tiny" quaternary type="error" title="删除主机" aria-label="删除主机"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2 2V6m3 0V4a2 2 0 0 1 2 2v2"/></svg></n-button>
                             </template>
                             确定删除 "{{ profile.name }}"？
                           </n-popconfirm>
                         </div>
-                    </div>
+                      </template>
+                      <template v-if="profile.os || profile.location" #footer>
+                        <div class="host-meta-row">
+                          <div v-if="profile.os" class="host-meta" :title="profile.os">{{ profile.os }}</div>
+                          <div v-if="profile.location" class="host-meta location" :title="profile.location"><MapPin :size="14" />{{ profile.location }}</div>
+                        </div>
+                      </template>
+                    </EntityCard>
                   </div>
                 </div>
                 </template>
@@ -880,6 +931,7 @@ async function handleChangePassword() {
                   v-show="sessionStore.activeTabId === tab.sessionId"
                   :session-id="tab.sessionId"
                   @close="closeAiChat"
+                  @open-ai-settings="openAiSettings"
                 />
               </template>
             </div>
@@ -894,6 +946,9 @@ async function handleChangePassword() {
           style="width: 500px"
         >
           <n-form :model="form" label-placement="left" label-width="80">
+            <n-alert v-if="formError" type="error" closable style="margin-bottom: 16px" @close="formError = null">
+              {{ formError }}
+            </n-alert>
             <n-form-item label="名称" required>
               <n-input v-model:value="form.name" placeholder="My Server" />
             </n-form-item>
@@ -920,7 +975,7 @@ async function handleChangePassword() {
             <n-form-item v-if="form.auth_type !== 'password'" label="密钥" required>
               <n-select
                 :value="form.key_id"
-                :options="vaultStore.sshKeys.map(k => ({ label: k.name, value: k.id }))"
+                :options="profileKeyOptions"
                 placeholder="选择已配置的密钥"
                 @update:value="(val: string) => { form.key_id = val }"
               />
@@ -931,11 +986,29 @@ async function handleChangePassword() {
             <n-form-item label="分组">
               <n-input v-model:value="form.group_name" placeholder="可选，如: 生产环境" />
             </n-form-item>
+            <n-form-item label="图标">
+              <div class="host-icon-picker" role="listbox" aria-label="主机图标">
+                <button v-for="option in hostIconOptions" :key="option.id" type="button" :class="{ selected: form.icon === option.id }" :title="option.label" :aria-label="option.label" @click="form.icon = option.id"><component :is="option.icon" :size="17" /></button>
+              </div>
+            </n-form-item>
+            <n-form-item label="颜色">
+              <div class="host-color-picker" role="radiogroup" aria-label="主机图标颜色">
+                <button v-for="color in hostColorOptions" :key="color" type="button" :class="{ selected: form.color === color }" :style="{ '--picker-color': color }" :title="color" :aria-label="`选择颜色 ${color}`" @click="form.color = color" />
+              </div>
+            </n-form-item>
           </n-form>
 
           <template #footer>
             <n-space justify="end">
-              <n-button @click="showForm = false">取消</n-button>
+              <n-button
+                v-if="isEditing && editingProfile"
+                :loading="refreshingProfileId === editingProfile.id"
+                :disabled="Boolean(refreshingProfileId)"
+                @click="refreshProfileInfo(editingProfile)"
+              >
+                更新信息
+              </n-button>
+              <n-button @click="showForm = false; formError = null">取消</n-button>
               <n-button type="primary" :loading="vaultStore.loading" @click="handleFormSubmit">
                 {{ isEditing ? '保存' : '创建' }}
               </n-button>
@@ -949,6 +1022,8 @@ async function handleChangePassword() {
           :port="connDialogInfo.port"
           :username="connDialogInfo.username"
           :profile-name="connDialogInfo.profileName"
+          :icon="hostIcon(pendingProfile?.icon ?? null)"
+          :color="pendingProfile?.color || '#3b82f6'"
           :status="connDialogStatus"
           :error="connDialogError"
           :dark="isDarkTheme"
@@ -1097,6 +1172,7 @@ async function handleChangePassword() {
 .titlebar-actions, .window-controls { display: flex; align-self: stretch; }
 .titlebar-action, .window-control { display: grid; place-items: center; width: 40px; padding: 0; border: 0; background: transparent; color: var(--app-muted); cursor: pointer; }
 .titlebar-action:hover, .window-control:hover { background: var(--app-hover); color: var(--app-text); }
+.minimize-icon { fill: none; stroke: currentColor; stroke-linecap: round; stroke-width: 1.6; }
 .window-control.close:hover { background: #c94f62; color: #fff; }
 
 .tab {
@@ -1127,7 +1203,11 @@ async function handleChangePassword() {
 
 
 .home-tab {
-  padding: 0 8px;
+  box-sizing: border-box;
+  flex: 0 0 42px;
+  width: 42px;
+  padding: 0;
+  justify-content: center;
   margin-right: 1px;
 }
 
@@ -1171,12 +1251,13 @@ async function handleChangePassword() {
 }
 
 .new-tab {
-  align-self: center;
-  height: 28px;
-  padding: 0 8px;
-  border-radius: 4px;
+  align-self: flex-end;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  justify-content: center;
+  border-radius: 5px 5px 0 0;
   background: transparent !important;
-  font-size: 17px;
   color: #8992a7;
 }
 
@@ -1415,7 +1496,10 @@ async function handleChangePassword() {
 }
 
 .sidebar-nav {
+  display: flex;
   flex: 1;
+  flex-direction: column;
+  gap: 4px;
   padding: 8px;
 }
 
@@ -1502,86 +1586,58 @@ async function handleChangePassword() {
 
 .host-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 8px;
 }
 
 .host-card {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 14px 16px;
-  background: var(--app-surface);
-  border: 1px solid var(--app-border);
-  border-radius: 12px;
   cursor: pointer;
-  transition: all 0.2s;
   user-select: none;
 }
 
-.host-card:hover {
-  background: var(--app-elevated);
-  border-color: var(--app-border);
-  transform: translateY(-1px);
-}
-
-.host-icon {
-  width: 42px;
-  height: 42px;
-  border-radius: 10px;
+.host-meta-row {
   display: flex;
   align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  color: #fff;
-}
-
-.host-icon.password {
-  background: linear-gradient(135deg, #f38ba8, #eba0ac);
-}
-
-.host-icon.key {
-  background: linear-gradient(135deg, #f9e2af, #fab387);
-}
-
-.host-icon.certificate {
-  background: linear-gradient(135deg, #a6e3a1, #94e2d5);
-}
-
-.host-info {
-  flex: 1;
   min-width: 0;
+  gap: 10px;
 }
 
-.host-name {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--app-text);
-  margin-bottom: 2px;
-  white-space: nowrap;
+.host-meta {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  line-height: 16px;
+  color: color-mix(in srgb, var(--app-muted) 82%, var(--app-text));
 }
 
-.host-detail {
-  font-size: 12px;
-  color: var(--app-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
+.host-meta.location { display: flex; align-items: center; gap: 4px; }
+.host-meta.location svg { flex: 0 0 auto; color: var(--app-accent); }
 
 .host-actions {
   display: flex;
-  gap: 2px;
-  opacity: 0.4;
-  transition: opacity 0.15s;
+  align-items: center;
+  gap: 1px;
 }
 
-.host-card:hover .host-actions {
-  opacity: 1;
+.host-actions :deep(.n-button) { width: 22px; height: 22px; padding: 0; color: var(--app-muted); }
+.host-actions :deep(.n-button .n-button__icon) { margin: 0; }
+.host-actions :deep(.n-button:hover) { color: var(--app-text); }
+.host-actions :deep(.n-button--error-type:hover) { color: #ef4444; }
+
+@media (max-width: 760px) {
+  .main-content { padding: 20px 16px; }
+  .host-grid { grid-template-columns: minmax(0, 1fr); }
 }
 
+.host-icon-picker { display: grid; grid-template-columns: repeat(8, 30px); gap: 5px; }
+.host-icon-picker button { display: grid; width: 30px; height: 30px; place-items: center; padding: 0; border: 1px solid var(--app-border); border-radius: 4px; background: var(--app-surface); color: var(--app-muted); cursor: pointer; }
+.host-icon-picker button:hover { color: var(--app-text); background: var(--app-hover); }
+.host-icon-picker button.selected { border-color: var(--app-accent); background: var(--app-selection); color: var(--app-accent); }
+.host-color-picker { display: flex; flex-wrap: wrap; gap: 7px; }
+.host-color-picker button { width: 22px; height: 22px; padding: 0; border: 2px solid transparent; border-radius: 50%; background: var(--picker-color); box-shadow: 0 0 0 1px var(--app-border); cursor: pointer; }
+.host-color-picker button.selected { border-color: var(--app-surface); box-shadow: 0 0 0 2px var(--picker-color); }
 
 /* SFTP 右侧面板 */
 .sftp-panel {

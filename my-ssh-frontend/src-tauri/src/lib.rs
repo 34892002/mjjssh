@@ -1,3 +1,5 @@
+#![allow(linker_messages)] // MSVC reports normal import-library creation on stdout.
+
 pub mod ai;
 mod commands;
 mod ssh;
@@ -66,6 +68,7 @@ pub fn run() {
             commands::vault::get_profile,
             commands::vault::create_profile,
             commands::vault::update_profile,
+            commands::vault::refresh_profile_info,
             commands::vault::delete_profile,
             commands::vault::list_keys,
             commands::vault::create_key,

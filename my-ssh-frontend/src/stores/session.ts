@@ -9,6 +9,15 @@ export interface TabInfo {
   profileName: string
 }
 
+export interface TerminalSelection {
+  sessionId: string
+  text: string
+  lineCount: number
+}
+
+const TERMINAL_SELECTION_MAX_BYTES = 8 * 1024
+const TERMINAL_SELECTION_TTL_MS = 2 * 60 * 1000
+
 function generateId(): string {
   return crypto.randomUUID()
 }
@@ -20,6 +29,38 @@ export const useSessionStore = defineStore('session', () => {
   const loading = ref(false)
   const error = ref<string | null>(null)
   const terminalReadyResolvers = new Map<string, () => void>()
+  const terminalSelections = new Map<string, TerminalSelection>()
+  const terminalSelectionTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+  function clearTerminalSelection(sessionId: string) {
+    const timer = terminalSelectionTimers.get(sessionId)
+    if (timer) clearTimeout(timer)
+    terminalSelectionTimers.delete(sessionId)
+    terminalSelections.delete(sessionId)
+  }
+
+  function rememberTerminalSelection(sessionId: string, text: string) {
+    clearTerminalSelection(sessionId)
+    if (!text || new TextEncoder().encode(text).byteLength > TERMINAL_SELECTION_MAX_BYTES) return
+
+    const selection = {
+      sessionId,
+      text,
+      lineCount: text.split(/\r?\n/).length,
+    }
+    terminalSelections.set(sessionId, selection)
+    terminalSelectionTimers.set(sessionId, setTimeout(
+      () => clearTerminalSelection(sessionId),
+      TERMINAL_SELECTION_TTL_MS,
+    ))
+  }
+
+  function consumeTerminalSelection(sessionId: string, text: string): TerminalSelection | null {
+    const selection = terminalSelections.get(sessionId)
+    if (!selection || selection.text !== text) return null
+    clearTerminalSelection(sessionId)
+    return selection
+  }
 
   const activeTab = computed(() =>
     tabs.value.find((t) => t.sessionId === activeTabId.value) ?? null,
@@ -70,6 +111,7 @@ export const useSessionStore = defineStore('session', () => {
     error.value = null
     try {
       await invoke('disconnect_ssh', { sessionId })
+      clearTerminalSelection(sessionId)
       const idx = tabs.value.findIndex((t) => t.sessionId === sessionId)
       if (idx !== -1) tabs.value.splice(idx, 1)
       if (activeTabId.value === sessionId) {
@@ -141,6 +183,9 @@ export const useSessionStore = defineStore('session', () => {
     disconnect,
     closeTab,
     notifyTerminalReady,
+    rememberTerminalSelection,
+    consumeTerminalSelection,
+    clearTerminalSelection,
     setActiveTab,
     loadSessions,
     writeData,

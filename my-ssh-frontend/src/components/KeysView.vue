@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { KeyRound } from '@lucide/vue'
+import EntityCard from './EntityCard.vue'
 import {
   NButton,
   NEmpty,
@@ -118,7 +120,7 @@ async function handleDelete(id: string) {
   <div class="keys-view">
     <div class="keys-header">
       <h2>密钥管理</h2>
-      <n-button type="primary" size="small" @click="openCreate">
+      <n-button type="primary" @click="openCreate">
         <template #icon>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <line x1="12" y1="5" x2="12" y2="19"/>
@@ -136,40 +138,34 @@ async function handleDelete(id: string) {
     </n-empty>
 
     <div v-else class="keys-grid">
-      <div
+      <EntityCard
         v-for="key in vaultStore.sshKeys"
         :key="key.id"
-        class="key-card"
+        :icon="KeyRound"
+        :color="key.key_type === 'key' ? '#f59e0b' : '#22c55e'"
+        :title="key.name"
+        :subtitle="key.key_type === 'key' ? 'SSH 私钥' : 'SSH 证书'"
       >
-        <div class="key-icon" :class="key.key_type">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
-          </svg>
-        </div>
-        <div class="key-info">
-          <div class="key-name">{{ key.name }}</div>
-          <div class="key-type">{{ key.key_type === 'key' ? 'SSH 私钥' : 'SSH 证书' }}</div>
-        </div>
-        <div class="key-actions">
-          <n-button class="key-action-edit" size="tiny" quaternary @click="openEdit(key)">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <template #actions>
+          <n-button size="tiny" quaternary title="编辑密钥" aria-label="编辑密钥" @click="openEdit(key)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
               <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
             </svg>
           </n-button>
           <n-popconfirm @positive-click="handleDelete(key.id)">
             <template #trigger>
-              <n-button class="key-action-delete" size="tiny" quaternary type="error">
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <n-button size="tiny" quaternary type="error" title="删除密钥" aria-label="删除密钥">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <polyline points="3 6 5 6 21 6"/>
-                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2 2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
                 </svg>
               </n-button>
             </template>
             确定删除 "{{ key.name }}"？
           </n-popconfirm>
-        </div>
-      </div>
+        </template>
+      </EntityCard>
     </div>
 
     <!-- Add/edit key modal -->
@@ -197,7 +193,7 @@ async function handleDelete(id: string) {
           <n-input
             v-model:value="form.cert_data"
             type="textarea"
-            :placeholder="editingKey ? '留空则保持原证书不变' : '粘贴 SSH 证书内容 (-----BEGIN SSH CERTIFICATE-----)'"
+            :placeholder="editingKey ? '留空则保持原证书不变' : '粘贴 OpenSSH 用户证书（ssh-ed25519-cert-v01@openssh.com ...）'"
             :rows="6"
           />
         </n-form-item>
@@ -217,7 +213,7 @@ async function handleDelete(id: string) {
 
 <style scoped>
 .keys-view {
-  padding: 24px 32px;
+  min-width: 0;
 }
 
 .keys-header {
@@ -236,74 +232,22 @@ async function handleDelete(id: string) {
 
 .keys-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 8px;
 }
 
-.key-card {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 14px 16px;
-  background: var(--app-surface);
-  border: 1px solid var(--app-border);
-  border-radius: 12px;
-  transition: all 0.2s;
-}
-
-.key-card:hover {
-  background: var(--app-elevated);
-  border-color: var(--app-border);
-}
-
-.key-icon {
-  width: 42px;
-  height: 42px;
-  border-radius: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  color: #fff;
-}
-
-.key-icon.key {
-  background: linear-gradient(135deg, #f9e2af, #fab387);
-}
-
-.key-icon.certificate {
-  background: linear-gradient(135deg, #a6e3a1, #94e2d5);
-}
-
-.key-info {
-  flex: 1;
-  min-width: 0;
-}
-
-.key-name {
-  font-size: 14px;
-  font-weight: 500;
-  color: var(--app-text);
-  margin-bottom: 2px;
-}
-
-.key-type {
-  font-size: 12px;
+:deep(.entity-actions .n-button) {
+  width: 22px;
+  height: 22px;
+  padding: 0;
   color: var(--app-muted);
 }
 
-.key-actions {
-  display: flex;
-  gap: 2px;
-  opacity: 0.4;
-  transition: opacity 0.15s;
-}
+:deep(.entity-actions .n-button .n-button__icon) { margin: 0; }
+:deep(.entity-actions .n-button:hover) { color: var(--app-text); }
+:deep(.entity-actions .n-button--error-type:hover) { color: #ef4444; }
 
-.key-card:hover .key-actions {
-  opacity: 1;
+@media (max-width: 760px) {
+  .keys-grid { grid-template-columns: minmax(0, 1fr); }
 }
-
-.key-action-edit { color: var(--app-muted); }
-.key-action-edit:hover { color: var(--app-text); }
-.key-action-delete { color: #d9485f; }
 </style>

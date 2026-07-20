@@ -9,6 +9,10 @@ export interface SshProfileView {
   auth_type: AuthType
   key_id?: string
   group_name: string | null
+  icon: string | null
+  color: string | null
+  os: string | null
+  location: string | null
   created_at: string
   updated_at: string
 }
@@ -22,6 +26,8 @@ export interface CreateProfileRequest {
   credential?: string
   key_id?: string
   group_name?: string
+  icon?: string
+  color?: string
 }
 
 export interface UpdateProfileRequest {
@@ -34,6 +40,8 @@ export interface UpdateProfileRequest {
   private_key?: string
   cert_data?: string
   group_name?: string
+  icon?: string
+  color?: string
 }
 
 export interface SessionInfo {

@@ -216,11 +216,15 @@ impl Handler for SshClientHandler {
 
     async fn exit_status(
         &mut self,
-        _channel: ChannelId,
+        channel: ChannelId,
         exit_status: u32,
         _session: &mut client::Session,
     ) -> Result<(), SshError> {
-        log::info!("SSH session exited with status: {}", exit_status);
+        log::debug!(
+            "SSH channel {:?} exited with status: {}",
+            channel,
+            exit_status
+        );
         Ok(())
     }
 }

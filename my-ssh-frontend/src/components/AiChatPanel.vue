@@ -8,13 +8,18 @@ import { marked } from 'marked'
 import { NDropdown, NNumberAnimation, type DropdownOption } from 'naive-ui'
 import { AlertCircle, ArrowUp, CheckCircle2, ChevronDown, Command, Download, History, LoaderCircle, Plus, Sparkles, X, XCircle } from '@lucide/vue'
 import { useAiStore, type AiActionRecord } from '../stores/ai'
-import type { AiActionResult, AiExecutableDecision, AiExecutableGrant, AiExecutionMode, AiPendingAction, AiStreamEvent, AiTaskStarted, StartAiTaskInput } from '../types/ai'
+import { useSessionStore } from '../stores/session'
+import type { AiActionResult, AiExecutableDecision, AiExecutableGrant, AiExecutionMode, AiImageInput, AiPendingAction, AiStreamEvent, AiTaskStarted, AiTerminalSelection, StartAiTaskInput } from '../types/ai'
 
 const props = defineProps<{ sessionId: string }>()
-const emit = defineEmits<{ close: [] }>()
+const emit = defineEmits<{ close: []; openAiSettings: [] }>()
 
 const aiStore = useAiStore()
+const sessionStore = useSessionStore()
 const draft = ref('')
+const pendingImages = ref<AiImageInput[]>([])
+const pendingTerminalSelection = ref<AiTerminalSelection | null>(null)
+const previewImage = ref<AiImageInput | null>(null)
 const messages = computed({
   get: () => aiStore.getConversation(props.sessionId),
   set: (value) => aiStore.setConversation(props.sessionId, value),
@@ -62,6 +67,20 @@ const executionModeOptions = computed<DropdownOption[]>(() =>
     })),
 )
 const currentExecutionMode = computed(() => executionModeDetails[executionMode.value])
+const modelOptions = computed<DropdownOption[]>(() =>
+  (aiStore.config.models ?? []).map((model) => ({
+    key: model.id,
+    type: 'render',
+    render: () => h('button', {
+      type: 'button',
+      class: ['model-option', { selected: activeModel.value?.id === model.id }],
+      onClick: () => selectModel(model.id),
+    }, [
+      h('span', { class: 'model-option-name' }, model.name),
+      h('span', { class: 'model-option-meta' }, model.protocol === 'responses' ? 'Responses API' : 'Chat Completions'),
+    ]),
+  })),
+)
 const requestId = ref<string | null>(null)
 const taskError = ref<string | null>(null)
 const pendingActionPlan = ref<string | null>(null)
@@ -88,10 +107,13 @@ const bodyRef = ref<HTMLElement | null>(null)
 const shouldFollowOutput = ref(true)
 const showHistory = ref(false)
 const showAgentMenu = ref(false)
+const showModelMenu = ref(false)
 
 const conversationHistory = computed(() => aiStore.getConversationHistory(props.sessionId))
 const selectedAgent = computed(() => aiStore.agents.find((agent) => agent.id === aiStore.selectedAgentId) ?? null)
-const canSend = computed(() => Boolean(draft.value.trim()) && aiStore.config.configured && selectedAgent.value)
+const activeModel = computed(() => aiStore.config.models?.find((model) => model.id === aiStore.config.activeModelId) ?? null)
+const activeModelLabel = computed(() => activeModel.value?.name ?? aiStore.config.model ?? '未配置模型')
+const canSend = computed(() => Boolean(draft.value.trim() || pendingImages.value.length || pendingTerminalSelection.value) && aiStore.config.configured && selectedAgent.value && activeModel.value)
 const isWaitingForResponse = computed(() =>
   Boolean(requestId.value) && messages.value.at(-1)?.role !== 'assistant',
 )
@@ -102,6 +124,29 @@ const taskResponseMessage = computed(() => messages.value.find(
   (message) => message.id === taskResponseMessageId.value,
 ) ?? null)
 const taskErrorMessage = computed(() => taskError.value)
+
+async function selectModel(modelId: string) {
+  const model = aiStore.config.models?.find((item) => item.id === modelId)
+  if (!model || model.id === aiStore.config.activeModelId || aiStore.loading) {
+    showModelMenu.value = false
+    return
+  }
+
+  try {
+    await aiStore.saveConfig({
+      baseUrl: aiStore.config.baseUrl ?? '',
+      apiKey: '',
+      model: model.name,
+      models: aiStore.config.models ?? [],
+      activeModelId: model.id,
+      timeoutSeconds: aiStore.config.timeoutSeconds ?? 60,
+    })
+  } catch {
+    // The store retains the provider error for the existing request-error surface.
+  } finally {
+    showModelMenu.value = false
+  }
+}
 const autoRetryStatus = computed(() => {
   const status = taskStatus.value
   const marker = '可点击停止取消'
@@ -220,9 +265,16 @@ function toggleActionDetails(bubble: ActionBubble) {
 
 async function sendMessage() {
   const content = draft.value.trim()
-  if (!content || !aiStore.config.configured || !selectedAgent.value || requestId.value) return
-  await startTask(content, executionMode.value)
+  const terminalSelection = pendingTerminalSelection.value
+  if ((!content && !pendingImages.value.length && !terminalSelection) || !aiStore.config.configured || !selectedAgent.value || requestId.value) return
+  if (pendingImages.value.length && !activeModel.value?.supportsImages) {
+    taskError.value = '当前模型未启用图片输入，请在模型配置中开启后重试'
+    return
+  }
+  await startTask(content || '请分析以下终端选区。', executionMode.value, pendingImages.value, terminalSelection ? [terminalSelection] : [])
   draft.value = ''
+  pendingImages.value = []
+  pendingTerminalSelection.value = null
 }
 
 async function retryAiRequest() {
@@ -235,8 +287,25 @@ async function retryAiRequest() {
   await startTask(content, mode)
 }
 
-async function startTask(content: string, mode: AiExecutionMode) {
-  const userMessage = { id: crypto.randomUUID(), role: 'user' as const, content }
+function terminalSelectionContext(selections: AiTerminalSelection[]) {
+  return selections.map((selection) => `\n\n[Terminal selection, ${selection.lineCount} lines]\n\`\`\`terminal\n${selection.text}\n\`\`\``).join('')
+}
+
+function messageForRequest(message: { role: 'user' | 'assistant'; content: string; images?: AiImageInput[]; terminalSelections?: AiTerminalSelection[] }) {
+  return {
+    role: message.role,
+    content: `${message.content}${terminalSelectionContext(message.terminalSelections ?? [])}`,
+    images: message.images,
+  }
+}
+
+async function startTask(
+  content: string,
+  mode: AiExecutionMode,
+  images: AiImageInput[] = [],
+  terminalSelections: AiTerminalSelection[] = [],
+) {
+  const userMessage = { id: crypto.randomUUID(), role: 'user' as const, content, images, terminalSelections }
   const conversation = [...messages.value, userMessage]
   messages.value = conversation
   shouldFollowOutput.value = true
@@ -363,17 +432,19 @@ async function startTask(content: string, mode: AiExecutionMode) {
     sessionId: props.sessionId,
     conversationId: 'current',
     agentId: selectedAgent.value?.id,
+    model: activeModel.value?.id,
     messages: [
-      ...conversation.slice(0, -1).map(({ role, content }) => ({ role, content })),
+      ...conversation.slice(0, -1).map(messageForRequest),
       ...([actionEvidenceMessage(actionHistory.value)].filter((content): content is string => Boolean(content))
         .map((content) => ({ role: 'user' as const, content }))),
-      ...conversation.slice(-1).map(({ role, content }) => ({ role, content })),
+      ...conversation.slice(-1).map(({ role, content, images }) => ({ role, content, images })),
     ],
     executionMode: mode,
     scopes: mode === 'read_only'
       ? ['read_only_diagnostics']
       : ['command_execution'],
-    includeTerminalContext: false,
+    includeTerminalContext: terminalSelections.length > 0,
+    terminalContext: terminalSelections.map((selection) => selection.text).join('\n'),
   }
 
   try {
@@ -468,6 +539,8 @@ function startNewConversation() {
   showHistory.value = false
   taskError.value = null
   draft.value = ''
+  pendingImages.value = []
+  pendingTerminalSelection.value = null
   shouldFollowOutput.value = true
 }
 
@@ -496,18 +569,60 @@ function appendToDraft(text: string) {
 
 async function handlePaste(event: ClipboardEvent) {
   event.preventDefault()
-  const text = event.clipboardData?.getData('text/plain')
-
-  try {
-    appendToDraft(text || await readText())
-  } catch (error) {
-    taskError.value = `读取剪贴板失败：${String(error)}`
+  const image = Array.from(event.clipboardData?.files ?? []).find((file) => file.type.startsWith('image/'))
+  if (image) {
+    if (!activeModel.value?.supportsImages) {
+      taskError.value = '当前模型未启用图片输入，请在模型配置中开启后重试'
+      return
+    }
+    if (image.size > 6 * 1024 * 1024) {
+      taskError.value = '图片不能超过 6 MiB'
+      return
+    }
+    const dataUrl = await readImageDataUrl(image)
+    pendingImages.value = [...pendingImages.value, { dataUrl, name: image.name || 'image.png' }].slice(0, 4)
+    taskError.value = null
+    return
   }
+
+  const text = event.clipboardData?.getData('text/plain')
+  if (text) addPastedText(text)
+}
+
+function addPastedText(text: string) {
+  const selection = sessionStore.consumeTerminalSelection(props.sessionId, text)
+  if (selection) {
+    pendingTerminalSelection.value = { text: selection.text, lineCount: selection.lineCount }
+    taskError.value = null
+    return
+  }
+  appendToDraft(text)
+}
+
+function removePendingTerminalSelection() {
+  pendingTerminalSelection.value = null
+}
+
+function readImageDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(reader.error)
+    reader.onload = () => resolve(String(reader.result))
+    reader.readAsDataURL(file)
+  })
+}
+
+function removePendingImage(index: number) {
+  pendingImages.value.splice(index, 1)
+}
+
+function openImagePreview(image: AiImageInput) {
+  previewImage.value = image
 }
 
 async function pasteClipboardIntoDraft() {
   try {
-    appendToDraft(await readText())
+    addPastedText(await readText())
   } catch (error) {
     taskError.value = `读取剪贴板失败：${String(error)}`
   }
@@ -570,7 +685,7 @@ onBeforeUnmount(() => {
         <template v-for="message in timelineMessages" :key="message.id">
           <article class="message" :class="message.role">
             <div v-if="message.role === 'assistant'" class="message-content" v-html="renderMarkdown(message.content)" />
-            <div v-else class="message-content">{{ message.content }}</div>
+            <div v-else class="message-content"><div v-if="message.content">{{ message.content }}</div><div v-if="message.terminalSelections?.length" class="message-terminal-selections"><span v-for="selection in message.terminalSelections" :key="selection.text" class="terminal-selection-chip">终端选区 · {{ selection.lineCount }} 行</span></div><div v-if="message.images?.length" class="message-images"><img v-for="image in message.images" :key="image.dataUrl" :src="image.dataUrl" :alt="image.name" /></div></div>
           </article>
           <section v-for="bubble in completedActionsByMessage.get(message.id) ?? []" :key="bubble.action.actionId" class="ai-action-card" :class="[bubble.status, { collapsed: bubble.collapsed }]">
           <button
@@ -718,12 +833,43 @@ onBeforeUnmount(() => {
 
     <form class="ai-composer" @submit.prevent="sendMessage">
       <div class="composer-input-wrap">
+        <div v-if="pendingImages.length || pendingTerminalSelection" class="image-attachments">
+          <div v-if="pendingTerminalSelection" class="terminal-selection-attachment">
+            <span>终端选区 · {{ pendingTerminalSelection.lineCount }} 行</span>
+            <button type="button" class="remove-image-button" title="移除终端选区" aria-label="移除终端选区" @click="removePendingTerminalSelection"><X :size="10" /></button>
+          </div>
+          <div v-for="(image, index) in pendingImages" :key="image.dataUrl" class="image-attachment">
+            <button type="button" class="image-thumbnail" :title="`预览 ${image.name}`" @click="openImagePreview(image)"><img :src="image.dataUrl" :alt="image.name" /></button>
+            <button type="button" class="remove-image-button" title="移除图片" aria-label="移除图片" @click="removePendingImage(index)"><X :size="10" /></button>
+          </div>
+        </div>
         <textarea v-model="draft" :placeholder="`向 ${selectedAgent?.name ?? 'Agent'} 发送消息`" rows="3" @keydown.enter.exact.prevent="sendMessage" @paste="handlePaste" />
       </div>
       <footer class="composer-footer">
         <div class="composer-options">
           <button type="button" title="从剪贴板添加上下文" @click="pasteClipboardIntoDraft"><Plus :size="16" /></button>
-          <span class="model-selector" :title="aiStore.config.model ?? '未配置模型'"><span class="model-dot">AI</span><span>{{ aiStore.config.model ?? '未配置模型' }}</span></span>
+          <button
+            v-if="!activeModel"
+            type="button"
+            class="model-selector"
+            title="配置 AI 模型"
+            aria-label="配置 AI 模型"
+            @click="emit('openAiSettings')"
+          >
+            <span class="model-dot">AI</span><span>{{ activeModelLabel }}</span>
+          </button>
+          <n-dropdown
+            v-else
+            v-model:show="showModelMenu"
+            trigger="click"
+            placement="top-start"
+            :options="modelOptions"
+            :disabled="(aiStore.config.models?.length ?? 0) < 2 || Boolean(requestId)"
+          >
+            <button type="button" class="model-selector" :title="activeModelLabel" aria-label="选择 AI 模型">
+              <span class="model-dot">AI</span><span>{{ activeModelLabel }}</span><ChevronDown v-if="(aiStore.config.models?.length ?? 0) > 1" :size="12" />
+            </button>
+          </n-dropdown>
           <n-dropdown
             v-model:show="showExecutionModeMenu"
             trigger="click"
@@ -747,6 +893,13 @@ onBeforeUnmount(() => {
         <button v-else class="send-button" :disabled="!canSend" title="发送"><ArrowUp :size="17" /></button>
       </footer>
     </form>
+
+    <div v-if="previewImage" class="image-preview-backdrop" role="dialog" aria-modal="true" :aria-label="`预览 ${previewImage.name}`" @click.self="previewImage = null">
+      <div class="image-preview-dialog">
+        <img :src="previewImage.dataUrl" :alt="previewImage.name" />
+        <button type="button" title="关闭预览" aria-label="关闭预览" @click="previewImage = null"><X :size="18" /></button>
+      </div>
+    </div>
   </section>
 </template>
 
@@ -755,19 +908,22 @@ onBeforeUnmount(() => {
 .ai-header { display: flex; align-items: center; justify-content: space-between; min-height: 47px; padding: 0 11px 0 14px; border-bottom: 1px solid #292f3d; }.agent-selector, .header-actions button, .section-heading button, .recent-item, .composer-options button, .expand-button, .send-button { border: 0; background: transparent; color: inherit; cursor: pointer; }.agent-selector { display: flex; align-items: center; gap: 7px; padding: 5px 2px; color: #c4d2e8; }.agent-selector svg:first-child { color: #b9c5d9; }.agent-selector strong { font-size: 12px; font-weight: 600; }.agent-selector svg:last-child { color: #647086; }.header-actions { display: flex; align-items: center; gap: 3px; }.header-actions button { display: grid; place-items: center; width: 25px; height: 25px; border-radius: 4px; color: #657185; }.header-actions button:hover { background: #252c3a; color: #b8c5d9; }.header-actions .close-button:hover { background: #a94a5c; color: #fff; }
 .ai-body { position: relative; display: flex; flex: 1; flex-direction: column; min-height: 0; overflow: auto; }.ai-empty-state { display: grid; flex: 1; place-items: center; padding: 32px 22px 10px; }.ai-empty-state p { margin: 0; color: #647087; text-align: center; line-height: 1.6; }.ai-messages { display: flex; flex: 1; flex-direction: column; gap: 10px; padding: 16px; }.message { align-self: flex-end; max-width: 88%; }.message-content { padding: 8px 10px; border-radius: 7px; background: #2a3344; color: #d5deed; line-height: 1.55; overflow-wrap: anywhere; }.message-content :deep(p) { margin: 0 0 8px; }.message-content :deep(p:last-child) { margin-bottom: 0; }.message-content :deep(h1), .message-content :deep(h2), .message-content :deep(h3), .message-content :deep(h4) { margin: 13px 0 6px; color: #edf3ff; line-height: 1.35; }.message-content :deep(h1) { font-size: 16px; }.message-content :deep(h2) { font-size: 14px; }.message-content :deep(h3), .message-content :deep(h4) { font-size: 12px; }.message-content :deep(ul), .message-content :deep(ol) { margin: 6px 0; padding-left: 19px; }.message-content :deep(li + li) { margin-top: 3px; }.message-content :deep(code) { padding: 1px 4px; border-radius: 3px; background: #151b27; color: #b9d7ff; font-family: "Cascadia Code", "Fira Code", Consolas, monospace; font-size: .92em; }.message-content :deep(pre) { margin: 8px 0; padding: 9px 10px; overflow-x: auto; border: 1px solid #3a465c; border-radius: 5px; background: #111722; }.message-content :deep(pre code) { padding: 0; background: transparent; color: #d9e4f5; font-size: 11px; white-space: pre; }.message-content :deep(a) { color: #8db8ff; text-decoration: none; }.message-content :deep(a:hover) { text-decoration: underline; }.message-content :deep(blockquote) { margin: 7px 0; padding-left: 8px; border-left: 3px solid #6388c4; color: #afbed2; }.thinking-indicator { display: flex; align-items: center; align-self: flex-start; gap: 4px; padding: 3px 0; color: #8c9ab0; }.thinking-label { margin-left: 4px; font-size: 11px; }.service-hint { margin: 0; color: #e4b85d; font-size: 11px; text-align: center; }
 .recent-section { padding: 0 16px 13px; }.section-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; color: #667287; font-size: 11px; }.section-heading button { padding: 2px 0; color: #67758b; font-size: 11px; }.section-heading button:hover { color: #a9b8ce; }.recent-item { display: flex; align-items: center; justify-content: space-between; width: 100%; height: 31px; padding: 0; color: #aab9d1; text-align: left; }.recent-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.recent-item time { flex: 0 0 auto; padding-left: 10px; color: #5f6b80; font-size: 10px; }.recent-item:hover span { color: #d1dded; }
-.ai-composer { flex: 0 0 auto; margin: 0 15px 15px; overflow: hidden; border: 1px solid #30394a; border-radius: 7px; background: #1a202c; box-shadow: 0 5px 18px rgba(0, 0, 0, .16); }.composer-input-wrap { position: relative; }.composer-input-wrap textarea { display: block; box-sizing: border-box; width: 100%; min-height: 63px; resize: none; padding: 11px 36px 7px 12px; border: 0; outline: none; background: transparent; color: #d7dfed; font: inherit; line-height: 1.5; }.composer-input-wrap textarea::placeholder { color: #66738a; }.expand-button { position: absolute; right: 8px; top: 8px; display: grid; place-items: center; width: 20px; height: 20px; color: #6e7a8e; }.expand-button:hover { color: #adbcd0; }.composer-footer { display: flex; align-items: center; justify-content: space-between; min-height: 39px; padding: 0 7px 5px 9px; }.composer-options { display: flex; align-items: center; min-width: 0; gap: 7px; }.composer-options > button { display: inline-flex; align-items: center; gap: 4px; height: 25px; padding: 0; color: #9aa9bf; font-size: 10px; white-space: nowrap; }.composer-options > button:hover { color: #d1dbea; }.model-selector { max-width: 160px; }.model-selector > span:not(.model-dot) { overflow: hidden; text-overflow: ellipsis; }.model-dot { display: grid; width: 16px; height: 16px; place-items: center; border-radius: 50%; background: #f98a1d; color: #fff; font-size: 7px; font-weight: 700; }.auto-mode { color: #9abef2 !important; }.auto-mode svg:first-child { color: #5bd8aa; }.send-button { display: grid; flex: 0 0 auto; place-items: center; width: 31px; height: 31px; border-radius: 50%; background: #323b4e; color: #c8d4e7; }.send-button:not(:disabled):hover { background: #78a6ff; color: #172033; }.send-button:disabled { cursor: default; opacity: .52; }
-.test-connection-button { margin-top: 12px; padding: 7px 12px; border: 0; border-radius: 4px; background: #557fca; color: #fff; cursor: pointer; }.test-connection-button:disabled { cursor: default; opacity: .55; }.connection-test-result { margin-top: 8px !important; font-size: 11px; }.connection-test-result.success { color: #5bd8aa; }.connection-test-result.authentication_failed, .connection-test-result.model_unavailable, .connection-test-result.rate_limited, .connection-test-result.service_unavailable, .connection-test-result.timeout, .connection-test-result.network_error { color: #e4b85d; }
-.model-selector { display: inline-flex; align-items: center; gap: 5px; width: min(160px, 100%); min-width: 0; height: 25px; color: #9aa9bf; font-size: 10px; white-space: nowrap; }
-.model-selector > span:not(.model-dot) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.model-dot { flex: 0 0 16px; }
+.ai-composer { flex: 0 0 auto; margin: 0 15px 15px; overflow: hidden; border: 1px solid #30394a; border-radius: 7px; background: #1a202c; box-shadow: 0 5px 18px rgba(0, 0, 0, .16); }.composer-input-wrap { position: relative; }.composer-input-wrap textarea { display: block; box-sizing: border-box; width: 100%; min-height: 63px; resize: none; padding: 11px 36px 7px 12px; border: 0; outline: none; background: transparent; color: #d7dfed; font: inherit; line-height: 1.5; }.composer-input-wrap textarea::placeholder { color: #66738a; }.expand-button { position: absolute; right: 8px; top: 8px; display: grid; place-items: center; width: 20px; height: 20px; color: #6e7a8e; }.expand-button:hover { color: #adbcd0; }.composer-footer { display: flex; align-items: flex-end; justify-content: space-between; min-height: 39px; padding: 0 7px 5px 9px; }.composer-options { display: flex; align-items: flex-end; height: 25px; min-width: 0; gap: 7px; }.composer-options > button { display: inline-flex; align-items: center; gap: 4px; height: 25px; padding: 0; color: #9aa9bf; font-size: 10px; white-space: nowrap; }.composer-options > button:hover { color: #d1dbea; }.model-selector { max-width: 160px; }.model-selector > span:not(.model-dot) { overflow: hidden; text-overflow: ellipsis; }.model-dot { display: grid; width: 16px; height: 16px; place-items: center; border-radius: 50%; background: #f98a1d; color: #fff; font-size: 7px; font-weight: 700; }.auto-mode { color: #9abef2 !important; }.auto-mode svg:first-child { color: #5bd8aa; }.send-button { display: grid; flex: 0 0 auto; place-items: center; width: 31px; height: 31px; border-radius: 50%; background: #323b4e; color: #c8d4e7; }.send-button:not(:disabled):hover { background: #78a6ff; color: #172033; }.send-button:disabled { cursor: default; opacity: .52; }
+.model-selector { display: inline-flex; align-items: center; gap: 5px; width: min(160px, 100%); min-width: 0; height: 25px; padding: 0; color: #9aa9bf; font-size: 10px; white-space: nowrap; }.model-selector:not(:disabled):hover { color: #d1dbea; }.model-selector:disabled { cursor: default; }.model-selector > span:not(.model-dot) { min-width: 0; overflow: hidden; text-overflow: ellipsis; }.model-dot { flex: 0 0 16px; }
 
-.message { position: relative; align-self: center; width: min(88%, 720px); max-width: none; }
+.test-connection-button { margin-top: 12px; padding: 7px 12px; border: 0; border-radius: 4px; background: #557fca; color: #fff; cursor: pointer; }.test-connection-button:disabled { cursor: default; opacity: .55; }.connection-test-result { margin-top: 8px !important; font-size: 11px; }.connection-test-result.success { color: #5bd8aa; }.connection-test-result.authentication_failed, .connection-test-result.model_unavailable, .connection-test-result.rate_limited, .connection-test-result.service_unavailable, .connection-test-result.timeout, .connection-test-result.network_error { color: #e4b85d; }
+
+.message { position: relative; align-self: center; width: min(94%, 720px); max-width: none; }
 .message .message-content { width: 100%; box-sizing: border-box; }
 .message.assistant .message-content, .message.user .message-content { background: #2a3344; }
 .message::before { position: absolute; top: 8px; z-index: 1; width: 12px; height: 12px; background: #2a3344; content: ''; transform: rotate(45deg); }
 .message.assistant::before { left: -5px; }
 .message.user::before { right: -5px; }
 .message.user .message-content { white-space: pre-wrap; }
+.message-images, .message-terminal-selections { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 7px; }
+.terminal-selection-chip, .terminal-selection-attachment { display: inline-flex; align-items: center; min-height: 22px; border: 1px solid var(--app-border); border-radius: 4px; background: var(--app-code); color: var(--app-muted); font-size: 10px; }
+.terminal-selection-chip { padding: 0 7px; }
+.message-images img { max-width: min(240px, 100%); max-height: 180px; border-radius: 4px; object-fit: contain; }
 
 .conversation-history { flex: 1; padding: 16px; overflow: auto; }
 .history-empty { margin: 20px 0; color: #68758a; text-align: center; }
@@ -895,10 +1051,54 @@ onBeforeUnmount(() => {
 .execution-mode { border-color: var(--app-border); background: var(--app-hover); color: var(--app-text); }
 .execution-mode svg:last-child { color: var(--app-muted); }
 .task-error-card { border-color: #b45309; background: color-mix(in srgb, #f59e0b 12%, var(--app-panel)); }
+.image-attachments { display: flex; max-width: 100%; gap: 5px; overflow-x: auto; padding: 7px 10px 0; }
+.image-attachment { position: relative; flex: 0 0 32px; width: 32px; height: 32px; }
+.terminal-selection-attachment { position: relative; flex: 0 0 auto; min-height: 32px; padding: 0 24px 0 8px; }
+.image-thumbnail { display: block; width: 32px; height: 32px; padding: 0; overflow: hidden; border: 1px solid var(--app-border); border-radius: 4px; background: var(--app-code); cursor: pointer; }
+.image-thumbnail:hover { border-color: var(--app-accent); }
+.image-thumbnail img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.remove-image-button { position: absolute; top: -5px; right: -5px; display: grid; place-items: center; width: 15px; height: 15px; padding: 0; border: 1px solid var(--app-border); border-radius: 50%; background: var(--app-panel); color: var(--app-muted); cursor: pointer; }
+.remove-image-button:hover { border-color: var(--app-accent); color: var(--app-text); }
+.image-preview-backdrop { position: fixed; z-index: 1000; inset: 0; display: grid; place-items: center; padding: 24px; background: rgba(0, 0, 0, .68); }
+.image-preview-dialog { position: relative; display: grid; max-width: min(900px, 100%); max-height: 100%; padding: 10px; border: 1px solid var(--app-border); border-radius: 6px; background: var(--app-panel); box-shadow: 0 16px 48px var(--app-shadow); }
+.image-preview-dialog img { max-width: 100%; max-height: calc(100vh - 68px); object-fit: contain; }
+.image-preview-dialog button { position: absolute; top: 16px; right: 16px; display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 1px solid var(--app-border); border-radius: 4px; background: var(--app-panel); color: var(--app-text); cursor: pointer; }
+.image-preview-dialog button:hover { background: var(--app-hover); }
 </style>
 
 <style>
+.model-option {
+  display: flex;
+  width: calc(100% - 8px);
+  min-width: 190px;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 4px;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--n-text-color);
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
 
+.model-option:hover, .model-option.selected {
+  background: var(--n-option-color-pending);
+}
+
+.model-option-name {
+  color: var(--n-text-color);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.model-option-meta {
+  color: var(--n-text-color-3);
+  font-size: 9px;
+  line-height: 1.35;
+}
 
 .execution-mode-option {
   display: block;

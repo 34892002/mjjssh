@@ -36,9 +36,18 @@ pub enum ExecutionScope {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AiImageInput {
+    pub data_url: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AiChatMessage {
     pub role: AiMessageRole,
     pub content: String,
+    #[serde(default)]
+    pub images: Vec<AiImageInput>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -55,6 +64,7 @@ pub struct StartAiTaskInput {
     pub session_id: String,
     pub conversation_id: String,
     pub agent_id: Option<String>,
+    pub model: Option<String>,
     pub messages: Vec<AiChatMessage>,
     pub execution_mode: ExecutionMode,
     pub scopes: Vec<ExecutionScope>,

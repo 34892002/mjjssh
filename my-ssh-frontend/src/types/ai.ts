@@ -1,10 +1,29 @@
 export type AiExecutionMode = 'read_only' | 'approval_required' | 'autonomous'
 
+export type AiModelProtocol = 'chat_completions' | 'responses'
+
+export interface AiModelConfig {
+  id: string
+  name: string
+  maxContextTokens: number
+  maxOutputTokens: number
+  supportsTools: boolean
+  supportsImages: boolean
+  supportsParallelToolCalls: boolean
+  supportsPromptCaching: boolean
+  supportsReasoning: boolean
+  protocol: AiModelProtocol
+  reasoningEffort: string | null
+  promptCacheKey: string | null
+}
+
 export interface AiProviderConfigView {
   configured: boolean
   providerType: 'openai_compatible'
   baseUrl: string | null
   model: string | null
+  models?: AiModelConfig[]
+  activeModelId?: string | null
   timeoutSeconds: number | null
 }
 
@@ -26,12 +45,25 @@ export interface SaveAiProviderConfigRequest {
   baseUrl: string
   apiKey: string
   model: string
+  models: AiModelConfig[]
+  activeModelId: string | null
   timeoutSeconds: number
+}
+
+export interface AiImageInput {
+  dataUrl: string
+  name: string
+}
+
+export interface AiTerminalSelection {
+  text: string
+  lineCount: number
 }
 
 export interface AiChatMessage {
   role: 'user' | 'assistant'
   content: string
+  images?: AiImageInput[]
 }
 
 export interface AiAgentConfig {
@@ -54,6 +86,7 @@ export interface StartAiTaskInput {
   sessionId: string
   conversationId: string
   agentId?: string
+  model?: string
   messages: AiChatMessage[]
   executionMode: AiExecutionMode
   scopes: string[]

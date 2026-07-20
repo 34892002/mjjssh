@@ -659,7 +659,7 @@ pub fn validate_task_input(
 
     if messages
         .iter()
-        .any(|message| message.content.trim().is_empty())
+        .any(|message| message.content.trim().is_empty() && message.images.is_empty())
     {
         return Err(AiTaskError::InvalidInput("messages cannot be empty".into()));
     }
@@ -670,6 +670,16 @@ pub fn validate_task_input(
     {
         return Err(AiTaskError::InvalidInput(
             "a message exceeds the 8 KiB limit".into(),
+        ));
+    }
+    if messages.iter().any(|message| {
+        message.images.len() > 4
+            || message.images.iter().any(|image| {
+                !image.data_url.starts_with("data:image/") || image.data_url.len() > 8 * 1024 * 1024
+            })
+    }) {
+        return Err(AiTaskError::InvalidInput(
+            "a message may contain at most four images up to 6 MiB each".into(),
         ));
     }
 
@@ -849,6 +859,7 @@ mod tests {
         let messages = [super::super::models::AiChatMessage {
             role: super::super::models::AiMessageRole::User,
             content: "check disk usage".into(),
+            images: Vec::new(),
         }];
         assert!(validate_task_input(
             "current",
@@ -875,6 +886,7 @@ mod tests {
         let messages = [super::super::models::AiChatMessage {
             role: super::super::models::AiMessageRole::User,
             content: "inspect and repair the service".into(),
+            images: Vec::new(),
         }];
         assert!(validate_task_input(
             "current",
@@ -961,6 +973,7 @@ mod tests {
         let messages = [super::super::models::AiChatMessage {
             role: super::super::models::AiMessageRole::User,
             content: "check disk usage".into(),
+            images: Vec::new(),
         }];
         assert!(validate_task_input(
             "",

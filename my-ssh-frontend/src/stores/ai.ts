@@ -8,12 +8,16 @@ import type {
   AiProviderConfigView,
   SaveAiAgentConfigRequest,
   SaveAiProviderConfigRequest,
+  AiImageInput,
+  AiTerminalSelection,
 } from '../types/ai'
 
 export interface AiChatMessage {
   id: string
   role: 'user' | 'assistant'
   content: string
+  images?: AiImageInput[]
+  terminalSelections?: AiTerminalSelection[]
 }
 
 export interface AiActionRecord {
@@ -55,6 +59,8 @@ const unconfigured: AiProviderConfigView = {
   providerType: 'openai_compatible',
   baseUrl: null,
   model: null,
+  models: [],
+  activeModelId: null,
   timeoutSeconds: null,
 }
 
@@ -173,7 +179,25 @@ export const useAiStore = defineStore('ai', {
       this.loading = true
       this.error = null
       try {
-        this.config = await invoke<AiProviderConfigView>('get_ai_config_status')
+        const config = await invoke<AiProviderConfigView>('get_ai_config_status')
+        const models = config.models ?? (config.model
+          ? [{
+              id: config.model,
+              name: config.model,
+              maxContextTokens: 128000,
+              maxOutputTokens: 16384,
+              supportsTools: true,
+              supportsImages: false,
+              supportsParallelToolCalls: false,
+              supportsPromptCaching: false,
+              supportsReasoning: false,
+              protocol: 'chat_completions' as const,
+              reasoningEffort: null,
+              promptCacheKey: null,
+            }]
+          : [])
+        const activeModelId = config.activeModelId ?? models.find((model) => model.id === config.model)?.id ?? models[0]?.id ?? null
+        this.config = { ...config, models, activeModelId }
       } catch (error) {
         this.error = String(error)
       } finally {
@@ -193,10 +217,10 @@ export const useAiStore = defineStore('ai', {
         this.loading = false
       }
     },
-    async testConnection() {
+    async testConnection(model?: string) {
       this.error = null
       try {
-        return await invoke<AiConnectionTestResult>('test_ai_connection')
+        return await invoke<AiConnectionTestResult>('test_ai_connection', { model })
       } catch (error) {
         this.error = String(error)
         throw error

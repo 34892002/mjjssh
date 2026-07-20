@@ -35,6 +35,10 @@ pub struct SshProfile {
     pub cert_data: Option<Vec<u8>>,
     pub key_id: Option<String>,
     pub group_name: Option<String>,
+    pub icon: Option<String>,
+    pub color: Option<String>,
+    pub os: Option<String>,
+    pub location: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -49,6 +53,10 @@ pub struct CreateProfileRequest {
     pub credential: Option<String>,
     pub key_id: Option<String>,
     pub group_name: Option<String>,
+    pub icon: Option<String>,
+    pub color: Option<String>,
+    pub os: Option<String>,
+    pub location: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -61,6 +69,10 @@ pub struct UpdateProfileRequest {
     pub credential: Option<String>,
     pub key_id: Option<String>,
     pub group_name: Option<String>,
+    pub icon: Option<String>,
+    pub color: Option<String>,
+    pub os: Option<String>,
+    pub location: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +85,10 @@ pub struct SshProfileView {
     pub auth_type: AuthType,
     pub key_id: Option<String>,
     pub group_name: Option<String>,
+    pub icon: Option<String>,
+    pub color: Option<String>,
+    pub os: Option<String>,
+    pub location: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -88,10 +104,41 @@ impl From<&SshProfile> for SshProfileView {
             auth_type: p.auth_type.clone(),
             key_id: p.key_id.clone(),
             group_name: p.group_name.clone(),
+            icon: p.icon.clone(),
+            color: p.color.clone(),
+            os: p.os.clone(),
+            location: p.location.clone(),
             created_at: p.created_at.clone(),
             updated_at: p.updated_at.clone(),
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AiModelConfig {
+    pub id: String,
+    pub name: String,
+    pub max_context_tokens: Option<u32>,
+    pub max_output_tokens: Option<u32>,
+    #[serde(default)]
+    pub supports_tools: bool,
+    #[serde(default)]
+    pub supports_images: bool,
+    #[serde(default)]
+    pub supports_parallel_tool_calls: bool,
+    #[serde(default)]
+    pub supports_prompt_caching: bool,
+    #[serde(default)]
+    pub supports_reasoning: bool,
+    #[serde(default = "default_ai_model_protocol")]
+    pub protocol: String,
+    pub reasoning_effort: Option<String>,
+    pub prompt_cache_key: Option<String>,
+}
+
+fn default_ai_model_protocol() -> String {
+    "chat_completions".into()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -101,6 +148,10 @@ pub struct SaveAiProviderConfigRequest {
     pub api_key: String,
     pub model: String,
     pub timeout_seconds: u32,
+    #[serde(default)]
+    pub models: Vec<AiModelConfig>,
+    #[serde(default)]
+    pub active_model_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -111,12 +162,14 @@ pub struct AiProviderConfigView {
     pub base_url: Option<String>,
     pub model: Option<String>,
     pub timeout_seconds: Option<u32>,
+    pub models: Vec<AiModelConfig>,
+    pub active_model_id: Option<String>,
 }
 
 pub struct AiProviderConfigSecret {
     pub base_url: String,
     pub api_key: String,
-    pub model: String,
+    pub model: AiModelConfig,
     pub timeout_seconds: u32,
 }
 

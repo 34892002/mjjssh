@@ -15,7 +15,7 @@ use tokio_util::sync::CancellationToken;
 use crate::ai::models::{
     AiChatMessage, AiConnectionTestResult, AiConnectionTestStatus, AiMessageRole,
 };
-use crate::vault::AiProviderConfigSecret;
+use crate::vault::{AiModelConfig, AiProviderConfigSecret};
 
 pub fn system_rules_for(mode: &crate::ai::models::ExecutionMode) -> &'static str {
     match mode {
@@ -71,7 +71,7 @@ pub struct OpenAiCompatibleClient {
     http_client: reqwest::Client,
     base_url: String,
     api_key: String,
-    model: String,
+    model: AiModelConfig,
 }
 
 const MAX_PROVIDER_RETRIES: usize = 3;
@@ -195,17 +195,30 @@ impl OpenAiCompatibleClient {
     }
 
     pub async fn test_connection(&self) -> AiConnectionTestResult {
-        let url = format!("{}/chat/completions", self.base_url);
+        let (url, body) = if self.model.protocol == "responses" {
+            (
+                format!("{}/responses", self.base_url),
+                serde_json::json!({
+                    "model": self.model.name,
+                    "input": "Connection test",
+                    "max_output_tokens": 1,
+                }),
+            )
+        } else {
+            let mut body = self.chat_request_body(serde_json::json!({
+                "messages": [{ "role": "user", "content": "Connection test" }],
+                "stream": false,
+            }));
+            body.as_object_mut()
+                .expect("chat request is an object")
+                .insert("max_completion_tokens".into(), serde_json::json!(1));
+            (format!("{}/chat/completions", self.base_url), body)
+        };
         let response = self
             .http_client
             .post(url)
             .bearer_auth(&self.api_key)
-            .json(&serde_json::json!({
-                "model": self.model,
-                "messages": [{ "role": "user", "content": "Connection test" }],
-                "max_tokens": 1,
-                "stream": false,
-            }))
+            .json(&body)
             .send()
             .await;
 
@@ -215,10 +228,22 @@ impl OpenAiCompatibleClient {
                     Ok(body) => body,
                     Err(error) => return connection_result_for_response_error(&error),
                 };
-                if body.pointer("/choices/0/message").is_some() {
+                let valid = if self.model.protocol == "responses" {
+                    body.get("output")
+                        .and_then(serde_json::Value::as_array)
+                        .is_some()
+                } else {
+                    body.pointer("/choices/0/message").is_some()
+                };
+                if valid {
                     AiConnectionTestResult {
                         status: AiConnectionTestStatus::Success,
-                        message: "连接成功；模型已返回可解析的聊天响应".into(),
+                        message: "连接成功；模型已返回可解析的响应".into(),
+                    }
+                } else if self.model.protocol == "responses" {
+                    AiConnectionTestResult {
+                        status: AiConnectionTestStatus::NetworkError,
+                        message: "服务返回的 Responses 响应缺少 output，无法用于 AI 对话".into(),
                     }
                 } else {
                     AiConnectionTestResult {
@@ -243,14 +268,12 @@ impl OpenAiCompatibleClient {
         let request_messages = request_message_json(system_rules, agent_prompt, messages);
         let response = self
             .send_chat_request(
-                serde_json::json!({
-                    "model": self.model,
+                self.chat_request_body(serde_json::json!({
                     "messages": request_messages,
                     "tools": [command_tool_definition()],
                     "tool_choice": "auto",
-                    "parallel_tool_calls": false,
                     "stream": false,
-                }),
+                })),
                 cancellation_token,
             )
             .await?;
@@ -307,13 +330,12 @@ impl OpenAiCompatibleClient {
         request_messages.extend(tool_history.iter().cloned());
         let response = self
             .send_chat_request(
-                serde_json::json!({
-                    "model": self.model,
+                self.chat_request_body(serde_json::json!({
                     "messages": request_messages,
                     "tools": [command_tool_definition()],
                     "tool_choice": "auto",
                     "stream": false,
-                }),
+                })),
                 cancellation_token,
             )
             .await?;
@@ -431,12 +453,11 @@ impl OpenAiCompatibleClient {
         }));
         let response = self
             .send_chat_request(
-                serde_json::json!({
-                    "model": self.model,
+                self.chat_request_body(serde_json::json!({
                     "messages": request_messages,
                     "tool_choice": "none",
                     "stream": false,
-                }),
+                })),
                 cancellation_token,
             )
             .await?;
@@ -474,11 +495,10 @@ impl OpenAiCompatibleClient {
         }));
         let response = self
             .send_chat_request(
-                serde_json::json!({
-                    "model": self.model,
+                self.chat_request_body(serde_json::json!({
                     "messages": request_messages,
                     "stream": false,
-                }),
+                })),
                 request.cancellation_token,
             )
             .await?;
@@ -510,6 +530,36 @@ impl OpenAiCompatibleClient {
             })
     }
 
+    fn chat_request_body(&self, mut body: serde_json::Value) -> serde_json::Value {
+        let object = body
+            .as_object_mut()
+            .expect("chat request must be an object");
+        object.insert("model".into(), serde_json::json!(self.model.name));
+        if let Some(max_output_tokens) = self.model.max_output_tokens {
+            object.insert(
+                "max_completion_tokens".into(),
+                serde_json::json!(max_output_tokens),
+            );
+        }
+        if self.model.supports_prompt_caching {
+            if let Some(key) = &self.model.prompt_cache_key {
+                object.insert("prompt_cache_key".into(), serde_json::json!(key));
+            }
+        }
+        if self.model.supports_reasoning {
+            if let Some(effort) = &self.model.reasoning_effort {
+                object.insert("reasoning_effort".into(), serde_json::json!(effort));
+            }
+        }
+        if self.model.supports_tools
+            && self.model.supports_parallel_tool_calls
+            && object.contains_key("tools")
+        {
+            object.insert("parallel_tool_calls".into(), serde_json::json!(true));
+        }
+        body
+    }
+
     pub async fn stream_chat<F>(
         &self,
         system_rules: &str,
@@ -521,6 +571,28 @@ impl OpenAiCompatibleClient {
     where
         F: FnMut(String),
     {
+        if self.model.protocol == "responses" {
+            return self
+                .stream_responses(
+                    system_rules,
+                    agent_prompt,
+                    messages,
+                    cancellation_token,
+                    on_delta,
+                )
+                .await;
+        }
+        if messages.iter().any(|message| !message.images.is_empty()) {
+            return self
+                .stream_chat_completions(
+                    system_rules,
+                    agent_prompt,
+                    messages,
+                    cancellation_token,
+                    on_delta,
+                )
+                .await;
+        }
         let mut request_messages = Vec::with_capacity(messages.len() + 2);
         for content in [system_rules, agent_prompt] {
             request_messages.push(ChatCompletionRequestMessage::System(
@@ -537,7 +609,7 @@ impl OpenAiCompatibleClient {
                 .collect::<Result<Vec<_>, AiClientError>>()?,
         );
         let request = CreateChatCompletionRequestArgs::default()
-            .model(&self.model)
+            .model(&self.model.name)
             .messages(request_messages)
             .build()
             .map_err(|error| AiClientError::Provider(error.to_string()))?;
@@ -585,6 +657,137 @@ impl OpenAiCompatibleClient {
                 },
             }
         }
+    }
+
+    async fn stream_chat_completions<F>(
+        &self,
+        system_rules: &str,
+        agent_prompt: &str,
+        messages: &[AiChatMessage],
+        cancellation_token: CancellationToken,
+        mut on_delta: F,
+    ) -> Result<(), AiClientError>
+    where
+        F: FnMut(String),
+    {
+        let body = self.chat_request_body(serde_json::json!({
+            "messages": request_message_json(system_rules, agent_prompt, messages),
+            "stream": true,
+        }));
+        let response = self
+            .send_chat_request(body, cancellation_token.clone())
+            .await?;
+        if !response.status().is_success() {
+            return Err(AiClientError::Provider(format!(
+                "AI provider returned {}",
+                response.status()
+            )));
+        }
+        let mut stream = response.bytes_stream();
+        let mut buffer = String::new();
+        while let Some(chunk) = tokio::select! {
+            _ = cancellation_token.cancelled() => return Err(AiClientError::Cancelled),
+            chunk = stream.next() => chunk,
+        } {
+            let chunk = chunk.map_err(|error| AiClientError::Stream(error.to_string()))?;
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+            while let Some(newline) = buffer.find('\n') {
+                let line = buffer.drain(..=newline).collect::<String>();
+                let data = line.trim().strip_prefix("data:").map(str::trim);
+                if let Some(data) = data {
+                    if data == "[DONE]" {
+                        return Ok(());
+                    }
+                    if let Ok(event) = serde_json::from_str::<serde_json::Value>(data) {
+                        if let Some(delta) = event
+                            .pointer("/choices/0/delta/content")
+                            .and_then(serde_json::Value::as_str)
+                        {
+                            on_delta(delta.to_owned());
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    async fn stream_responses<F>(
+        &self,
+        system_rules: &str,
+        agent_prompt: &str,
+        messages: &[AiChatMessage],
+        cancellation_token: CancellationToken,
+        mut on_delta: F,
+    ) -> Result<(), AiClientError>
+    where
+        F: FnMut(String),
+    {
+        let mut input = Vec::with_capacity(messages.len() + 2);
+        input.push(serde_json::json!({ "role": "system", "content": system_rules }));
+        input.push(serde_json::json!({ "role": "system", "content": agent_prompt }));
+        input.extend(messages.iter().map(responses_message_json));
+        let mut body =
+            serde_json::json!({ "model": self.model.name, "input": input, "stream": true });
+        let object = body
+            .as_object_mut()
+            .expect("responses request is an object");
+        if let Some(max_output_tokens) = self.model.max_output_tokens {
+            object.insert(
+                "max_output_tokens".into(),
+                serde_json::json!(max_output_tokens),
+            );
+        }
+        if self.model.supports_prompt_caching {
+            if let Some(key) = &self.model.prompt_cache_key {
+                object.insert("prompt_cache_key".into(), serde_json::json!(key));
+            }
+        }
+        if self.model.supports_reasoning {
+            if let Some(effort) = &self.model.reasoning_effort {
+                object.insert("reasoning".into(), serde_json::json!({ "effort": effort }));
+            }
+        }
+        let response = tokio::select! {
+            _ = cancellation_token.cancelled() => return Err(AiClientError::Cancelled),
+            response = self.http_client.post(format!("{}/responses", self.base_url)).bearer_auth(&self.api_key).json(&body).send() => response,
+        }.map_err(|error| AiClientError::Stream(error.to_string()))?;
+        if !response.status().is_success() {
+            return Err(AiClientError::Provider(format!(
+                "AI provider returned {}",
+                response.status()
+            )));
+        }
+        let mut stream = response.bytes_stream();
+        let mut buffer = String::new();
+        while let Some(chunk) = tokio::select! {
+            _ = cancellation_token.cancelled() => return Err(AiClientError::Cancelled),
+            chunk = stream.next() => chunk,
+        } {
+            let chunk = chunk.map_err(|error| AiClientError::Stream(error.to_string()))?;
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+            while let Some(newline) = buffer.find('\n') {
+                let line = buffer.drain(..=newline).collect::<String>();
+                let data = line.trim().strip_prefix("data:").map(str::trim);
+                if let Some(data) = data {
+                    if data == "[DONE]" {
+                        return Ok(());
+                    }
+                    if let Ok(event) = serde_json::from_str::<serde_json::Value>(data) {
+                        if event.get("type").and_then(serde_json::Value::as_str)
+                            == Some("response.output_text.delta")
+                        {
+                            if let Some(delta) =
+                                event.get("delta").and_then(serde_json::Value::as_str)
+                            {
+                                on_delta(delta.to_owned());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }
 
@@ -696,11 +899,38 @@ fn request_message_json(
         serde_json::json!({ "role": "system", "content": system_rules }),
         serde_json::json!({ "role": "system", "content": agent_prompt }),
     ];
-    request_messages.extend(messages.iter().map(|message| serde_json::json!({
-        "role": match message.role { AiMessageRole::User => "user", AiMessageRole::Assistant => "assistant" },
-        "content": message.content,
-    })));
+    request_messages.extend(messages.iter().map(chat_message_json));
     request_messages
+}
+
+fn chat_message_json(message: &AiChatMessage) -> serde_json::Value {
+    let role = match message.role {
+        AiMessageRole::User => "user",
+        AiMessageRole::Assistant => "assistant",
+    };
+    if message.images.is_empty() {
+        return serde_json::json!({ "role": role, "content": message.content });
+    }
+    let mut content = vec![serde_json::json!({ "type": "text", "text": message.content })];
+    content.extend(message.images.iter().map(
+        |image| serde_json::json!({ "type": "image_url", "image_url": { "url": image.data_url } }),
+    ));
+    serde_json::json!({ "role": role, "content": content })
+}
+
+fn responses_message_json(message: &AiChatMessage) -> serde_json::Value {
+    let role = match message.role {
+        AiMessageRole::User => "user",
+        AiMessageRole::Assistant => "assistant",
+    };
+    let mut content = vec![serde_json::json!({ "type": "input_text", "text": message.content })];
+    content.extend(
+        message
+            .images
+            .iter()
+            .map(|image| serde_json::json!({ "type": "input_image", "image_url": image.data_url })),
+    );
+    serde_json::json!({ "role": role, "content": content })
 }
 
 fn is_retryable_status(status: reqwest::StatusCode) -> bool {
@@ -788,6 +1018,7 @@ fn to_openai_message(
 mod tests {
     use super::*;
     use crate::ai::models::ExecutionMode;
+    use crate::vault::AiModelConfig;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
     use tokio::time::sleep;
@@ -799,7 +1030,20 @@ mod tests {
             AiProviderConfigSecret {
                 base_url,
                 api_key: TEST_API_KEY.into(),
-                model: "test-model".into(),
+                model: AiModelConfig {
+                    id: "test-model".into(),
+                    name: "test-model".into(),
+                    max_context_tokens: None,
+                    max_output_tokens: None,
+                    supports_tools: true,
+                    supports_images: false,
+                    supports_parallel_tool_calls: false,
+                    supports_prompt_caching: false,
+                    supports_reasoning: false,
+                    protocol: "chat_completions".into(),
+                    reasoning_effort: None,
+                    prompt_cache_key: None,
+                },
                 timeout_seconds: 60,
             },
             timeout,
@@ -892,6 +1136,7 @@ mod tests {
         let messages = [AiChatMessage {
             role: AiMessageRole::User,
             content: "check disk".into(),
+            images: Vec::new(),
         }];
         let history = [serde_json::json!({
             "role": "tool",
@@ -949,6 +1194,7 @@ mod tests {
         let messages = [AiChatMessage {
             role: AiMessageRole::User,
             content: "check disk".into(),
+            images: Vec::new(),
         }];
 
         let result = test_client(base_url, Duration::from_secs(1))
@@ -983,6 +1229,7 @@ mod tests {
         let messages = [AiChatMessage {
             role: AiMessageRole::User,
             content: "check disk".into(),
+            images: Vec::new(),
         }];
 
         let result = test_client(base_url, Duration::from_secs(1))
