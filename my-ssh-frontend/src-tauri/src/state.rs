@@ -40,36 +40,11 @@ impl AppState {
         }
     }
 
-    /// 自动打开 vault（读取 local.key）
+    /// 打开或创建本地 JSON Vault。日常本地使用不要求密码。
     pub async fn auto_open(&self) -> Result<(), VaultError> {
-        let vault = Vault::open_auto(&self.app_dir)?;
+        let vault = Vault::open(&self.app_dir)?;
         *self.vault.lock().await = Some(vault);
         Ok(())
-    }
-
-    /// 首次设置：用主密码初始化 vault
-    pub async fn setup(&self, password: &str) -> Result<(), VaultError> {
-        let vault = Vault::setup(&self.app_dir, password)?;
-        *self.vault.lock().await = Some(vault);
-        Ok(())
-    }
-
-    /// 修改主密码
-    pub async fn change_password(
-        &self,
-        old_password: &str,
-        new_password: &str,
-    ) -> Result<(), VaultError> {
-        Vault::change_password(&self.app_dir, old_password, new_password)?;
-        // 用新密码重新打开 vault
-        let vault = Vault::open_auto(&self.app_dir)?;
-        *self.vault.lock().await = Some(vault);
-        Ok(())
-    }
-
-    /// 检查是否使用默认密码
-    pub async fn is_default_password(&self) -> bool {
-        Vault::is_default_password(&self.app_dir)
     }
 
     pub async fn is_unlocked(&self) -> bool {

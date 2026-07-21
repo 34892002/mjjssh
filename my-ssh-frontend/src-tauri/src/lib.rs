@@ -4,6 +4,7 @@ pub mod ai;
 mod commands;
 mod ssh;
 mod state;
+pub mod sync;
 pub mod vault;
 
 use log::LevelFilter;
@@ -61,9 +62,16 @@ pub fn run() {
             commands::ai::decide_ai_action,
             commands::ai::cancel_ai_task,
             commands::vault::init_vault,
-            commands::vault::setup_vault,
-            commands::vault::change_password,
-            commands::vault::is_default_password,
+            commands::sync::get_sync_status,
+            commands::sync::enable_github_gist_sync,
+            commands::sync::enable_gitee_snippet_sync,
+            commands::sync::upload_sync_vault,
+            commands::sync::refresh_sync_derived_key,
+            commands::sync::download_sync_vault,
+            commands::sync::change_sync_password,
+            commands::sync::resolve_sync_conflict,
+            commands::sync::disable_sync,
+            commands::sync::delete_remote_sync_vault,
             commands::vault::list_profiles,
             commands::vault::get_profile,
             commands::vault::create_profile,

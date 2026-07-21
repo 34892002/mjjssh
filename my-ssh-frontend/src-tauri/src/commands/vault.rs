@@ -51,42 +51,13 @@ fn parse_profile_info(output: &str) -> Result<(String, Option<String>), String> 
     Ok((os.to_owned(), location))
 }
 
-/// 初始化 vault（尝试自动打开）
+/// 初始化本地 JSON Vault；文件不存在时会创建空 Vault。
 #[tauri::command]
-pub async fn init_vault(state: State<'_, AppState>) -> Result<bool, String> {
+pub async fn init_vault(state: State<'_, AppState>) -> Result<(), String> {
     if state.is_unlocked().await {
-        return Ok(true);
+        return Ok(());
     }
-    match state.auto_open().await {
-        Ok(()) => Ok(true),
-        Err(crate::vault::VaultError::NotInitialized) => Ok(false),
-        Err(e) => Err(e.to_string()),
-    }
-}
-
-/// 首次设置：用主密码初始化 vault
-#[tauri::command]
-pub async fn setup_vault(state: State<'_, AppState>, password: String) -> Result<(), String> {
-    state.setup(&password).await.map_err(|e| e.to_string())
-}
-
-/// 修改主密码
-#[tauri::command]
-pub async fn change_password(
-    state: State<'_, AppState>,
-    old_password: String,
-    new_password: String,
-) -> Result<(), String> {
-    state
-        .change_password(&old_password, &new_password)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-/// 检查是否使用默认密码
-#[tauri::command]
-pub async fn is_default_password(state: State<'_, AppState>) -> Result<bool, String> {
-    Ok(state.is_default_password().await)
+    state.auto_open().await.map_err(|error| error.to_string())
 }
 
 #[tauri::command]

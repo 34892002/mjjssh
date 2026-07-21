@@ -27,12 +27,7 @@ pub struct SshProfile {
     pub port: u16,
     pub username: String,
     pub auth_type: AuthType,
-    #[serde(with = "opt_hex_bytes")]
-    pub credential: Option<Vec<u8>>,
-    #[serde(with = "opt_hex_bytes")]
-    pub private_key: Option<Vec<u8>>,
-    #[serde(with = "opt_hex_bytes")]
-    pub cert_data: Option<Vec<u8>>,
+    pub credential: Option<String>,
     pub key_id: Option<String>,
     pub group_name: Option<String>,
     pub icon: Option<String>,
@@ -173,7 +168,7 @@ pub struct AiProviderConfigSecret {
     pub timeout_seconds: u32,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiAgentConfig {
     pub id: String,
@@ -199,10 +194,8 @@ pub struct SshKey {
     pub id: String,
     pub name: String,
     pub key_type: String,
-    #[serde(with = "hex_bytes")]
-    pub private_key: Vec<u8>,
-    #[serde(with = "opt_hex_bytes")]
-    pub cert_data: Option<Vec<u8>>,
+    pub private_key: String,
+    pub cert_data: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -229,50 +222,4 @@ pub struct DecryptedCredential {
     pub password: Option<String>,
     pub private_key: Option<String>,
     pub cert_data: Option<String>,
-}
-
-mod hex_bytes {
-    use serde::{self, Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S>(bytes: &Vec<u8>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&hex::encode(bytes))
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Vec<u8>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s = String::deserialize(deserializer)?;
-        hex::decode(&s).map_err(serde::de::Error::custom)
-    }
-}
-
-mod opt_hex_bytes {
-    use serde::{self, Deserialize, Deserializer, Serializer};
-
-    pub fn serialize<S>(bytes: &Option<Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        match bytes {
-            Some(b) => serializer.serialize_str(&hex::encode(b)),
-            None => serializer.serialize_none(),
-        }
-    }
-
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Vec<u8>>, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let s: Option<String> = Option::deserialize(deserializer)?;
-        match s {
-            Some(hex_str) => hex::decode(&hex_str)
-                .map(Some)
-                .map_err(serde::de::Error::custom),
-            None => Ok(None),
-        }
-    }
 }

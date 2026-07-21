@@ -34,21 +34,23 @@ AI 不是独立的 SSH 通道。所有命令均发送至用户当前可见的交
 | 类型 | `my-ssh-frontend/src-tauri/src/ai/models.rs` | Rust 的 Tauri 入参、事件和授权模型 |
 | AI 审计 | `my-ssh-frontend/src-tauri/src/ai/audit.rs` | 任务、重试、动作与取消的脱敏审计摘要；不参与执行或授权决策 |
 | AI 日志 | `my-ssh-frontend/src-tauri/src/ai/log.rs` | 独立滚动 `ai.log` 写入器 |
-| 凭证库 | `my-ssh-frontend/src-tauri/src/vault/db.rs` | 加密的供应商配置、Agent 配置、可执行程序授权持久化 |
+| 凭证库 | `my-ssh-frontend/src-tauri/src/vault/store.rs` | 在本地 JSON Vault 中持久化供应商配置、Agent 配置和可执行程序授权 |
 | SSH 执行 | `my-ssh-frontend/src-tauri/src/ssh/client.rs` | 向既有交互终端写入命令、等待完成标记、超时后尝试恢复 |
 | SSH 会话与终端 UI | `my-ssh-frontend/src-tauri/src/commands/ssh.rs`、`my-ssh-frontend/src/components/Terminal.vue` | 记录不含输入正文的写入失败、关闭无法恢复的终端并将断开和输入失效状态显示给用户 |
 
 ## 3. 配置与持久化
 
-SQLite 仍只保存需要持久化的配置：
+本地 `vault.json` 只保存需要持久化的配置：
 
-- `ai_provider_configs`：base URL、模型、超时和加密后的 API Key。
-- `ai_agent_configs`：Agent 名称、提示词、默认 Agent 标记；敏感字段按照 vault 规则处理。
-- `ai_executable_grants`：确认模式中用户授予的可执行程序权限。
+- `aiProviderConfig`：base URL、模型、超时和 API Key；可为 `null`。
+- `aiAgents`：Agent 名称、提示词、默认 Agent 标记。
+- `aiExecutableGrants`：确认模式中用户授予的可执行程序权限。
+
+未启用云同步时，`vault.json` 为明文；启用后，以上配置和所有 Vault 数据会作为整体加密副本上传。AI API Key、Agent 提示词、完整终端输出和完整模型响应不得出现在日志或错误消息中。完整存储与加密边界见 [db.md](db.md) 和 [cloud-sync.md](cloud-sync.md)。
 
 不保存的内容：AI 操作审计记录、完整终端输出、完整 AI 响应。操作展示历史仅位于 Pinia 内存状态，关闭/刷新应用后不保证保留。
 
-SSH 连通性风险确认也不写入数据库：`RiskConfirmationStore` 仅存于应用内存，原 AI 任务结束后仍可供用户下一条聊天消息确认，但应用退出或令牌超过 5 分钟后即失效。
+SSH 连通性风险确认也不写入持久化 Vault：`RiskConfirmationStore` 仅存于应用内存，原 AI 任务结束后仍可供用户下一条聊天消息确认，但应用退出或令牌超过 5 分钟后即失效。
 
 授权范围：
 

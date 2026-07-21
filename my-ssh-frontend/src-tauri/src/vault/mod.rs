@@ -1,6 +1,5 @@
-pub mod crypto;
-pub mod db;
 pub mod models;
+pub mod store;
 
-pub use db::{Vault, VaultError};
 pub use models::*;
+pub use store::{Vault, VaultError, VaultSyncSnapshot};

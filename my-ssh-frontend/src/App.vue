@@ -30,6 +30,7 @@ const KeysView = defineAsyncComponent(() => import('./components/KeysView.vue'))
 const SftpView = defineAsyncComponent(() => import('./components/SftpView.vue'))
 const AiChatPanel = defineAsyncComponent(() => import('./components/AiChatPanel.vue'))
 const AiSettings = defineAsyncComponent(() => import('./components/AiSettings.vue'))
+const SyncSettings = defineAsyncComponent(() => import('./components/SyncSettings.vue'))
 const TransferPanel = defineAsyncComponent(() => import('./components/TransferPanel.vue'))
 const PermissionsDialog = defineAsyncComponent(() => import('./components/PermissionsDialog.vue'))
 const ActionDialog = defineAsyncComponent(() => import('./components/ActionDialog.vue'))
@@ -617,7 +618,6 @@ onBeforeUnmount(() => {
 // --- Settings ---
 const showSettings = ref(false)
 const settingsSection = ref<'terminal' | 'ai' | 'sync' | 'system'>('terminal')
-const changingPassword = ref(false)
 
 function openSettings() {
   settingsSection.value = 'terminal'
@@ -629,52 +629,11 @@ function openAiSettings() {
   showSettings.value = true
 }
 
-watch(showSettings, (visible) => {
-  if (visible && settingsSection.value === 'sync' && vaultStore.isDefaultPassword === null) {
-    void vaultStore.loadDefaultPasswordStatus()
-  }
-})
-
-watch(settingsSection, (section) => {
-  if (section === 'sync' && vaultStore.isDefaultPassword === null) {
-    void vaultStore.loadDefaultPasswordStatus()
-  }
-})
-const pwdForm = ref({ oldPassword: '', newPassword: '', confirmPassword: '' })
-const pwdError = ref('')
-
-async function handleChangePassword() {
-  pwdError.value = ''
-  if (!pwdForm.value.newPassword) {
-    pwdError.value = '请输入新密码'
-    return
-  }
-  if (pwdForm.value.newPassword.length < 6) {
-    pwdError.value = '新密码至少 6 位'
-    return
-  }
-  if (pwdForm.value.newPassword !== pwdForm.value.confirmPassword) {
-    pwdError.value = '两次输入的新密码不一致'
-    return
-  }
-
-  const oldPwd = vaultStore.isDefaultPassword === true ? 'LuckyMJJ' : pwdForm.value.oldPassword
-  if (!oldPwd) {
-    pwdError.value = '请输入旧密码'
-    return
-  }
-
-  changingPassword.value = true
-  const success = await vaultStore.changePassword(oldPwd, pwdForm.value.newPassword)
-  changingPassword.value = false
-
-  if (success) {
-    pwdForm.value = { oldPassword: '', newPassword: '', confirmPassword: '' }
-    showSettings.value = false
-  } else {
-    pwdError.value = vaultStore.error || '修改失败，请检查旧密码'
-  }
+function openSyncSettings() {
+  settingsSection.value = 'sync'
+  showSettings.value = true
 }
+
 </script>
 
 <template>
@@ -717,7 +676,7 @@ async function handleChangePassword() {
           </div>
           <div class="titlebar-drag-region" data-tauri-drag-region @mousedown="startWindowDrag" />
           <div class="titlebar-actions" aria-label="应用功能">
-            <button class="titlebar-action" title="云同步" aria-label="云同步"><Cloud :size="17" /></button>
+            <button class="titlebar-action" title="云同步" aria-label="云同步" @click="openSyncSettings"><Cloud :size="17" /></button>
             <button class="titlebar-action" :title="isDarkTheme ? '切换为浅色主题' : '切换为深色主题'" aria-label="切换主题" @click="toggleTheme"><Sun v-if="isDarkTheme" :size="17" /><Moon v-else :size="17" /></button>
           </div>
           <div class="window-controls">
@@ -1060,19 +1019,7 @@ async function handleChangePassword() {
                   </div>
                 </template>
                 <AiSettings v-else-if="settingsSection === 'ai'" />
-                <template v-else-if="settingsSection === 'sync'">
-                  <h3>云同步</h3>
-                  <div class="settings-panel sync-intro"><Cloud :size="20" /><div><strong>同步主密码</strong><p>主密码仅用于加密云同步数据，不影响本地 SSH 凭证。</p></div></div>
-                  <div class="settings-panel password-settings">
-                    <n-alert v-if="pwdError" type="error">{{ pwdError }}</n-alert>
-                    <n-form label-placement="left" label-width="88" size="small">
-                      <n-form-item label="当前密码"><n-input :value="vaultStore.isDefaultPassword === true ? 'LuckyMJJ' : pwdForm.oldPassword" type="password" show-password-on="click" :placeholder="vaultStore.isDefaultPassword === null ? '正在检测当前主密码...' : vaultStore.isDefaultPassword ? '默认密码（自动填入）' : '请输入当前主密码'" :disabled="vaultStore.isDefaultPassword === true || vaultStore.isDefaultPassword === null" @update:value="(val: string) => pwdForm.oldPassword = val" /></n-form-item>
-                      <n-form-item label="新密码"><n-input v-model:value="pwdForm.newPassword" type="password" show-password-on="click" placeholder="至少 6 位" /></n-form-item>
-                      <n-form-item label="确认密码"><n-input v-model:value="pwdForm.confirmPassword" type="password" show-password-on="click" placeholder="再次输入新密码" /></n-form-item>
-                    </n-form>
-                    <div class="settings-actions"><n-button type="primary" size="small" :loading="changingPassword" @click="handleChangePassword">更新主密码</n-button></div>
-                  </div>
-                </template>
+                <SyncSettings v-else-if="settingsSection === 'sync'" />
                 <template v-else>
                   <h3>系统</h3>
                   <div class="settings-panel">

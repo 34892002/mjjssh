@@ -4,8 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import type { SshProfileView, CreateProfileRequest, UpdateProfileRequest, SshKeyView, CreateKeyRequest } from '../types'
 
 export const useVaultStore = defineStore('vault', () => {
-  const isUnlocked = ref(false)
-  const isDefaultPassword = ref<boolean | null>(null)
+  const isReady = ref(false)
   const profiles = ref<SshProfileView[]>([])
   const keysLoaded = ref(false)
   const loading = ref(false)
@@ -15,38 +14,13 @@ export const useVaultStore = defineStore('vault', () => {
   async function init() {
     try {
       await invoke('init_vault')
-      isUnlocked.value = true
+      isReady.value = true
       await loadProfiles()
     } catch (e) {
       error.value = String(e)
     }
   }
 
-  async function loadDefaultPasswordStatus() {
-    try {
-      isDefaultPassword.value = await invoke<boolean>('is_default_password')
-    } catch (e) {
-      error.value = String(e)
-      isDefaultPassword.value = null
-    }
-  }
-
-  /// 修改主密码
-  async function changePassword(oldPassword: string, newPassword: string): Promise<boolean> {
-    loading.value = true
-    error.value = null
-    try {
-      await invoke('change_password', { oldPassword, newPassword })
-      await loadDefaultPasswordStatus()
-      await loadProfiles()
-      return true
-    } catch (e) {
-      error.value = String(e)
-      return false
-    } finally {
-      loading.value = false
-    }
-  }
 
   async function loadProfiles() {
     loading.value = true
@@ -56,6 +30,17 @@ export const useVaultStore = defineStore('vault', () => {
       error.value = String(e)
     } finally {
       loading.value = false
+    }
+  }
+
+  async function refreshAfterSync() {
+    await loadProfiles()
+    if (keysLoaded.value) {
+      try {
+        sshKeys.value = await invoke<SshKeyView[]>('list_keys')
+      } catch (e) {
+        error.value = String(e)
+      }
     }
   }
 
@@ -188,17 +173,15 @@ export const useVaultStore = defineStore('vault', () => {
   }
 
   return {
-    isUnlocked,
-    isDefaultPassword,
+    isReady,
     profiles,
     keysLoaded,
     sshKeys,
     loading,
     error,
     init,
-    loadDefaultPasswordStatus,
-    changePassword,
     loadProfiles,
+    refreshAfterSync,
     createProfile,
     updateProfile,
     refreshProfileInfo,

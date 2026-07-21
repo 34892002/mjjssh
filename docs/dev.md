@@ -11,8 +11,8 @@
 | UI 组件库 | Naive UI | 2.x |
 | 状态管理 | Pinia | 3.x |
 | SSH 客户端 | russh | 0.62 |
-| 数据库 | SQLite (rusqlite) | 0.31 |
-| 加密算法 | AES-256-GCM + Argon2id | - |
+| 本地持久化 | JSON Vault | - |
+| 云同步加密 | AES-256-GCM + Argon2id | - |
 | 终端模拟 | xterm.js | 6.x |
 
 ---
@@ -22,7 +22,8 @@
 ```
 my-ssh/
 ├── docs/                          # 文档
-│   ├── db.md                      # 数据库设计
+│   ├── db.md                      # Vault 存储设计
+│   ├── cloud-sync.md              # 云同步设计
 │   └── dev.md                     # 开发文档
 ├── my-ssh-frontend/
 │   ├── src/
@@ -44,11 +45,16 @@ my-ssh/
 │       │   │   ├── vault.rs       # 凭证库操作
 │       │   │   ├── ssh.rs         # SSH 连接
 │       │   │   ├── sftp.rs        # SFTP 文件管理
+│       │   │   ├── sync.rs        # 云同步命令
 │       │   │   └── clipboard.rs   # 剪贴板操作
-│       │   ├── vault/             # 加密模块
-│       │   │   ├── crypto.rs      # AES-GCM + Argon2id
-│       │   │   ├── db.rs          # SQLite 操作
+│       │   ├── vault/             # JSON Vault 存储
+│       │   │   ├── store.rs       # 原子读写与 CRUD
 │       │   │   └── models.rs      # 数据模型
+│       │   ├── sync/              # GitHub Gist/Gitee 云同步
+│       │   │   ├── crypto.rs      # Argon2id 与 AES-256-GCM
+│       │   │   ├── github_gist.rs # GitHub Gist 提供方
+│       │   │   ├── gitee_snippet.rs # Gitee 代码片段提供方
+│       │   │   └── service.rs     # 同步服务与冲突处理
 │       │   ├── ssh/               # SSH 模块
 │       │   │   └── client.rs      # russh 客户端
 │       │   ├── state.rs           # 应用状态
@@ -101,7 +107,7 @@ type:
 
 ### 性能开发规范
 
-- **启动关键路径**：首页只初始化 vault 并加载主机配置；不得在启动时调用 `is_default_password` 或 `list_keys`。默认密码状态仅在设置页首次打开时加载，密钥列表仅在密钥管理页或选择密钥/证书认证时首次加载，并复用 store 缓存。
+- **启动关键路径**：首页只初始化 Vault 并加载主机配置；不得阻塞启动以检查云同步状态或请求同步密码。密钥列表仅在密钥管理页或选择密钥/证书认证时首次加载，并复用 store 缓存。
 - **按需加载**：终端、SFTP、密钥管理和低频弹窗保持异步组件边界。新增首页非必需功能时，优先采用 `defineAsyncComponent` 或等价的懒加载方案。
 - **终端就绪协议**：必须在 `Terminal` 注册 `ssh-data` listener 后通知 session store 终端已就绪，随后才能调用 `connect_ssh`。不得恢复固定延时等待，避免首批 SSH 输出丢失。
 - **终端输出**：保持后端的每会话输出合批与有界队列；不得在输出链路中引入无界 channel、逐包同步 IPC 或跨 session 合并数据。前端每个终端复用一个流式 `TextDecoder`。
@@ -113,16 +119,17 @@ type:
 
 ---
 
-## 加密方案
+## Vault 与云同步
 
-```
-主密码 + salt → Argon2id → AES-256-GCM 密钥 → 加密敏感字段
-```
 
-- 默认密码：`LuckyMJJ`
-- 本地密钥文件：`local.key`（salt + 派生密钥）
-- 启动自动解锁，无需输入密码
-- 详细设计见 [db.md](db.md)
+
+- 本地唯一业务文件为 `<程序目录>/data/vault.json`。未启用云同步时，本地 Vault 为明文 JSON，启动和日常 SSH 使用不要求密码。
+- 不使用固定默认密码、随机本地加密密钥或平台特定系统密钥库。
+- 启用云同步后，用户输入同步密码；应用对完整 Vault JSON 执行 Argon2id 密钥派生和 AES-256-GCM 整体加密，再上传 GitHub Gist/Gitee 私有片段。
+- 同步密码仅用于云端副本，不影响本地 SSH 凭证、不会上传且不可找回。
+- `data/sync.json` 默认保存 provider、远端绑定、token 和 Base64 编码的 Argon2id 派生 AES key，以便后续同步免输入；绝不保存原始同步密码。日常同步复用远端 Vault 的随机 KDF salt 并更新 AES-GCM nonce；只有修改同步密码时才轮换 salt 和派生 key。其他已配置设备在改密后必须验证新密码以刷新本机派生 key。该文件不使用系统凭据库；不得写入日志、远端片段、`vault.json` 或浏览器持久化存储。关闭同步或删除远端数据会删除该文件。
+- 同步期间 Argon2id 每次用户输入密码后仅派生一次密钥；不得在每次 SSH 连接或读取配置时重复派生。
+- 完整设计见 [db.md](db.md) 和 [cloud-sync.md](cloud-sync.md)。
 
 ---
 
@@ -133,7 +140,7 @@ type:
 2. Terminal 挂载并注册 ssh-data 事件监听
 3. Terminal 通知 session store 已就绪
 4. 前端调用 connect_ssh(profileId, sessionId)
-5. 后端从 vault 读取凭证（解密）
+5. 后端从 Vault 读取凭证
 6. 建立 SSH 连接（russh），创建 channel 并请求 PTY
 7. 后端通过 channel 读写数据，按 session 合批发送终端输出
 ```
@@ -170,8 +177,7 @@ type:
 
 ```typescript
 {
-  isUnlocked: boolean      // vault 是否已解锁
-  isDefaultPassword: boolean | null // 是否使用默认密码；null 为未检测
+  isReady: boolean         // 本地 Vault 是否已加载
   profiles: SshProfileView[] // 主机列表
   sshKeys: SshKeyView[]    // 密钥列表（按需加载并缓存）
   loading: boolean         // 加载状态
@@ -197,9 +203,7 @@ type:
 
 | 命令 | 说明 |
 |------|------|
-| `init_vault` | 初始化 vault（自动打开） |
-| `change_password` | 修改主密码 |
-| `is_default_password` | 检查是否默认密码 |
+| `init_vault` | 初始化本地 Vault |
 | `list_profiles` | 列出主机 |
 | `create_profile` | 创建主机 |
 | `update_profile` | 更新主机 |
@@ -208,6 +212,20 @@ type:
 | `create_key` | 创建密钥 |
 | `update_key` | 更新密钥 |
 | `delete_key` | 删除密钥 |
+
+### sync.rs
+
+| 命令 | 说明 |
+|------|------|
+| `get_sync_status` | 获取同步配置与状态 |
+| `enable_github_gist_sync` | 按固定名称自动查找或创建 GitHub Gist 同步副本 |
+| `enable_gitee_snippet_sync` | 按固定名称自动查找或创建 Gitee 私有代码片段同步副本 |
+| `upload_sync_vault` | 上传本地 Vault |
+| `download_sync_vault` | 下载远端 Vault |
+| `resolve_sync_conflict` | 保留本地或接受远端以解决冲突 |
+| `change_sync_password` | 修改远端同步副本的密码 |
+| `disable_sync` | 删除本地同步配置 |
+| `delete_remote_sync_vault` | 删除远端同步副本 |
 
 ### ssh.rs
 
@@ -260,6 +278,6 @@ npm run tauri build
 1. **Terminal 组件**：使用 `v-show` 而非 `v-if`，保持终端存活，并保持 5000 行 scrollback 上限
 2. **SSH 事件监听**：必须在 `onMounted` 注册，`onBeforeUnmount` 清理；连接必须等待终端就绪通知
 3. **SFTP 窗口**：使用 `parent()` 设置父子关系；文件操作复用父 SSH session 的 SFTP subsystem
-4. **加密字段**：修改密码时必须重新加密所有敏感字段；主密码检查不应进入启动关键路径
+4. **Vault 与同步**：本地 JSON 写入必须使用临时文件、刷新和原子重命名，并保留备份；云同步只上传整体加密副本，不能上传同步密码或 token
 5. **数据目录**：存储在 `<程序目录>/data/`，不在 C 盘
 6. **后台工作**：不可见页面不轮询服务器状态；新增 listener、timer、缓存或队列时必须定义清理和容量边界
