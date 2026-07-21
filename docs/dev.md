@@ -105,6 +105,26 @@ type:
 - 状态语义色（例如成功、警告、错误）可以使用固定颜色，但必须在亮色和暗色背景下保持可读；不要通过内联 `style` 固定普通文字或组件颜色。
 - 新增或修改自定义页面、弹窗、侧栏与面板时，必须分别检查亮色和暗色主题下的背景、边框、正文、占位文字、图标及 hover/focus 状态。
 
+### 交互确认规范
+
+- 所有由按钮触发、会删除数据、覆盖数据、断开连接或修改安全设置的二次确认，必须使用 Naive UI 的 `NPopconfirm`，并将其包裹在按钮触发器上。
+- 禁止使用浏览器原生的 `window.confirm`、`window.alert` 或 `window.prompt`。确认提示必须紧邻触发操作，说明不可逆或覆盖影响，并提供明确的确认与取消文案。
+
+示例：
+
+```vue
+<n-popconfirm
+  positive-text="确认删除"
+  negative-text="取消"
+  @positive-click="handlePositiveClick"
+>
+  <template #trigger>
+    <n-button type="error">删除</n-button>
+  </template>
+  此操作不可恢复。
+</n-popconfirm>
+```
+
 ### 性能开发规范
 
 - **启动关键路径**：首页只初始化 Vault 并加载主机配置；不得阻塞启动以检查云同步状态或请求同步密码。密钥列表仅在密钥管理页或选择密钥/证书认证时首次加载，并复用 store 缓存。

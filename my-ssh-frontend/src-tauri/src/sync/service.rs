@@ -78,6 +78,8 @@ pub struct SyncStatus {
     pub last_synced_at: Option<String>,
     pub device_id: Option<String>,
     pub token: Option<String>,
+    pub local_vault_revision: Option<u64>,
+    pub last_synced_vault_revision: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -150,7 +152,12 @@ impl<'a> SyncService<'a> {
     }
 
     pub fn status(&self) -> Result<SyncStatus, SyncServiceError> {
-        Ok(status_from_state(self.state_store.load()?))
+        let state = self.state_store.load()?;
+        let mut status = status_from_state(state);
+        if status.configured {
+            status.local_vault_revision = Some(self.vault.sync_snapshot()?.revision);
+        }
+        Ok(status)
     }
 
     pub fn disable(&self) -> Result<(), SyncServiceError> {
@@ -243,11 +250,11 @@ impl<'a> SyncService<'a> {
         let snapshot = self.vault.sync_snapshot()?;
         let remote_client = self.remote_for_state(&state)?;
         let current = remote_client.get(token, &state.remote_id).await?;
+        let key = saved_key(&state)?;
+        let current_envelope = verify_remote_with_key(&current, &key)?;
         if current.content_hash != state.last_synced_content_hash {
             return Err(SyncServiceError::Conflict);
         }
-        let current_envelope = parse_envelope(&current)?;
-        let key = saved_key(&state)?;
         let salt = current_envelope
             .encryption
             .validate()
@@ -285,10 +292,11 @@ impl<'a> SyncService<'a> {
         }
         let remote_client = self.remote_for_state(&state)?;
         let current = remote_client.get(token, &state.remote_id).await?;
+        let saved_key = saved_key(&state)?;
+        let envelope = verify_remote_with_key(&current, &saved_key)?;
         if current.content_hash != state.last_synced_content_hash {
             return Err(SyncServiceError::Conflict);
         }
-        let envelope = parse_envelope(&current)?;
         let remote_content =
             decrypt_vault(&envelope, current_password).map_err(map_crypto_error)?;
         if remote_content != snapshot.content {
@@ -342,6 +350,8 @@ impl<'a> SyncService<'a> {
             .remote_for_state(&state)?
             .get(token, &state.remote_id)
             .await?;
+        let key = saved_key(&state)?;
+        let envelope = verify_remote_with_key(&remote, &key)?;
         if remote.content_hash == state.last_synced_content_hash {
             return Ok(SyncOperationResult {
                 status: "unchanged".into(),
@@ -351,8 +361,6 @@ impl<'a> SyncService<'a> {
         if self.vault.sync_snapshot()?.revision != state.last_synced_vault_revision {
             return Err(SyncServiceError::Conflict);
         }
-        let envelope = parse_envelope(&remote)?;
-        let key = saved_key(&state)?;
         let content = decrypt_vault_with_key(&envelope, &key).map_err(map_crypto_error)?;
         self.vault.replace_from_sync(&content)?;
         let state = state_from_remote(
@@ -378,9 +386,8 @@ impl<'a> SyncService<'a> {
         let snapshot = self.vault.sync_snapshot()?;
         let remote_client = self.remote_for_state(&state)?;
         let current = remote_client.get(token, &state.remote_id).await?;
-        let envelope = parse_envelope(&current)?;
         let key = saved_key(&state)?;
-        decrypt_vault_with_key(&envelope, &key).map_err(map_crypto_error)?;
+        let envelope = verify_remote_with_key(&current, &key)?;
         self.back_up_conflict(&snapshot.content, &current.content)?;
         let salt = envelope
             .encryption
@@ -416,8 +423,8 @@ impl<'a> SyncService<'a> {
             .remote_for_state(&state)?
             .get(token, &state.remote_id)
             .await?;
-        let envelope = parse_envelope(&remote)?;
         let key = saved_key(&state)?;
+        let envelope = verify_remote_with_key(&remote, &key)?;
         let content = decrypt_vault_with_key(&envelope, &key).map_err(map_crypto_error)?;
         self.back_up_conflict(&snapshot.content, &remote.content)?;
         self.vault.replace_from_sync(&content)?;
@@ -554,6 +561,15 @@ fn derive_key_for_envelope(
     Ok(encoded)
 }
 
+fn verify_remote_with_key(
+    remote: &RemoteDocument,
+    key: &[u8; super::SYNC_KEY_LENGTH],
+) -> Result<EncryptedVault, SyncServiceError> {
+    let envelope = parse_envelope(remote)?;
+    decrypt_vault_with_key(&envelope, key).map_err(map_crypto_error)?;
+    Ok(envelope)
+}
+
 fn saved_key(state: &SyncState) -> Result<[u8; super::SYNC_KEY_LENGTH], SyncServiceError> {
     let bytes = STANDARD
         .decode(&state.derived_sync_key)
@@ -612,6 +628,8 @@ fn status_from_state(state: Option<SyncState>) -> SyncStatus {
             last_synced_at: Some(state.last_synced_at),
             device_id: Some(state.device_id),
             token: Some(state.token),
+            local_vault_revision: None,
+            last_synced_vault_revision: Some(state.last_synced_vault_revision),
         },
         None => SyncStatus {
             configured: false,
@@ -622,6 +640,8 @@ fn status_from_state(state: Option<SyncState>) -> SyncStatus {
             last_synced_at: None,
             device_id: None,
             token: None,
+            local_vault_revision: None,
+            last_synced_vault_revision: None,
         },
     }
 }
@@ -640,6 +660,31 @@ mod tests {
     use std::fs;
 
     use super::*;
+
+    #[test]
+    fn remote_key_verification_reports_invalid_remote_data() {
+        let envelope = encrypt_vault(
+            br#"{\"formatVersion\":1,\"profiles\":[]}"#,
+            "correct sync password".into(),
+            uuid::Uuid::new_v4().to_string(),
+            1,
+            "2026-07-21T00:00:00Z".into(),
+            uuid::Uuid::new_v4().to_string(),
+        )
+        .unwrap();
+        let remote = RemoteDocument {
+            remote_id: "remote".into(),
+            content: serde_json::to_string(&envelope).unwrap(),
+            content_hash: "sha256:test".into(),
+            revision: None,
+            updated_at: None,
+        };
+
+        let error =
+            verify_remote_with_key(&remote, &[0; crate::sync::SYNC_KEY_LENGTH]).unwrap_err();
+
+        assert!(matches!(error, SyncServiceError::InvalidRemoteData));
+    }
 
     #[test]
     fn conflict_backup_preserves_local_vault_and_remote_envelope() {

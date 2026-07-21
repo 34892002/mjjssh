@@ -15,6 +15,8 @@ type SyncStatus = {
   lastSyncedAt: string | null
   deviceId: string | null
   token: string | null
+  localVaultRevision: number | null
+  lastSyncedVaultRevision: number | null
 }
 
 type OperationResult = {
@@ -102,37 +104,31 @@ async function enable() {
   )
 }
 
-async function upload() {
-  if (!token.value.trim()) {
-    error.value = '上传需要访问 token。'
-    return
-  }
-  await run(
-    () => invoke<OperationResult>('upload_sync_vault', { token: token.value }),
-    '已上传加密同步副本。',
-  )
+async function overwriteWithLocal() {
+  await resolveConflict('keep_local')
 }
 
-async function download() {
-  if (!token.value.trim()) {
-    error.value = '下载需要访问 token。'
-    return
-  }
-  await run(
-    () => invoke<OperationResult>('download_sync_vault', { token: token.value }),
-    '已下载并应用远端同步副本，主机和已加载的密钥列表已刷新。',
-    true,
-  )
+async function overwriteWithRemote() {
+  await resolveConflict('accept_remote')
 }
 
 function formatSyncError(reason: unknown): string {
   const message = String(reason)
   const normalized = message.toLowerCase()
-  if (normalized.includes('cloud sync conflict: local or remote data changed since the last sync')) {
+  if (normalized.includes('cloud sync conflict') || normalized.includes('rejected the update because the remote changed')) {
     return '同步冲突：本地或云端数据自上次同步后已发生变化。'
   }
+  if (normalized.includes('authentication failed')) {
+    return '云同步 token 无效、已过期或没有访问权限。'
+  }
+  if (normalized.includes('rate limit was reached')) {
+    return '云同步服务请求过于频繁，请稍后重试。'
+  }
+  if (normalized.includes('gist was not found') || normalized.includes('snippet was not found')) {
+    return '找不到云端同步数据，可能已被删除。'
+  }
   if (normalized.includes('sync password is incorrect or sync data is corrupted')) {
-    return '当前同步密码不正确，或云端同步数据无法读取。'
+    return '无法解密云端数据。同步密码可能被其他设备修改，或云端数据损坏。'
   }
   return message
 }
@@ -200,7 +196,6 @@ async function deleteRemote() {
     error.value = '删除远端同步库需要访问 token。'
     return
   }
-  if (!window.confirm('确定永久删除远端加密同步库吗？此操作不可恢复。')) return
   error.value = null
   notice.value = null
   loading.value = true
@@ -275,7 +270,7 @@ onBeforeUnmount(() => {
 
         <label>{{ providerLabel }} token<n-input v-model:value="token" type="password" show-password-on="click" placeholder="保存在本机 sync.json" /></label>
         <label>云同步加密密码<n-input v-model:value="syncPassword" type="password" show-password-on="click" placeholder="至少 8 个字符" /></label>
-        <label>确认云同步加密密码<n-input v-model:value="confirmSyncPassword" type="password" show-password-on="click" /></label>
+        <label>确认云同步加密密码<n-input v-model:value="confirmSyncPassword" type="password" show-password-on="click" placeholder="再次输入同步密码" /></label>
         <n-button type="primary" :loading="loading" @click="enable">连接并同步 {{ providerLabel }}</n-button>
       </div>
     </template>
@@ -289,11 +284,55 @@ onBeforeUnmount(() => {
         <label>{{ configuredProviderLabel }} token<n-input v-model:value="token" type="password" show-password-on="click" placeholder="保存在本机 sync.json" /></label>
 
         <n-space>
-          <n-button type="primary" :loading="loading" @click="upload"><Upload :size="16" />上传</n-button>
-          <n-button :loading="loading" @click="download"><Download :size="16" />下载</n-button>
+          <n-popconfirm
+            :disabled="loading"
+            positive-text="确认覆盖云端"
+            negative-text="取消"
+            @positive-click="overwriteWithLocal"
+          >
+            <template #trigger>
+              <n-button type="primary" :loading="loading"><Upload :size="16" />本地覆盖云端</n-button>
+            </template>
+            将用本地配置覆盖云端同步数据。<br>
+            覆盖前会自动备份本地和云端数据。
+          </n-popconfirm>
+          <n-popconfirm
+            :disabled="loading"
+            positive-text="确认覆盖本地"
+            negative-text="取消"
+            @positive-click="overwriteWithRemote"
+          >
+            <template #trigger>
+              <n-button :loading="loading"><Download :size="16" />云端覆盖本地</n-button>
+            </template>
+            将用云端配置覆盖本地数据。<br>
+            覆盖前会自动备份本地和云端数据。
+          </n-popconfirm>
           <n-button tertiary :disabled="loading" @click="openPasswordForm">修改同步密码</n-button>
-          <n-button tertiary type="warning" :disabled="loading" @click="disable">关闭同步</n-button>
-          <n-button tertiary type="error" :disabled="loading" @click="deleteRemote">删除远端数据</n-button>
+          <n-popconfirm
+            :disabled="loading"
+            positive-text="确认关闭"
+            negative-text="取消"
+            @positive-click="disable"
+          >
+            <template #trigger>
+              <n-button tertiary type="warning" :disabled="loading">关闭同步</n-button>
+            </template>
+            将解除本机与云端同步的绑定。<br>
+            不会删除云端同步数据。
+          </n-popconfirm>
+          <n-popconfirm
+            :disabled="loading"
+            positive-text="确认删除"
+            negative-text="取消"
+            @positive-click="deleteRemote"
+          >
+            <template #trigger>
+              <n-button tertiary type="error" :disabled="loading">删除远端数据</n-button>
+            </template>
+            确定永久删除远端加密同步数据吗？<br>
+            此操作不可恢复。
+          </n-popconfirm>
         </n-space>
       </div>
       <div v-if="passwordFormVisible" class="sync-card password-form">

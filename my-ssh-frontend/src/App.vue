@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { defineAsyncComponent, ref, computed, onBeforeUnmount, onMounted, nextTick, watch, type Component } from 'vue'
+import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { Archive, Box, Cloud, CloudCog, Code2, Container, Copy, Cpu, Database, Download, EthernetPort, FileCode2, Globe2, HardDrive, Layers3, ListFilter, MapPin, MemoryStick, MonitorCog, Moon, Network, RadioTower, Router, Server, ServerCog, ShieldCheck, Sparkles, Square, Sun, TerminalSquare, Upload, Waypoints, Workflow, X, Zap } from '@lucide/vue'
 import {
@@ -16,6 +17,7 @@ import {
   NSelect,
   NSpace,
   NPopconfirm,
+  NPopover,
   NEmpty,
   NGlobalStyle,
   type GlobalThemeOverrides,
@@ -79,11 +81,92 @@ const darkThemeOverrides: GlobalThemeOverrides = {
 }
 
 const naiveThemeOverrides = computed(() => isDarkTheme.value ? darkThemeOverrides : lightThemeOverrides)
+type SyncStatus = {
+  configured: boolean
+  provider: string | null
+  remoteId: string | null
+  remoteFileName: string | null
+  state: string
+  lastSyncedAt: string | null
+  deviceId: string | null
+  token: string | null
+  localVaultRevision: number | null
+  lastSyncedVaultRevision: number | null
+}
+
+type SyncOperationResult = {
+  status: 'uploaded' | 'downloaded' | 'unchanged'
+  sync: SyncStatus
+}
+
 const isMaximized = ref(false)
+const syncPopoverVisible = ref(false)
+const syncStatus = ref<SyncStatus | null>(null)
+const syncLoading = ref(false)
+const syncError = ref<string | null>(null)
+const syncNotice = ref<string | null>(null)
 const transferPanelRef = ref<HTMLElement | null>(null)
 const transferButtonRef = ref<HTMLButtonElement | null>(null)
 const transferNoticeVisible = ref(false)
 let transferNoticeTimer: ReturnType<typeof setTimeout> | null = null
+
+const syncProviderLabel = computed(() => syncStatus.value?.provider === 'gitee_snippet' ? 'Gitee 私有代码片段' : 'GitHub Gist')
+const syncVersionState = computed(() => {
+  if (syncStatus.value?.localVaultRevision === null || syncStatus.value?.lastSyncedVaultRevision === null) return '等待检查'
+  return syncStatus.value.localVaultRevision === syncStatus.value.lastSyncedVaultRevision ? '本地已同步' : '本地有更新'
+})
+
+function formatQuickSyncError(reason: unknown): string {
+  const message = String(reason)
+  const normalized = message.toLowerCase()
+  if (normalized.includes('cloud sync conflict') || normalized.includes('rejected the update because the remote changed')) return '同步冲突：本地和云端都发生了变化，请在同步设置中选择保留哪一份数据。'
+  if (normalized.includes('authentication failed')) return '云同步 token 无效、已过期或没有访问权限。'
+  if (normalized.includes('rate limit was reached')) return '云同步服务请求过于频繁，请稍后重试。'
+  if (normalized.includes('gist was not found') || normalized.includes('snippet was not found')) return '找不到云端同步数据，可能已被删除。'
+  if (normalized.includes('sync password is incorrect or sync data is corrupted')) return '无法解密云端数据。同步密码可能被其他设备修改，或云端数据损坏。'
+  return message
+}
+
+async function loadSyncStatus() {
+  try {
+    syncStatus.value = await invoke<SyncStatus>('get_sync_status')
+  } catch (reason) {
+    syncError.value = formatQuickSyncError(reason)
+  }
+}
+
+async function handleSyncPopoverShow(visible: boolean) {
+  syncPopoverVisible.value = visible
+  if (!visible) return
+  syncError.value = null
+  syncNotice.value = null
+  await loadSyncStatus()
+}
+
+async function syncNow() {
+  if (!syncStatus.value?.token) return
+  syncError.value = null
+  syncNotice.value = null
+  syncLoading.value = true
+  try {
+    const download = await invoke<SyncOperationResult>('download_sync_vault', { token: syncStatus.value.token })
+    syncStatus.value = download.sync
+    if (download.status === 'downloaded') {
+      await vaultStore.refreshAfterSync()
+      syncNotice.value = '已下载云端更新。'
+      await loadSyncStatus()
+      return
+    }
+    const upload = await invoke<SyncOperationResult>('upload_sync_vault', { token: syncStatus.value.token })
+    syncStatus.value = upload.sync
+    syncNotice.value = upload.status === 'uploaded' ? '已上传本地更新。' : '已是最新状态。'
+    await loadSyncStatus()
+  } catch (reason) {
+    syncError.value = formatQuickSyncError(reason)
+  } finally {
+    syncLoading.value = false
+  }
+}
 
 function toggleTheme() {
   isDarkTheme.value = !isDarkTheme.value
@@ -676,7 +759,36 @@ function openSyncSettings() {
           </div>
           <div class="titlebar-drag-region" data-tauri-drag-region @mousedown="startWindowDrag" />
           <div class="titlebar-actions" aria-label="应用功能">
-            <button class="titlebar-action" title="云同步" aria-label="云同步" @click="openSyncSettings"><Cloud :size="17" /></button>
+            <n-popover trigger="click" placement="bottom-end" :show="syncPopoverVisible" @update:show="handleSyncPopoverShow">
+              <template #trigger>
+                <button class="titlebar-action" :class="{ active: syncPopoverVisible }" title="云同步" aria-label="云同步"><Cloud :size="17" /></button>
+              </template>
+              <section class="quick-sync-panel">
+                <header>
+                  <strong>云同步</strong>
+                  <span :class="{ enabled: syncStatus?.configured }">{{ syncStatus?.configured ? '已启用' : '未启用' }}</span>
+                </header>
+                <template v-if="syncStatus?.configured">
+                  <div class="quick-sync-provider"><Cloud :size="18" /><span>{{ syncProviderLabel }}</span></div>
+                  <dl>
+                    <div><dt>同步文件</dt><dd>{{ syncStatus.remoteFileName }}</dd></div>
+                    <div><dt>本地版本</dt><dd>v{{ syncStatus.localVaultRevision }}</dd></div>
+                    <div><dt>上次同步版本</dt><dd>v{{ syncStatus.lastSyncedVaultRevision }}</dd></div>
+                    <div><dt>当前状态</dt><dd>{{ syncVersionState }}</dd></div>
+                    <div><dt>上次同步</dt><dd>{{ syncStatus.lastSyncedAt ? new Date(syncStatus.lastSyncedAt).toLocaleString() : '尚未同步' }}</dd></div>
+                  </dl>
+                  <n-alert v-if="syncError" type="error" :show-icon="false">{{ syncError }}</n-alert>
+                  <n-alert v-if="syncNotice" type="success" :show-icon="false">{{ syncNotice }}</n-alert>
+                  <n-button type="primary" block :loading="syncLoading" @click="syncNow">立即同步</n-button>
+                  <n-button text @click="openSyncSettings(); syncPopoverVisible = false">打开同步设置</n-button>
+                </template>
+                <template v-else>
+                  <p>连接 GitHub Gist 或 Gitee 私有代码片段，在设备间同步主机和密钥配置。</p>
+                  <n-alert v-if="syncError" type="error" :show-icon="false">{{ syncError }}</n-alert>
+                  <n-button type="primary" block @click="openSyncSettings(); syncPopoverVisible = false">配置云同步</n-button>
+                </template>
+              </section>
+            </n-popover>
             <button class="titlebar-action" :title="isDarkTheme ? '切换为浅色主题' : '切换为深色主题'" aria-label="切换主题" @click="toggleTheme"><Sun v-if="isDarkTheme" :size="17" /><Moon v-else :size="17" /></button>
           </div>
           <div class="window-controls">
@@ -1118,7 +1230,19 @@ function openSyncSettings() {
 .titlebar-drag-region { min-width: 16px; flex: 1; height: 100%; }
 .titlebar-actions, .window-controls { display: flex; align-self: stretch; }
 .titlebar-action, .window-control { display: grid; place-items: center; width: 40px; padding: 0; border: 0; background: transparent; color: var(--app-muted); cursor: pointer; }
-.titlebar-action:hover, .window-control:hover { background: var(--app-hover); color: var(--app-text); }
+.titlebar-action:hover, .titlebar-action.active, .window-control:hover { background: var(--app-hover); color: var(--app-text); }
+.quick-sync-panel { display: grid; width: 280px; gap: 12px; }
+.quick-sync-panel header { display: flex; align-items: center; justify-content: space-between; color: var(--n-text-color); }
+.quick-sync-panel header span { color: var(--n-text-color-2); font-size: 12px; }
+.quick-sync-panel header span.enabled { color: var(--n-success-color); }
+.quick-sync-panel p { margin: 0; color: var(--n-text-color-2); font-size: 13px; line-height: 1.55; }
+.quick-sync-provider { display: flex; align-items: center; gap: 8px; color: var(--n-text-color); font-size: 13px; font-weight: 600; }
+.quick-sync-provider svg { color: var(--n-primary-color); }
+.quick-sync-panel dl { display: grid; gap: 8px; margin: 0; }
+.quick-sync-panel dl div { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; }
+.quick-sync-panel dt { color: var(--n-text-color-2); }
+.quick-sync-panel dd { max-width: 164px; margin: 0; overflow: hidden; color: var(--n-text-color); text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.quick-sync-panel :deep(.n-button--text-type) { justify-self: center; }
 .minimize-icon { fill: none; stroke: currentColor; stroke-linecap: round; stroke-width: 1.6; }
 .window-control.close:hover { background: #c94f62; color: #fff; }
 
