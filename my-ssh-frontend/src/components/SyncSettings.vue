@@ -371,7 +371,7 @@ h3 { margin: 0; font-size: 18px; }
 .sync-card-title { display: flex; align-items: center; gap: 8px; font-weight: 650; }
 p { margin: 0; color: var(--app-muted); font-size: 13px; line-height: 1.55; }
 label { display: grid; gap: 6px; color: var(--app-text); font-size: 13px; font-weight: 600; }
-.password-dialog { display: grid; gap: 13px; }
+
 select { width: 100%; padding: 8px 10px; border: 1px solid var(--app-border); border-radius: 6px; color: var(--app-text); background: var(--app-surface); }
 code { font-size: 12px; word-break: break-all; }
 </style>

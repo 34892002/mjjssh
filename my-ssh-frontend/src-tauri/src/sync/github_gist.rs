@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use reqwest::{header, Client, StatusCode};
+use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 
 use super::models::{content_hash, RemoteDocument};
@@ -67,13 +67,12 @@ impl GithubGistRemote {
             .send()
             .await
             .map_err(request_error)?;
-        let response = check_response(response).await?;
-        let revision = etag(&response);
-        let gist: GistResponse = response
+        let gist: GistResponse = check_response(response)
+            .await?
             .json()
             .await
             .map_err(|_| GithubGistError::InvalidResponse)?;
-        document_from_gist(gist, revision)
+        document_from_gist(gist)
     }
 
     pub async fn find_sync_vaults(
@@ -116,13 +115,12 @@ impl GithubGistRemote {
             .send()
             .await
             .map_err(request_error)?;
-        let response = check_response(response).await?;
-        let revision = etag(&response);
-        let gist: GistResponse = response
+        let gist: GistResponse = check_response(response)
+            .await?
             .json()
             .await
             .map_err(|_| GithubGistError::InvalidResponse)?;
-        document_from_gist(gist, revision)
+        document_from_gist(gist)
     }
 
     pub async fn update(
@@ -139,13 +137,12 @@ impl GithubGistRemote {
             .send()
             .await
             .map_err(request_error)?;
-        let response = check_response(response).await?;
-        let revision = etag(&response);
-        let gist: GistResponse = response
+        let gist: GistResponse = check_response(response)
+            .await?
             .json()
             .await
             .map_err(|_| GithubGistError::InvalidResponse)?;
-        document_from_gist(gist, revision)
+        document_from_gist(gist)
     }
 
     pub async fn delete(&self, token: &str, remote_id: &str) -> Result<(), GithubGistError> {
@@ -170,7 +167,6 @@ struct GistSummary {
 #[derive(Deserialize)]
 struct GistResponse {
     id: String,
-    updated_at: Option<String>,
     files: std::collections::HashMap<String, GistFile>,
 }
 
@@ -226,10 +222,7 @@ fn gist_files(content: &str) -> std::collections::HashMap<&'static str, GistFile
     .collect()
 }
 
-fn document_from_gist(
-    gist: GistResponse,
-    revision: Option<String>,
-) -> Result<RemoteDocument, GithubGistError> {
+fn document_from_gist(gist: GistResponse) -> Result<RemoteDocument, GithubGistError> {
     let file = gist
         .files
         .get(GIST_FILE_NAME)
@@ -245,17 +238,7 @@ fn document_from_gist(
         remote_id: gist.id,
         content_hash: content_hash(&content),
         content,
-        revision,
-        updated_at: gist.updated_at,
     })
-}
-
-fn etag(response: &reqwest::Response) -> Option<String> {
-    response
-        .headers()
-        .get(header::ETAG)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_owned)
 }
 
 async fn check_response(response: reqwest::Response) -> Result<reqwest::Response, GithubGistError> {
@@ -347,12 +330,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gets_gist_content_and_revision() {
-        let (base_url, request) = mock_server(
-            200,
-            &[("ETag", "\"revision-1\"")],
-            &valid_gist("ciphertext"),
-        );
+    async fn gets_gist_content() {
+        let (base_url, request) = mock_server(200, &[], &valid_gist("ciphertext"));
         let remote = GithubGistRemote::with_base_url(&base_url).unwrap();
         let document = remote.get("secret-token", "gist-id").await.unwrap();
         let request = request.recv().unwrap();
@@ -360,7 +339,6 @@ mod tests {
         assert!(request.contains("authorization: Bearer secret-token"));
         assert_eq!(document.remote_id, "gist-id");
         assert_eq!(document.content, "ciphertext");
-        assert_eq!(document.revision.as_deref(), Some("\"revision-1\""));
     }
 
     #[tokio::test]

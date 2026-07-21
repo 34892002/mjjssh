@@ -66,7 +66,6 @@ pub fn run() {
             commands::sync::enable_github_gist_sync,
             commands::sync::enable_gitee_snippet_sync,
             commands::sync::upload_sync_vault,
-            commands::sync::refresh_sync_derived_key,
             commands::sync::download_sync_vault,
             commands::sync::change_sync_password,
             commands::sync::resolve_sync_conflict,

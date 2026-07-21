@@ -93,10 +93,14 @@ async fn synchronizes_two_local_vaults_and_detects_conflicts() {
         first_service
             .change_password(&token, TEST_PASSWORD.into(), UPDATED_TEST_PASSWORD.into())
             .await?;
+        second_service.disable()?;
         second_service
-            .refresh_derived_key(&token, UPDATED_TEST_PASSWORD.into())
+            .enable_or_import(
+                SyncProvider::GiteeSnippet,
+                &token,
+                UPDATED_TEST_PASSWORD.into(),
+            )
             .await?;
-        second_service.download(&token).await?;
         assert_eq!(second.list_profiles()?.len(), 3);
 
         first.create_profile(&profile("first-keep-local"))?;

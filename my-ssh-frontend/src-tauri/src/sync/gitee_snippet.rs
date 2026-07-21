@@ -154,7 +154,6 @@ struct GiteeGistSummary {
 #[derive(Deserialize)]
 struct GiteeGistResponse {
     id: String,
-    updated_at: Option<String>,
     files: HashMap<String, GiteeGistFile>,
 }
 
@@ -223,8 +222,6 @@ fn document_from_gist(gist: GiteeGistResponse) -> Result<RemoteDocument, GiteeSn
         remote_id: gist.id,
         content_hash: content_hash(&content),
         content,
-        revision: None,
-        updated_at: gist.updated_at,
     })
 }
 

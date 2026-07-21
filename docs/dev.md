@@ -147,7 +147,7 @@ type:
 - 不使用固定默认密码、随机本地加密密钥或平台特定系统密钥库。
 - 启用云同步后，用户输入同步密码；应用对完整 Vault JSON 执行 Argon2id 密钥派生和 AES-256-GCM 整体加密，再上传 GitHub Gist/Gitee 私有片段。
 - 同步密码仅用于云端副本，不影响本地 SSH 凭证、不会上传且不可找回。
-- `data/sync.json` 默认保存 provider、远端绑定、token 和 Base64 编码的 Argon2id 派生 AES key，以便后续同步免输入；绝不保存原始同步密码。日常同步复用远端 Vault 的随机 KDF salt 并更新 AES-GCM nonce；只有修改同步密码时才轮换 salt 和派生 key。其他已配置设备在改密后必须验证新密码以刷新本机派生 key。该文件不使用系统凭据库；不得写入日志、远端片段、`vault.json` 或浏览器持久化存储。关闭同步或删除远端数据会删除该文件。
+- `data/sync.json` 默认保存 provider、远端绑定、token 和 Base64 编码的 Argon2id 派生 AES key，以便后续同步免输入；绝不保存原始同步密码。日常同步复用远端 Vault 的随机 KDF salt 并更新 AES-GCM nonce；只有修改同步密码时才轮换 salt 和派生 key。其他已配置设备在改密后需要关闭本机同步绑定，再使用新密码重新连接并导入云端副本。该文件不使用系统凭据库；不得写入日志、远端片段、`vault.json` 或浏览器持久化存储。关闭同步或删除远端数据会删除该文件。
 - 同步期间 Argon2id 每次用户输入密码后仅派生一次密钥；不得在每次 SSH 连接或读取配置时重复派生。
 - 完整设计见 [db.md](db.md) 和 [cloud-sync.md](cloud-sync.md)。
 
@@ -242,8 +242,8 @@ type:
 | `enable_gitee_snippet_sync` | 按固定名称自动查找或创建 Gitee 私有代码片段同步副本 |
 | `upload_sync_vault` | 上传本地 Vault |
 | `download_sync_vault` | 下载远端 Vault |
-| `resolve_sync_conflict` | 保留本地或接受远端以解决冲突 |
 | `change_sync_password` | 修改远端同步副本的密码 |
+| `resolve_sync_conflict` | 保留本地或接受远端以解决冲突 |
 | `disable_sync` | 删除本地同步配置 |
 | `delete_remote_sync_vault` | 删除远端同步副本 |
 

@@ -322,28 +322,6 @@ impl<'a> SyncService<'a> {
         })
     }
 
-    pub async fn refresh_derived_key(
-        &self,
-        token: &str,
-        password: String,
-    ) -> Result<SyncStatus, SyncServiceError> {
-        let state = self.configured_state()?;
-        let remote = self
-            .remote_for_state(&state)?
-            .get(token, &state.remote_id)
-            .await?;
-        let envelope = parse_envelope(&remote)?;
-        decrypt_vault(&envelope, password.clone()).map_err(map_crypto_error)?;
-        let derived_sync_key = derive_key_for_envelope(&envelope, password)?;
-        let state = SyncState {
-            token: token.to_owned(),
-            derived_sync_key,
-            ..state
-        };
-        self.state_store.save(&state)?;
-        Ok(status_from_state(Some(state)))
-    }
-
     pub async fn download(&self, token: &str) -> Result<SyncOperationResult, SyncServiceError> {
         let state = self.configured_state()?;
         let remote = self
@@ -609,7 +587,6 @@ fn state_from_remote(
         remote_id: remote.remote_id.clone(),
         last_synced_content_hash: remote.content_hash.clone(),
         last_synced_vault_revision: snapshot.revision,
-        last_synced_remote_revision: remote.revision.clone(),
         last_synced_at: chrono::Utc::now().to_rfc3339(),
         device_id,
         token,
@@ -676,8 +653,6 @@ mod tests {
             remote_id: "remote".into(),
             content: serde_json::to_string(&envelope).unwrap(),
             content_hash: "sha256:test".into(),
-            revision: None,
-            updated_at: None,
         };
 
         let error =

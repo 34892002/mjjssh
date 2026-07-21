@@ -84,23 +84,6 @@ pub async fn change_sync_password(
 }
 
 #[tauri::command]
-pub async fn refresh_sync_derived_key(
-    state: State<'_, AppState>,
-    token: String,
-    sync_password: String,
-) -> Result<SyncStatus, String> {
-    let vault_guard = state.vault.lock().await;
-    let vault = vault_guard
-        .as_ref()
-        .ok_or_else(|| "Vault is not open".to_string())?;
-    SyncService::new(vault, &state.app_dir)
-        .map_err(|error| error.to_string())?
-        .refresh_derived_key(&token, sync_password)
-        .await
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
 pub async fn download_sync_vault(
     state: State<'_, AppState>,
     token: String,
