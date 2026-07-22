@@ -78,6 +78,7 @@ pub struct SyncStatus {
     pub last_synced_at: Option<String>,
     pub device_id: Option<String>,
     pub token: Option<String>,
+    pub auto_sync: bool,
     pub local_vault_revision: Option<u64>,
     pub last_synced_vault_revision: Option<u64>,
 }
@@ -165,6 +166,31 @@ impl<'a> SyncService<'a> {
         Ok(())
     }
 
+    pub fn set_auto_sync(&self, auto_sync: bool) -> Result<SyncStatus, SyncServiceError> {
+        let mut state = self.configured_state()?;
+        state.auto_sync = auto_sync;
+        self.state_store.save(&state)?;
+        Ok(status_from_state(Some(state)))
+    }
+
+    pub async fn update_local_password(
+        &self,
+        token: &str,
+        password: String,
+    ) -> Result<SyncStatus, SyncServiceError> {
+        let mut state = self.configured_state()?;
+        let remote = self
+            .remote_for_state(&state)?
+            .get(token, &state.remote_id)
+            .await?;
+        let envelope = parse_envelope(&remote)?;
+        state.derived_sync_key = derive_key_for_envelope(&envelope, password)?;
+        let key = saved_key(&state)?;
+        decrypt_vault_with_key(&envelope, &key).map_err(map_crypto_error)?;
+        self.state_store.save(&state)?;
+        Ok(status_from_state(Some(state)))
+    }
+
     pub async fn enable_create(
         &self,
         provider: SyncProvider,
@@ -200,6 +226,7 @@ impl<'a> SyncService<'a> {
             device_id,
             token.to_owned(),
             derived_sync_key,
+            true,
         );
         self.state_store.save(&state)?;
         Ok(status_from_state(Some(state)))
@@ -240,6 +267,7 @@ impl<'a> SyncService<'a> {
             uuid::Uuid::new_v4().to_string(),
             token.to_owned(),
             derived_sync_key,
+            true,
         );
         self.state_store.save(&state)?;
         Ok(status_from_state(Some(state)))
@@ -271,6 +299,7 @@ impl<'a> SyncService<'a> {
             state.device_id,
             token.to_owned(),
             state.derived_sync_key,
+            state.auto_sync,
         );
         self.state_store.save(&state)?;
         Ok(SyncOperationResult {
@@ -314,6 +343,7 @@ impl<'a> SyncService<'a> {
             state.device_id,
             token.to_owned(),
             derived_sync_key,
+            state.auto_sync,
         );
         self.state_store.save(&state)?;
         Ok(SyncOperationResult {
@@ -348,6 +378,7 @@ impl<'a> SyncService<'a> {
             state.device_id,
             token.to_owned(),
             state.derived_sync_key,
+            state.auto_sync,
         );
         self.state_store.save(&state)?;
         Ok(SyncOperationResult {
@@ -383,6 +414,7 @@ impl<'a> SyncService<'a> {
             state.device_id,
             token.to_owned(),
             state.derived_sync_key,
+            state.auto_sync,
         );
         self.state_store.save(&state)?;
         Ok(SyncOperationResult {
@@ -413,6 +445,7 @@ impl<'a> SyncService<'a> {
             state.device_id,
             token.to_owned(),
             state.derived_sync_key,
+            state.auto_sync,
         );
         self.state_store.save(&state)?;
         Ok(SyncOperationResult {
@@ -581,6 +614,7 @@ fn state_from_remote(
     device_id: String,
     token: String,
     derived_sync_key: String,
+    auto_sync: bool,
 ) -> SyncState {
     SyncState {
         provider: provider.as_str().into(),
@@ -591,6 +625,7 @@ fn state_from_remote(
         device_id,
         token,
         derived_sync_key,
+        auto_sync,
     }
 }
 
@@ -605,6 +640,7 @@ fn status_from_state(state: Option<SyncState>) -> SyncStatus {
             last_synced_at: Some(state.last_synced_at),
             device_id: Some(state.device_id),
             token: Some(state.token),
+            auto_sync: state.auto_sync,
             local_vault_revision: None,
             last_synced_vault_revision: Some(state.last_synced_vault_revision),
         },
@@ -617,6 +653,7 @@ fn status_from_state(state: Option<SyncState>) -> SyncStatus {
             last_synced_at: None,
             device_id: None,
             token: None,
+            auto_sync: false,
             local_vault_revision: None,
             last_synced_vault_revision: None,
         },

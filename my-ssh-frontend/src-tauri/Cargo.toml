@@ -47,6 +47,7 @@ aes-gcm = "0.11"
 argon2 = "0.6.0-rc.8"
 base64 = "0.22"
 sha2 = "0.10"
+md5 = "0.7"
 
 # Shell command parsing
 # Keep authorization based on parsed command nodes rather than shell text heuristics.

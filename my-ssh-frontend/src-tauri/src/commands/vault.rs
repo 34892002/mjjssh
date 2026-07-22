@@ -1,3 +1,4 @@
+use std::fs;
 use std::time::Duration;
 
 use serde::Deserialize;
@@ -58,6 +59,12 @@ pub async fn init_vault(state: State<'_, AppState>) -> Result<(), String> {
         return Ok(());
     }
     state.auto_open().await.map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn get_vault_md5(state: State<'_, AppState>) -> Result<String, String> {
+    let content = fs::read(state.app_dir.join("vault.json")).map_err(|error| error.to_string())?;
+    Ok(format!("{:x}", md5::compute(content)))
 }
 
 #[tauri::command]
@@ -162,6 +169,9 @@ pub async fn refresh_profile_info(
     }
     let output = output?;
     let (os, location) = parse_profile_info(&output)?;
+    if profile.os.as_deref() == Some(os.as_str()) && profile.location == location {
+        return Ok(SshProfileView::from(&profile));
+    }
 
     state
         .with_vault(|vault| {

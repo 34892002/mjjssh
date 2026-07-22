@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { Cloud, Download, Upload } from '@lucide/vue'
-import { NAlert, NButton, NInput, NPopconfirm, NSpace } from 'naive-ui'
+import { NAlert, NButton, NInput, NPopconfirm, NSpace, NSwitch } from 'naive-ui'
 import { useVaultStore } from '../stores/vault'
 
 type SyncProvider = 'github_gist' | 'gitee_snippet'
@@ -15,6 +15,7 @@ type SyncStatus = {
   lastSyncedAt: string | null
   deviceId: string | null
   token: string | null
+  autoSync: boolean
   localVaultRevision: number | null
   lastSyncedVaultRevision: number | null
 }
@@ -33,7 +34,9 @@ const confirmSyncPassword = ref('')
 const currentPassword = ref('')
 const newPassword = ref('')
 const confirmNewPassword = ref('')
+const localSyncPassword = ref('')
 const passwordFormVisible = ref(false)
+const localPasswordFormVisible = ref(false)
 const passwordError = ref<string | null>(null)
 const loading = ref(false)
 const error = ref<string | null>(null)
@@ -94,7 +97,7 @@ async function enable() {
     return
   }
   const command = provider.value === 'github_gist' ? 'enable_github_gist_sync' : 'enable_gitee_snippet_sync'
-  await run(
+  const succeeded = await run(
     () => invoke<SyncStatus>(command, {
       token: token.value,
       syncPassword: syncPassword.value,
@@ -102,6 +105,7 @@ async function enable() {
     `已连接或创建 ${providerLabel.value} 同步库，并已在本机保存 token 和派生密钥。`,
     true,
   )
+  if (succeeded) window.dispatchEvent(new Event('sync-configuration-changed'))
 }
 
 async function overwriteWithLocal() {
@@ -135,6 +139,7 @@ function formatSyncError(reason: unknown): string {
 
 function openPasswordForm() {
   passwordError.value = null
+  localPasswordFormVisible.value = false
   passwordFormVisible.value = true
 }
 
@@ -144,6 +149,52 @@ function closePasswordForm() {
   currentPassword.value = ''
   newPassword.value = ''
   confirmNewPassword.value = ''
+}
+
+function openLocalPasswordForm() {
+  passwordError.value = null
+  passwordFormVisible.value = false
+  localPasswordFormVisible.value = true
+}
+
+function closeLocalPasswordForm() {
+  localPasswordFormVisible.value = false
+  passwordError.value = null
+  localSyncPassword.value = ''
+}
+
+async function updateLocalSyncPassword() {
+  passwordError.value = null
+  if (!token.value.trim() || !localSyncPassword.value) {
+    passwordError.value = '请输入访问 token 和当前云端同步密码。'
+    return
+  }
+
+  loading.value = true
+  try {
+    applyStatus(await invoke<SyncStatus>('update_local_sync_password', {
+      token: token.value,
+      password: localSyncPassword.value,
+    }))
+    notice.value = '已更新本机同步凭据；云端和本地配置均未修改。'
+    closeLocalPasswordForm()
+  } catch (reason) {
+    passwordError.value = formatSyncError(reason)
+  } finally {
+    loading.value = false
+  }
+}
+
+async function updateAutoSync(autoSync: boolean) {
+  const previous = status.value?.autoSync ?? true
+  if (status.value) status.value.autoSync = autoSync
+  try {
+    applyStatus(await invoke<SyncStatus>('set_auto_sync', { autoSync }))
+    window.dispatchEvent(new Event('sync-configuration-changed'))
+  } catch (reason) {
+    if (status.value) status.value.autoSync = previous
+    error.value = formatSyncError(reason)
+  }
 }
 
 async function changeSyncPassword() {
@@ -202,6 +253,7 @@ async function deleteRemote() {
   try {
     await invoke('delete_remote_sync_vault', { token: token.value })
     await loadStatus()
+    window.dispatchEvent(new Event('sync-configuration-changed'))
     notice.value = '已删除远端同步库及本机保存的同步凭据。'
   } catch (reason) {
     error.value = formatSyncError(reason)
@@ -217,6 +269,7 @@ async function disable() {
   try {
     await invoke('disable_sync')
     await loadStatus()
+    window.dispatchEvent(new Event('sync-configuration-changed'))
     notice.value = '已解除本机同步绑定；远端 Gist 未删除。'
   } catch (reason) {
     error.value = formatSyncError(reason)
@@ -233,7 +286,9 @@ onBeforeUnmount(() => {
   currentPassword.value = ''
   newPassword.value = ''
   confirmNewPassword.value = ''
+  localSyncPassword.value = ''
   passwordFormVisible.value = false
+  localPasswordFormVisible.value = false
   passwordError.value = null
 })
 </script>
@@ -281,6 +336,19 @@ onBeforeUnmount(() => {
         <p>同步文件：<code>{{ status?.remoteFileName }}</code></p>
         <p>此 token 用于访问 {{ configuredProviderLabel }} 中的同步(加密)数据。</p>
         <p v-if="status?.lastSyncedAt">上次成功同步：{{ new Date(status.lastSyncedAt).toLocaleString() }}</p>
+        <div class="sync-option">
+          <div>
+            <strong>自动同步</strong>
+            <p>本地配置变更后等待 60 秒；连续修改会重新计时。</p>
+          </div>
+          <n-switch :value="status?.autoSync ?? true" :disabled="loading" @update:value="updateAutoSync" />
+        </div>
+        <div class="sync-option">
+          <div>
+            <strong>安全同步（推荐）</strong>
+            <p>自动处理单侧更新；本地和云端同时变化时保留两份数据并提示选择。</p>
+          </div>
+        </div>
         <label>{{ configuredProviderLabel }} token<n-input v-model:value="token" type="password" show-password-on="click" placeholder="保存在本机 sync.json" /></label>
 
         <n-space>
@@ -308,7 +376,24 @@ onBeforeUnmount(() => {
             将用云端配置覆盖本地数据。<br>
             覆盖前会自动备份本地和云端数据。
           </n-popconfirm>
-          <n-button tertiary :disabled="loading" @click="openPasswordForm">修改同步密码</n-button>
+          <n-button tertiary :disabled="loading" @click="openLocalPasswordForm">更新本机同步密码</n-button>
+        </n-space>
+      </div>
+      <div v-if="localPasswordFormVisible" class="sync-card password-form">
+        <div class="sync-card-title">更新本机同步密码</div>
+        <p>用于其他设备修改了云端同步密码后的重新连接。此操作只验证云端密码并更新本机凭据，不会上传、下载或修改任何配置。</p>
+        <n-alert v-if="passwordError" type="error" :show-icon="false">{{ passwordError }}</n-alert>
+        <label>当前云端同步密码<n-input v-model:value="localSyncPassword" type="password" show-password-on="click" placeholder="输入其他设备设置的新密码" /></label>
+        <n-space>
+          <n-button :disabled="loading" @click="closeLocalPasswordForm">取消</n-button>
+          <n-button type="primary" :loading="loading" @click="updateLocalSyncPassword">仅更新本机</n-button>
+        </n-space>
+      </div>
+      <div class="sync-card danger-zone">
+        <div class="sync-card-title">危险区域</div>
+        <p>这些操作会重新加密云端数据、解除本机同步绑定或永久删除云端数据，请谨慎操作。</p>
+        <n-space>
+        <n-button tertiary type="warning" :disabled="loading" @click="openPasswordForm">修改云端同步密码</n-button>
           <n-popconfirm
             :disabled="loading"
             positive-text="确认关闭"
@@ -316,7 +401,7 @@ onBeforeUnmount(() => {
             @positive-click="disable"
           >
             <template #trigger>
-              <n-button tertiary type="warning" :disabled="loading">关闭同步</n-button>
+              <n-button tertiary type="warning" :disabled="loading">关闭云端同步</n-button>
             </template>
             将解除本机与云端同步的绑定。<br>
             不会删除云端同步数据。
@@ -328,35 +413,35 @@ onBeforeUnmount(() => {
             @positive-click="deleteRemote"
           >
             <template #trigger>
-              <n-button tertiary type="error" :disabled="loading">删除远端数据</n-button>
+              <n-button tertiary type="error" :disabled="loading">删除云端数据</n-button>
             </template>
             确定永久删除远端加密同步数据吗？<br>
             此操作不可恢复。
           </n-popconfirm>
         </n-space>
-      </div>
-      <div v-if="passwordFormVisible" class="sync-card password-form">
-        <div class="sync-card-title">修改同步密码</div>
-        <p>所有同步此云端数据的设备都必须使用同一个同步密码。</p>
-        <n-alert v-if="passwordError" type="error" :show-icon="false">{{ passwordError }}</n-alert>
-        <label>当前同步密码<n-input v-model:value="currentPassword" type="password" show-password-on="click" placeholder="输入当前同步密码" /></label>
-        <label>新同步密码<n-input v-model:value="newPassword" type="password" show-password-on="click" placeholder="至少 8 个字符" /></label>
-        <label>确认新同步密码<n-input v-model:value="confirmNewPassword" type="password" show-password-on="click" placeholder="再次输入新同步密码" /></label>
-        <n-space>
-          <n-button :disabled="loading" @click="closePasswordForm">取消</n-button>
-          <n-popconfirm
-            :disabled="loading"
-            positive-text="确认更新并同步"
-            negative-text="取消"
-            @positive-click="changeSyncPassword"
-          >
-            <template #trigger>
-              <n-button type="primary" :loading="loading">更新并同步</n-button>
-            </template>
-            将使用新密码生成新的加密同步配置，并覆盖云端现有同步数据。<br>
-            所有其他设备之后都需要使用新密码才能继续同步。
-          </n-popconfirm>
-        </n-space>
+        <div v-if="passwordFormVisible" class="password-form">
+          <div class="sync-card-title">修改云端同步密码</div>
+          <p>此操作会使用本机配置重新加密并覆盖云端数据。请仅在确认本机配置是最新版本时使用。</p>
+          <n-alert v-if="passwordError" type="error" :show-icon="false">{{ passwordError }}</n-alert>
+          <label>当前同步密码<n-input v-model:value="currentPassword" type="password" show-password-on="click" placeholder="输入当前同步密码" /></label>
+          <label>新同步密码<n-input v-model:value="newPassword" type="password" show-password-on="click" placeholder="至少 8 个字符" /></label>
+          <label>确认新同步密码<n-input v-model:value="confirmNewPassword" type="password" show-password-on="click" placeholder="再次输入新同步密码" /></label>
+          <n-space class="password-actions">
+            <n-button :disabled="loading" @click="closePasswordForm">取消</n-button>
+            <n-popconfirm
+              :disabled="loading"
+              positive-text="确认更新并同步"
+              negative-text="取消"
+              @positive-click="changeSyncPassword"
+            >
+              <template #trigger>
+                <n-button type="primary" :loading="loading">更新并同步</n-button>
+              </template>
+              将使用新密码生成新的加密同步配置，并覆盖云端现有同步数据。<br>
+              所有其他设备之后都需要使用新密码才能继续同步。
+            </n-popconfirm>
+          </n-space>
+        </div>
       </div>
 
     </template>
@@ -374,4 +459,11 @@ label { display: grid; gap: 6px; color: var(--app-text); font-size: 13px; font-w
 
 select { width: 100%; padding: 8px 10px; border: 1px solid var(--app-border); border-radius: 6px; color: var(--app-text); background: var(--app-surface); }
 code { font-size: 12px; word-break: break-all; }
+.sync-option { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 11px 12px; border: 1px solid var(--app-border); border-radius: 7px; }
+.sync-option > div { display: grid; gap: 3px; }
+.sync-option strong { font-size: 13px; }
+.sync-option p { font-size: 12px; }
+.danger-zone { border-color: color-mix(in srgb, var(--app-border), #ef4444 35%); }
+.danger-zone .sync-card-title { color: #fca5a5; }
+.password-actions { margin-top: 8px; }
 </style>

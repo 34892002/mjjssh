@@ -44,6 +44,7 @@ export const useVaultStore = defineStore('vault', () => {
     }
   }
 
+
   async function createProfile(req: CreateProfileRequest): Promise<SshProfileView | null> {
     loading.value = true
     error.value = null

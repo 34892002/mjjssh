@@ -66,6 +66,38 @@ pub async fn upload_sync_vault(
 }
 
 #[tauri::command]
+pub async fn set_auto_sync(
+    state: State<'_, AppState>,
+    auto_sync: bool,
+) -> Result<SyncStatus, String> {
+    let vault_guard = state.vault.lock().await;
+    let vault = vault_guard
+        .as_ref()
+        .ok_or_else(|| "Vault is not open".to_string())?;
+    SyncService::new(vault, &state.app_dir)
+        .map_err(|error| error.to_string())?
+        .set_auto_sync(auto_sync)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn update_local_sync_password(
+    state: State<'_, AppState>,
+    token: String,
+    password: String,
+) -> Result<SyncStatus, String> {
+    let vault_guard = state.vault.lock().await;
+    let vault = vault_guard
+        .as_ref()
+        .ok_or_else(|| "Vault is not open".to_string())?;
+    SyncService::new(vault, &state.app_dir)
+        .map_err(|error| error.to_string())?
+        .update_local_password(&token, password)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn change_sync_password(
     state: State<'_, AppState>,
     token: String,

@@ -2,7 +2,7 @@
 import { defineAsyncComponent, ref, computed, onBeforeUnmount, onMounted, nextTick, watch, type Component } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { Archive, Box, Cloud, CloudCog, Code2, Container, Copy, Cpu, Database, Download, EthernetPort, FileCode2, Globe2, HardDrive, Layers3, ListFilter, MapPin, MemoryStick, MonitorCog, Moon, Network, RadioTower, Router, Server, ServerCog, ShieldCheck, Sparkles, Square, Sun, TerminalSquare, Upload, Waypoints, Workflow, X, Zap } from '@lucide/vue'
+import { Archive, Box, Cloud, CloudCog, Code2, Container, Copy, Cpu, Database, Download, EthernetPort, FileCode2, Globe2, HardDrive, Layers3, ListFilter, MapPin, MemoryStick, MonitorCog, Moon, Network, RadioTower, RefreshCw, Router, Server, ServerCog, ShieldCheck, Sparkles, Square, Sun, TerminalSquare, Upload, Waypoints, Workflow, X, Zap } from '@lucide/vue'
 import {
   darkTheme,
   NConfigProvider,
@@ -90,6 +90,7 @@ type SyncStatus = {
   lastSyncedAt: string | null
   deviceId: string | null
   token: string | null
+  autoSync: boolean
   localVaultRevision: number | null
   lastSyncedVaultRevision: number | null
 }
@@ -105,6 +106,13 @@ const syncStatus = ref<SyncStatus | null>(null)
 const syncLoading = ref(false)
 const syncError = ref<string | null>(null)
 const syncNotice = ref<string | null>(null)
+const autoSyncState = ref<'idle' | 'pending' | 'syncing' | 'success' | 'conflict' | 'error'>('idle')
+const autoSyncDueAt = ref<number | null>(null)
+const autoSyncNow = ref(Date.now())
+let autoSyncTimer: ReturnType<typeof setTimeout> | null = null
+let autoSyncCountdownTimer: ReturnType<typeof setInterval> | null = null
+let vaultMd5: string | null = null
+let vaultMd5Timer: ReturnType<typeof setInterval> | null = null
 const transferPanelRef = ref<HTMLElement | null>(null)
 const transferButtonRef = ref<HTMLButtonElement | null>(null)
 const transferNoticeVisible = ref(false)
@@ -112,8 +120,9 @@ let transferNoticeTimer: ReturnType<typeof setTimeout> | null = null
 
 const syncProviderLabel = computed(() => syncStatus.value?.provider === 'gitee_snippet' ? 'Gitee 私有代码片段' : 'GitHub Gist')
 const syncVersionState = computed(() => {
-  if (syncStatus.value?.localVaultRevision === null || syncStatus.value?.lastSyncedVaultRevision === null) return '等待检查'
-  return syncStatus.value.localVaultRevision === syncStatus.value.lastSyncedVaultRevision ? '本地已同步' : '本地有更新'
+  const status = syncStatus.value
+  if (!status || status.localVaultRevision === null || status.lastSyncedVaultRevision === null) return '等待检查'
+  return status.localVaultRevision === status.lastSyncedVaultRevision ? '本地未变更' : '本地有更新'
 })
 
 function formatQuickSyncError(reason: unknown): string {
@@ -138,35 +147,118 @@ async function loadSyncStatus() {
 async function handleSyncPopoverShow(visible: boolean) {
   syncPopoverVisible.value = visible
   if (!visible) return
+  if (['success', 'conflict', 'error'].includes(autoSyncState.value)) {
+    autoSyncState.value = 'idle'
+  }
   syncError.value = null
   syncNotice.value = null
   await loadSyncStatus()
 }
 
-async function syncNow() {
-  if (!syncStatus.value?.token) return
+async function syncNow(automatic = false) {
+  if (!syncStatus.value?.token || syncLoading.value) return
   syncError.value = null
   syncNotice.value = null
   syncLoading.value = true
+  if (automatic) {
+    autoSyncDueAt.value = null
+    autoSyncState.value = 'syncing'
+  }
   try {
     const download = await invoke<SyncOperationResult>('download_sync_vault', { token: syncStatus.value.token })
     syncStatus.value = download.sync
     if (download.status === 'downloaded') {
       await vaultStore.refreshAfterSync()
       syncNotice.value = '已下载云端更新。'
-      await loadSyncStatus()
-      return
+    } else {
+      const upload = await invoke<SyncOperationResult>('upload_sync_vault', { token: syncStatus.value.token })
+      syncStatus.value = upload.sync
+      syncNotice.value = upload.status === 'uploaded' ? '已上传本地更新。' : '已是最新状态。'
     }
-    const upload = await invoke<SyncOperationResult>('upload_sync_vault', { token: syncStatus.value.token })
-    syncStatus.value = upload.sync
-    syncNotice.value = upload.status === 'uploaded' ? '已上传本地更新。' : '已是最新状态。'
+    if (automatic) autoSyncState.value = 'success'
+    vaultMd5 = await readVaultMd5()
     await loadSyncStatus()
   } catch (reason) {
     syncError.value = formatQuickSyncError(reason)
+    if (automatic) autoSyncState.value = syncError.value.includes('同步冲突') ? 'conflict' : 'error'
   } finally {
     syncLoading.value = false
   }
 }
+
+async function readVaultMd5(): Promise<string | null> {
+  try {
+    return await invoke<string>('get_vault_md5')
+  } catch {
+    return null
+  }
+}
+
+async function checkVaultMd5() {
+  const nextMd5 = await readVaultMd5()
+  if (!nextMd5) return
+  if (vaultMd5 === null) {
+    vaultMd5 = nextMd5
+    return
+  }
+  if (vaultMd5 === nextMd5) return
+  vaultMd5 = nextMd5
+  scheduleAutoSync()
+}
+
+function scheduleAutoSync() {
+  if (!syncStatus.value?.configured || !syncStatus.value.autoSync) return
+  if (autoSyncTimer) clearTimeout(autoSyncTimer)
+  autoSyncDueAt.value = Date.now() + 60_000
+  autoSyncNow.value = Date.now()
+  autoSyncState.value = 'pending'
+  autoSyncTimer = setTimeout(() => {
+    autoSyncTimer = null
+    void syncNow(true)
+  }, 60_000)
+}
+
+function handleSyncConfigurationChanged() {
+  void loadSyncStatus().then(() => {
+    if (!syncStatus.value?.autoSync && autoSyncTimer) {
+      clearTimeout(autoSyncTimer)
+      autoSyncTimer = null
+      autoSyncDueAt.value = null
+      autoSyncState.value = 'idle'
+    }
+  })
+}
+
+const autoSyncBadgeType = computed<'info' | 'success' | 'warning' | 'error' | undefined>(() => {
+  switch (autoSyncState.value) {
+    case 'pending':
+    case 'syncing':
+      return 'info'
+    case 'success':
+      return 'success'
+    case 'conflict':
+      return 'warning'
+    case 'error':
+      return 'error'
+    default:
+      return undefined
+  }
+})
+
+const autoSyncBadgeTitle = computed(() => {
+  if (autoSyncState.value === 'pending' && autoSyncDueAt.value) {
+    const seconds = Math.max(0, Math.ceil((autoSyncDueAt.value - autoSyncNow.value) / 1_000))
+    return `将在 ${seconds} 秒后自动同步`
+  }
+  return {
+    idle: '云同步',
+    pending: '即将自动同步',
+    syncing: '正在自动同步',
+    success: '自动同步成功',
+    conflict: '自动同步发生冲突，请选择覆盖方式',
+    error: '自动同步失败，请打开云同步查看详情',
+  }[autoSyncState.value]
+})
 
 function toggleTheme() {
   isDarkTheme.value = !isDarkTheme.value
@@ -274,7 +366,11 @@ function openTransfers() {
 
 onMounted(async () => {
   isMaximized.value = await appWindow.isMaximized()
-  await Promise.all([vaultStore.init(), transferStore.initialize()])
+  await Promise.all([vaultStore.init(), transferStore.initialize(), loadSyncStatus()])
+  vaultMd5 = await readVaultMd5()
+  vaultMd5Timer = setInterval(() => { void checkVaultMd5() }, 10_000)
+  window.addEventListener('sync-configuration-changed', handleSyncConfigurationChanged)
+  autoSyncCountdownTimer = setInterval(() => { autoSyncNow.value = Date.now() }, 1_000)
   document.addEventListener('pointerdown', closeTransfersOnOutsideClick)
 })
 
@@ -694,6 +790,10 @@ onBeforeUnmount(() => {
   stopServerStats()
   transferStore.dispose()
   if (transferNoticeTimer) clearTimeout(transferNoticeTimer)
+  if (autoSyncTimer) clearTimeout(autoSyncTimer)
+  if (autoSyncCountdownTimer) clearInterval(autoSyncCountdownTimer)
+  if (vaultMd5Timer) clearInterval(vaultMd5Timer)
+  window.removeEventListener('sync-configuration-changed', handleSyncConfigurationChanged)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
   document.removeEventListener('pointerdown', closeTransfersOnOutsideClick)
 })
@@ -761,7 +861,12 @@ function openSyncSettings() {
           <div class="titlebar-actions" aria-label="应用功能">
             <n-popover trigger="click" placement="bottom-end" :show="syncPopoverVisible" @update:show="handleSyncPopoverShow">
               <template #trigger>
-                <button class="titlebar-action" :class="{ active: syncPopoverVisible }" title="云同步" aria-label="云同步"><Cloud :size="17" /></button>
+                <button class="titlebar-action" :class="{ active: syncPopoverVisible }" :title="autoSyncBadgeTitle" aria-label="云同步">
+                  <span class="sync-cloud-icon">
+                    <Cloud :size="17" />
+                    <span v-if="autoSyncBadgeType" class="sync-status-dot" :class="`is-${autoSyncBadgeType}`" />
+                  </span>
+                </button>
               </template>
               <section class="quick-sync-panel">
                 <header>
@@ -775,11 +880,12 @@ function openSyncSettings() {
                     <div><dt>本地版本</dt><dd>v{{ syncStatus.localVaultRevision }}</dd></div>
                     <div><dt>上次同步版本</dt><dd>v{{ syncStatus.lastSyncedVaultRevision }}</dd></div>
                     <div><dt>当前状态</dt><dd>{{ syncVersionState }}</dd></div>
+                    <div><dt>自动同步</dt><dd>{{ syncStatus.autoSync ? '已启用' : '已关闭' }}</dd></div>
                     <div><dt>上次同步</dt><dd>{{ syncStatus.lastSyncedAt ? new Date(syncStatus.lastSyncedAt).toLocaleString() : '尚未同步' }}</dd></div>
                   </dl>
                   <n-alert v-if="syncError" type="error" :show-icon="false">{{ syncError }}</n-alert>
                   <n-alert v-if="syncNotice" type="success" :show-icon="false">{{ syncNotice }}</n-alert>
-                  <n-button type="primary" block :loading="syncLoading" @click="syncNow">立即同步</n-button>
+                  <n-button type="primary" block :loading="syncLoading" @click="syncNow()">立即同步</n-button>
                   <n-button text @click="openSyncSettings(); syncPopoverVisible = false">打开同步设置</n-button>
                 </template>
                 <template v-else>
@@ -952,11 +1058,21 @@ function openSyncSettings() {
                           </n-popconfirm>
                         </div>
                       </template>
-                      <template v-if="profile.os || profile.location" #footer>
-                        <div class="host-meta-row">
+                      <template #footer>
+                        <div v-if="profile.os || profile.location" class="host-meta-row">
                           <div v-if="profile.os" class="host-meta" :title="profile.os">{{ profile.os }}</div>
                           <div v-if="profile.location" class="host-meta location" :title="profile.location"><MapPin :size="14" />{{ profile.location }}</div>
                         </div>
+                        <button
+                          v-else
+                          type="button"
+                          class="host-info-refresh"
+                          :disabled="Boolean(refreshingProfileId)"
+                          @click.stop="refreshProfileInfo(profile)"
+                        >
+                          <RefreshCw :size="14" :class="{ 'is-spinning': refreshingProfileId === profile.id }" />
+                          更新信息
+                        </button>
                       </template>
                     </EntityCard>
                   </div>
@@ -1229,7 +1345,13 @@ function openSyncSettings() {
 
 .titlebar-drag-region { min-width: 16px; flex: 1; height: 100%; }
 .titlebar-actions, .window-controls { display: flex; align-self: stretch; }
-.titlebar-action, .window-control { display: grid; place-items: center; width: 40px; padding: 0; border: 0; background: transparent; color: var(--app-muted); cursor: pointer; }
+.titlebar-action, .window-control { display: grid; place-items: center; width: 40px; height: 100%; padding: 0; border: 0; background: transparent; color: var(--app-muted); cursor: pointer; }
+.sync-cloud-icon { position: relative; display: grid; place-items: center; width: 17px; height: 17px; }
+.sync-status-dot { position: absolute; top: -3px; right: -5px; width: 6px; height: 6px; border: 1px solid var(--app-surface); border-radius: 50%; }
+.sync-status-dot.is-info { background: #38bdf8; }
+.sync-status-dot.is-success { background: #22c55e; }
+.sync-status-dot.is-warning { background: #eab308; }
+.sync-status-dot.is-error { background: #ef4444; }
 .titlebar-action:hover, .titlebar-action.active, .window-control:hover { background: var(--app-hover); color: var(--app-text); }
 .quick-sync-panel { display: grid; width: 280px; gap: 12px; }
 .quick-sync-panel header { display: flex; align-items: center; justify-content: space-between; color: var(--n-text-color); }
@@ -1685,6 +1807,42 @@ function openSyncSettings() {
 
 .host-meta.location { display: flex; align-items: center; gap: 4px; }
 .host-meta.location svg { flex: 0 0 auto; color: var(--app-accent); }
+
+.host-info-refresh {
+  display: flex;
+  align-items: center;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--app-muted);
+  font: inherit;
+  font-size: 11px;
+  line-height: 16px;
+  cursor: pointer;
+}
+
+.host-info-refresh svg {
+  flex: 0 0 auto;
+  margin-right: 4px;
+}
+
+.host-info-refresh:hover:not(:disabled) {
+  color: var(--app-accent);
+}
+
+.host-info-refresh:disabled {
+  cursor: default;
+  opacity: .65;
+}
+
+.host-info-refresh .is-spinning {
+  animation: host-info-refresh-spin .8s linear infinite;
+}
+
+@keyframes host-info-refresh-spin {
+  to { transform: rotate(360deg); }
+}
 
 .host-actions {
   display: flex;

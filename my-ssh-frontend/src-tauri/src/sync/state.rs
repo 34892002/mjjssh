@@ -28,6 +28,12 @@ pub struct SyncState {
     pub device_id: String,
     pub token: String,
     pub derived_sync_key: String,
+    #[serde(default = "default_auto_sync")]
+    pub auto_sync: bool,
+}
+
+const fn default_auto_sync() -> bool {
+    true
 }
 
 pub struct SyncStateStore {
@@ -122,6 +128,7 @@ mod tests {
             device_id: uuid::Uuid::new_v4().to_string(),
             token: "token".into(),
             derived_sync_key: STANDARD.encode([0u8; SYNC_KEY_LENGTH]),
+            auto_sync: true,
         }
     }
 
