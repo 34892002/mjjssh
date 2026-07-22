@@ -90,6 +90,16 @@ pub struct SyncOperationResult {
     pub sync: SyncStatus,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteSyncStatus {
+    pub state: String,
+    pub local_vault_revision: u64,
+    pub remote_vault_revision: u64,
+    pub last_synced_vault_revision: u64,
+    pub remote_updated_at: String,
+}
+
 pub struct SyncService<'a> {
     vault: &'a Vault,
     app_dir: PathBuf,
@@ -171,6 +181,32 @@ impl<'a> SyncService<'a> {
         state.auto_sync = auto_sync;
         self.state_store.save(&state)?;
         Ok(status_from_state(Some(state)))
+    }
+
+    pub async fn check_remote_status(
+        &self,
+        token: &str,
+    ) -> Result<RemoteSyncStatus, SyncServiceError> {
+        let state = self.configured_state()?;
+        let local = self.vault.sync_snapshot()?;
+        let remote = self
+            .remote_for_state(&state)?
+            .get(token, &state.remote_id)
+            .await?;
+        let key = saved_key(&state)?;
+        let envelope = verify_remote_with_key(&remote, &key)?;
+        let sync_state = remote_sync_state(
+            local.revision != state.last_synced_vault_revision,
+            remote.content_hash != state.last_synced_content_hash,
+        );
+
+        Ok(RemoteSyncStatus {
+            state: sync_state.into(),
+            local_vault_revision: local.revision,
+            remote_vault_revision: envelope.revision,
+            last_synced_vault_revision: state.last_synced_vault_revision,
+            remote_updated_at: envelope.updated_at,
+        })
     }
 
     pub async fn update_local_password(
@@ -504,6 +540,15 @@ impl<'a> SyncService<'a> {
     }
 }
 
+fn remote_sync_state(local_changed: bool, remote_changed: bool) -> &'static str {
+    match (local_changed, remote_changed) {
+        (false, false) => "in_sync",
+        (true, false) => "local_ahead",
+        (false, true) => "remote_ahead",
+        (true, true) => "conflict",
+    }
+}
+
 fn write_backup(path: &Path, content: &[u8]) -> Result<(), SyncServiceError> {
     let temporary = path.with_file_name(format!(".tmp-{}", uuid::Uuid::new_v4()));
     let result = (|| -> Result<(), SyncServiceError> {
@@ -674,6 +719,14 @@ mod tests {
     use std::fs;
 
     use super::*;
+
+    #[test]
+    fn classifies_local_and_remote_changes_from_the_sync_baseline() {
+        assert_eq!(remote_sync_state(false, false), "in_sync");
+        assert_eq!(remote_sync_state(true, false), "local_ahead");
+        assert_eq!(remote_sync_state(false, true), "remote_ahead");
+        assert_eq!(remote_sync_state(true, true), "conflict");
+    }
 
     #[test]
     fn remote_key_verification_reports_invalid_remote_data() {

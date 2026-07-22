@@ -68,6 +68,7 @@ pub fn run() {
             commands::sync::enable_gitee_snippet_sync,
             commands::sync::upload_sync_vault,
             commands::sync::download_sync_vault,
+            commands::sync::check_remote_sync_status,
             commands::sync::set_auto_sync,
             commands::sync::update_local_sync_password,
             commands::sync::change_sync_password,

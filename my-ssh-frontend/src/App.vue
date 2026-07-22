@@ -2,7 +2,7 @@
 import { defineAsyncComponent, ref, computed, onBeforeUnmount, onMounted, nextTick, watch, type Component } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { Archive, Box, Cloud, CloudCog, Code2, Container, Copy, Cpu, Database, Download, EthernetPort, FileCode2, Globe2, HardDrive, Layers3, ListFilter, MapPin, MemoryStick, MonitorCog, Moon, Network, RadioTower, RefreshCw, Router, Server, ServerCog, ShieldCheck, Sparkles, Square, Sun, TerminalSquare, Upload, Waypoints, Workflow, X, Zap } from '@lucide/vue'
+import { Archive, Box, Cloud, CloudCog, Code2, Container, Copy, Cpu, Database, Download, EthernetPort, FileCode2, Globe2, HardDrive, Layers3, ListFilter, MapPin, MemoryStick, MonitorCog, Moon, Network, RadioTower, RefreshCw, Router, Server, ServerCog, Settings, ShieldCheck, Sparkles, Square, Sun, TerminalSquare, Upload, Waypoints, Workflow, X, Zap } from '@lucide/vue'
 import {
   darkTheme,
   NConfigProvider,
@@ -100,12 +100,22 @@ type SyncOperationResult = {
   sync: SyncStatus
 }
 
+type RemoteSyncStatus = {
+  state: 'in_sync' | 'local_ahead' | 'remote_ahead' | 'conflict'
+  localVaultRevision: number
+  remoteVaultRevision: number
+  lastSyncedVaultRevision: number
+  remoteUpdatedAt: string
+}
+
 const isMaximized = ref(false)
 const syncPopoverVisible = ref(false)
 const syncStatus = ref<SyncStatus | null>(null)
 const syncLoading = ref(false)
 const syncError = ref<string | null>(null)
 const syncNotice = ref<string | null>(null)
+const remoteSyncStatus = ref<RemoteSyncStatus | null>(null)
+const remoteSyncLoading = ref(false)
 const autoSyncState = ref<'idle' | 'pending' | 'syncing' | 'success' | 'conflict' | 'error'>('idle')
 const autoSyncDueAt = ref<number | null>(null)
 const autoSyncNow = ref(Date.now())
@@ -120,9 +130,25 @@ let transferNoticeTimer: ReturnType<typeof setTimeout> | null = null
 
 const syncProviderLabel = computed(() => syncStatus.value?.provider === 'gitee_snippet' ? 'Gitee 私有代码片段' : 'GitHub Gist')
 const syncVersionState = computed(() => {
-  const status = syncStatus.value
-  if (!status || status.localVaultRevision === null || status.lastSyncedVaultRevision === null) return '等待检查'
-  return status.localVaultRevision === status.lastSyncedVaultRevision ? '本地未变更' : '本地有更新'
+  const state = remoteSyncStatus.value?.state
+  if (!state) return '尚未检查云端'
+  return {
+    in_sync: '本地与云端已同步',
+    local_ahead: '本地有更新，等待上传',
+    remote_ahead: '云端有更新，等待下载',
+    conflict: '两端均有更新，需要处理冲突',
+  }[state]
+})
+
+const remoteSyncAction = computed(() => {
+  const state = remoteSyncStatus.value?.state
+  if (!state) return ''
+  return {
+    in_sync: '',
+    local_ahead: '建议上传本地配置',
+    remote_ahead: '建议下载云端配置',
+    conflict: '请在同步设置中选择保留哪一份配置',
+  }[state]
 })
 
 function formatQuickSyncError(reason: unknown): string {
@@ -144,6 +170,19 @@ async function loadSyncStatus() {
   }
 }
 
+async function checkRemoteSyncStatus() {
+  if (!syncStatus.value?.token || remoteSyncLoading.value) return
+  remoteSyncLoading.value = true
+  try {
+    remoteSyncStatus.value = await invoke<RemoteSyncStatus>('check_remote_sync_status', { token: syncStatus.value.token })
+  } catch (reason) {
+    remoteSyncStatus.value = null
+    syncError.value = formatQuickSyncError(reason)
+  } finally {
+    remoteSyncLoading.value = false
+  }
+}
+
 async function handleSyncPopoverShow(visible: boolean) {
   syncPopoverVisible.value = visible
   if (!visible) return
@@ -153,6 +192,7 @@ async function handleSyncPopoverShow(visible: boolean) {
   syncError.value = null
   syncNotice.value = null
   await loadSyncStatus()
+  await checkRemoteSyncStatus()
 }
 
 async function syncNow(automatic = false) {
@@ -178,6 +218,7 @@ async function syncNow(automatic = false) {
     if (automatic) autoSyncState.value = 'success'
     vaultMd5 = await readVaultMd5()
     await loadSyncStatus()
+    await checkRemoteSyncStatus()
   } catch (reason) {
     syncError.value = formatQuickSyncError(reason)
     if (automatic) autoSyncState.value = syncError.value.includes('同步冲突') ? 'conflict' : 'error'
@@ -871,27 +912,32 @@ function openSyncSettings() {
               <section class="quick-sync-panel">
                 <header>
                   <strong>云同步</strong>
-                  <span :class="{ enabled: syncStatus?.configured }">{{ syncStatus?.configured ? '已启用' : '未启用' }}</span>
+                  <button class="quick-sync-settings" :class="{ enabled: syncStatus?.configured }" title="打开云同步配置" @click="openSyncSettings(); syncPopoverVisible = false">
+                    <span :class="{ enabled: syncStatus?.configured }">{{ syncStatus?.configured ? (syncStatus.autoSync ? '自动同步' : '手动同步') : '同步配置' }}</span>
+                    <Settings :size="15" />
+                  </button>
                 </header>
                 <template v-if="syncStatus?.configured">
                   <div class="quick-sync-provider"><Cloud :size="18" /><span>{{ syncProviderLabel }}</span></div>
                   <dl>
                     <div><dt>同步文件</dt><dd>{{ syncStatus.remoteFileName }}</dd></div>
-                    <div><dt>本地版本</dt><dd>v{{ syncStatus.localVaultRevision }}</dd></div>
-                    <div><dt>上次同步版本</dt><dd>v{{ syncStatus.lastSyncedVaultRevision }}</dd></div>
+                    <div><dt>本地版本</dt><dd>v{{ remoteSyncStatus?.localVaultRevision ?? syncStatus.localVaultRevision }}</dd></div>
+                    <div><dt>云端版本</dt><dd>{{ remoteSyncStatus ? `v${remoteSyncStatus.remoteVaultRevision}` : '尚未检查' }}</dd></div>
                     <div><dt>当前状态</dt><dd>{{ syncVersionState }}</dd></div>
-                    <div><dt>自动同步</dt><dd>{{ syncStatus.autoSync ? '已启用' : '已关闭' }}</dd></div>
+                    <div v-if="remoteSyncStatus?.remoteUpdatedAt"><dt>云端更新时间</dt><dd>{{ new Date(remoteSyncStatus.remoteUpdatedAt).toLocaleString() }}</dd></div>
                     <div><dt>上次同步</dt><dd>{{ syncStatus.lastSyncedAt ? new Date(syncStatus.lastSyncedAt).toLocaleString() : '尚未同步' }}</dd></div>
                   </dl>
+                  <n-alert v-if="remoteSyncAction" type="info" :show-icon="false">{{ remoteSyncAction }}</n-alert>
                   <n-alert v-if="syncError" type="error" :show-icon="false">{{ syncError }}</n-alert>
                   <n-alert v-if="syncNotice" type="success" :show-icon="false">{{ syncNotice }}</n-alert>
-                  <n-button type="primary" block :loading="syncLoading" @click="syncNow()">立即同步</n-button>
-                  <n-button text @click="openSyncSettings(); syncPopoverVisible = false">打开同步设置</n-button>
+                  <div class="quick-sync-actions">
+                    <n-button secondary :loading="remoteSyncLoading" @click="checkRemoteSyncStatus">检查云端状态</n-button>
+                    <n-button type="primary" :loading="syncLoading" @click="syncNow()">立即同步</n-button>
+                  </div>
                 </template>
                 <template v-else>
                   <p>连接 GitHub Gist 或 Gitee 私有代码片段，在设备间同步主机和密钥配置。</p>
                   <n-alert v-if="syncError" type="error" :show-icon="false">{{ syncError }}</n-alert>
-                  <n-button type="primary" block @click="openSyncSettings(); syncPopoverVisible = false">配置云同步</n-button>
                 </template>
               </section>
             </n-popover>
@@ -1354,6 +1400,11 @@ function openSyncSettings() {
 .sync-status-dot.is-error { background: #ef4444; }
 .titlebar-action:hover, .titlebar-action.active, .window-control:hover { background: var(--app-hover); color: var(--app-text); }
 .quick-sync-panel { display: grid; width: 280px; gap: 12px; }
+.quick-sync-settings { display: inline-flex; align-items: center; gap: 5px; padding: 0; border: 0; background: transparent; color: var(--n-text-color-2); font: inherit; font-size: 12px; cursor: pointer; }
+.quick-sync-settings:hover { color: var(--n-text-color); }
+.quick-sync-settings.enabled { color: var(--n-success-color); }
+.quick-sync-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.quick-sync-actions .n-button { width: 100%; }
 .quick-sync-panel header { display: flex; align-items: center; justify-content: space-between; color: var(--n-text-color); }
 .quick-sync-panel header span { color: var(--n-text-color-2); font-size: 12px; }
 .quick-sync-panel header span.enabled { color: var(--n-success-color); }
