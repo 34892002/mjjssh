@@ -217,6 +217,27 @@ pub struct CreateKeyRequest {
     pub cert_data: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerateSshKeyRequest {
+    pub name: String,
+    pub algorithm: SshKeyAlgorithm,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SshKeyAlgorithm {
+    Ed25519,
+    Rsa,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GenerateSshKeyResult {
+    pub key: SshKeyView,
+    pub public_key: String,
+}
+
 #[derive(Debug, Zeroize)]
 pub struct DecryptedCredential {
     pub password: Option<String>,

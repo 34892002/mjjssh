@@ -1,14 +1,18 @@
 use std::fs;
 use std::time::Duration;
 
+use rand_chacha::rand_core::SeedableRng;
+use rand_chacha::ChaCha20Rng;
 use serde::Deserialize;
+use ssh_key::{Algorithm, LineEnding, PrivateKey};
 use tauri::State;
 use tokio::time::timeout;
 
 use crate::ssh::SshSession;
 use crate::state::AppState;
 use crate::vault::{
-    CreateKeyRequest, CreateProfileRequest, SshKeyView, SshProfileView, UpdateProfileRequest,
+    CreateKeyRequest, CreateProfileRequest, GenerateSshKeyRequest, GenerateSshKeyResult,
+    SshKeyAlgorithm, SshKeyView, SshProfileView, UpdateProfileRequest,
 };
 
 const PROFILE_INFO_COMMAND: &str = "printf '__MYSSH_OS__'; if [ -r /etc/os-release ]; then . /etc/os-release; printf '%s' \"${PRETTY_NAME:-${NAME:-unknown}}\"; else uname -srm; fi; printf '\\n__MYSSH_IPINFO__'; if command -v curl >/dev/null 2>&1; then curl --fail --silent --show-error --max-time 5 https://ipinfo.io/json; elif command -v wget >/dev/null 2>&1; then wget -qO- --timeout=5 https://ipinfo.io/json; fi";
@@ -140,6 +144,12 @@ pub async fn refresh_profile_info(
         .await
         .map_err(|error| error.to_string())?;
 
+    let expected_host_key_fingerprint = state
+        .known_hosts
+        .lock()
+        .await
+        .get(&profile.host, profile.port)
+        .map(|trusted_key| trusted_key.fingerprint.clone());
     let temporary_session_id = format!("profile-info-{}", uuid::Uuid::new_v4());
     let (session, _data_rx) = timeout(
         Duration::from_secs(15),
@@ -151,6 +161,7 @@ pub async fn refresh_profile_info(
             &profile.username,
             &credential,
             &profile.auth_type,
+            expected_host_key_fingerprint,
         ),
     )
     .await
@@ -219,6 +230,51 @@ pub async fn create_key(
         .map_err(|e| e.to_string())
 }
 
+fn generate_ssh_key_material(algorithm: SshKeyAlgorithm) -> Result<(String, String), String> {
+    let algorithm = match algorithm {
+        SshKeyAlgorithm::Ed25519 => Algorithm::Ed25519,
+        SshKeyAlgorithm::Rsa => Algorithm::Rsa { hash: None },
+    };
+    let mut seed = <ChaCha20Rng as SeedableRng>::Seed::default();
+    getrandom::fill(&mut seed).map_err(|error| error.to_string())?;
+    let mut rng = ChaCha20Rng::from_seed(seed);
+    let private_key = PrivateKey::random(&mut rng, algorithm).map_err(|error| error.to_string())?;
+    let public_key = private_key
+        .public_key()
+        .to_openssh()
+        .map_err(|error| error.to_string())?;
+    let private_key = private_key
+        .to_openssh(LineEnding::LF)
+        .map_err(|error| error.to_string())?;
+    Ok((private_key.to_string(), public_key))
+}
+
+#[tauri::command]
+pub async fn generate_ssh_key(
+    state: State<'_, AppState>,
+    request: GenerateSshKeyRequest,
+) -> Result<GenerateSshKeyResult, String> {
+    let name = request.name.trim();
+    if name.is_empty() {
+        return Err("密钥名称不能为空".into());
+    }
+    let (private_key, public_key) = generate_ssh_key_material(request.algorithm)?;
+    let key = CreateKeyRequest {
+        name: name.to_owned(),
+        key_type: "key".into(),
+        private_key,
+        cert_data: None,
+    };
+
+    state
+        .with_vault(|vault| {
+            let key = vault.create_key(&key)?;
+            Ok(GenerateSshKeyResult { key, public_key })
+        })
+        .await
+        .map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 pub async fn delete_key(state: State<'_, AppState>, id: String) -> Result<(), String> {
     state
@@ -237,4 +293,26 @@ pub async fn update_key(
         .with_vault(|vault| vault.update_key(&id, &key))
         .await
         .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn generates_parseable_ed25519_openssh_keypair() {
+        let (private_key, public_key) =
+            generate_ssh_key_material(SshKeyAlgorithm::Ed25519).unwrap();
+        let private_key = PrivateKey::from_openssh(private_key).unwrap();
+        assert_eq!(private_key.algorithm(), Algorithm::Ed25519);
+        assert!(public_key.starts_with("ssh-ed25519 "));
+    }
+
+    #[test]
+    fn generates_parseable_rsa_openssh_keypair() {
+        let (private_key, public_key) = generate_ssh_key_material(SshKeyAlgorithm::Rsa).unwrap();
+        let private_key = PrivateKey::from_openssh(private_key).unwrap();
+        assert!(private_key.algorithm().is_rsa());
+        assert!(public_key.starts_with("ssh-rsa "));
+    }
 }

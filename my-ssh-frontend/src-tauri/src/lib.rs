@@ -2,6 +2,7 @@
 
 pub mod ai;
 mod commands;
+pub mod diagnostics;
 mod ssh;
 mod state;
 pub mod sync;
@@ -24,6 +25,9 @@ pub fn run() {
     let log_dir = app_dir.join("logs");
     std::fs::create_dir_all(&log_dir).expect("Failed to create log dir");
     ai::log::initialize(log_dir.join("ai.log"));
+    diagnostics::initialize(&app_dir);
+    diagnostics::install_panic_hook(app_dir.clone());
+    diagnostics::log::event("application", "started", env!("CARGO_PKG_VERSION"));
 
     tauri::Builder::default()
         .plugin(
@@ -50,6 +54,8 @@ pub fn run() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            commands::diagnostics::record_frontend_crash,
+            commands::diagnostics::export_diagnostic_bundle,
             commands::ai::get_ai_config_status,
             commands::ai::save_ai_config,
             commands::ai::test_ai_connection,
@@ -83,9 +89,11 @@ pub fn run() {
             commands::vault::delete_profile,
             commands::vault::list_keys,
             commands::vault::create_key,
+            commands::vault::generate_ssh_key,
             commands::vault::update_key,
             commands::vault::delete_key,
             commands::ssh::connect_ssh,
+            commands::ssh::trust_host_key,
             commands::ssh::disconnect_ssh,
             commands::ssh::write_ssh_data,
             commands::ssh::resize_ssh,

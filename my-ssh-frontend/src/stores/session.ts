@@ -66,23 +66,28 @@ export const useSessionStore = defineStore('session', () => {
     tabs.value.find((t) => t.sessionId === activeTabId.value) ?? null,
   )
 
-  async function connect(profileId: string, profileName: string): Promise<string | null> {
+  async function connect(profileId: string, profileName: string, reuseSessionId?: string): Promise<string | null> {
     loading.value = true
     error.value = null
-    const sessionId = generateId()
+    const sessionId = reuseSessionId ?? generateId()
+    const isReconnect = Boolean(reuseSessionId)
     try {
-      // 先创建页签，等待 Terminal 注册 SSH 事件监听器后再发起连接。
-      const terminalReady = new Promise<void>((resolve) => {
-        terminalReadyResolvers.set(sessionId, resolve)
-      })
-      tabs.value.push({ sessionId, profileId, profileName })
-      activeTabId.value = sessionId
+      if (!isReconnect) {
+        // Create the tab first so Terminal can subscribe before the SSH stream starts.
+        const terminalReady = new Promise<void>((resolve) => {
+          terminalReadyResolvers.set(sessionId, resolve)
+        })
+        tabs.value.push({ sessionId, profileId, profileName })
+        activeTabId.value = sessionId
 
-      await Promise.race([
-        terminalReady,
-        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Terminal initialization timed out')), 10_000)),
-      ])
-      terminalReadyResolvers.delete(sessionId)
+        await Promise.race([
+          terminalReady,
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Terminal initialization timed out')), 10_000)),
+        ])
+        terminalReadyResolvers.delete(sessionId)
+      } else {
+        activeTabId.value = sessionId
+      }
 
       await invoke<string>('connect_ssh', { profileId, sessionId })
 
@@ -90,14 +95,15 @@ export const useSessionStore = defineStore('session', () => {
       return sessionId
     } catch (e) {
       error.value = String(e)
-      // 移除失败的 tab
       terminalReadyResolvers.delete(sessionId)
-      const failedTab = tabs.value.find(t => t.profileId === profileId)
-      if (failedTab) {
-        const idx = tabs.value.indexOf(failedTab)
-        tabs.value.splice(idx, 1)
-        if (activeTabId.value === failedTab.sessionId) {
-          activeTabId.value = tabs.value.length > 0 ? tabs.value[tabs.value.length - 1].sessionId : null
+      if (!isReconnect) {
+        const failedTab = tabs.value.find((tab) => tab.sessionId === sessionId)
+        if (failedTab) {
+          const idx = tabs.value.indexOf(failedTab)
+          tabs.value.splice(idx, 1)
+          if (activeTabId.value === failedTab.sessionId) {
+            activeTabId.value = tabs.value.length > 0 ? tabs.value[tabs.value.length - 1].sessionId : null
+          }
         }
       }
       return null

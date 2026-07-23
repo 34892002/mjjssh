@@ -1,7 +1,9 @@
+use base64::{engine::general_purpose::STANDARD_NO_PAD, Engine};
 use russh::client::{self, Handler};
 use russh::keys::{decode_secret_key, Certificate, PrivateKeyWithHashAlg, PublicKey};
 use russh::*;
 use russh_sftp::client::SftpSession;
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -17,6 +19,7 @@ use crate::vault::{AuthType, DecryptedCredential};
 pub enum SshError {
     #[error("SSH connection failed: {0}")]
     Connection(String),
+
     #[error("SSH authentication failed: {0}")]
     Auth(String),
     #[error("SSH channel error: {0}")]
@@ -25,6 +28,21 @@ pub enum SshError {
     Io(#[from] std::io::Error),
     #[error("SSH error: {0}")]
     Ssh(#[from] russh::Error),
+    #[error("Host key verification is required for {host}:{port}. Fingerprint: {fingerprint}")]
+    UnknownHostKey {
+        host: String,
+        port: u16,
+        fingerprint: String,
+        key_type: String,
+    },
+    #[error("Host key changed for {host}:{port}. Expected {expected}, received {actual}")]
+    ChangedHostKey {
+        host: String,
+        port: u16,
+        expected: String,
+        actual: String,
+        key_type: String,
+    },
     #[error("Session not found: {0}")]
     SessionNotFound(String),
     #[error("Interactive terminal is unavailable because an SSH write timed out")]
@@ -68,10 +86,43 @@ fn completion_status(output: &str, marker: &str) -> Option<(usize, i32)> {
     None
 }
 
+#[derive(Clone)]
+struct ObservedHostKey {
+    fingerprint: String,
+    key_type: String,
+}
+
 pub struct SshClientHandler {
     data_tx: mpsc::Sender<Vec<u8>>,
     terminal_output_tx: broadcast::Sender<Vec<u8>>,
     terminal_channel_id: Arc<Mutex<Option<ChannelId>>>,
+    expected_host_key_fingerprint: Option<String>,
+    observed_host_key: Arc<Mutex<Option<ObservedHostKey>>>,
+}
+
+fn host_key_fingerprint(server_public_key: &PublicKey) -> Result<ObservedHostKey, SshError> {
+    let openssh = server_public_key.to_openssh().map_err(|error| {
+        SshError::Connection(format!("Could not read server host key: {error}"))
+    })?;
+    let mut fields = openssh.split_whitespace();
+    let key_type = fields
+        .next()
+        .ok_or_else(|| SshError::Connection("Server host key is missing its type".into()))?;
+    let key_data = fields
+        .next()
+        .ok_or_else(|| SshError::Connection("Server host key is missing its data".into()))?;
+    let key_data = base64::engine::general_purpose::STANDARD
+        .decode(key_data)
+        .map_err(|error| {
+            SshError::Connection(format!("Could not decode server host key: {error}"))
+        })?;
+    Ok(ObservedHostKey {
+        fingerprint: format!(
+            "SHA256:{}",
+            STANDARD_NO_PAD.encode(Sha256::digest(key_data))
+        ),
+        key_type: key_type.to_owned(),
+    })
 }
 
 const TERMINAL_WRITE_TIMEOUT: Duration = Duration::from_secs(3);
@@ -172,9 +223,14 @@ impl Handler for SshClientHandler {
 
     async fn check_server_key(
         &mut self,
-        _server_public_key: &PublicKey,
+        server_public_key: &PublicKey,
     ) -> Result<bool, Self::Error> {
-        Ok(true)
+        let observed = host_key_fingerprint(server_public_key)?;
+        *self.observed_host_key.lock().await = Some(observed.clone());
+        Ok(self
+            .expected_host_key_fingerprint
+            .as_deref()
+            .is_some_and(|expected| expected == observed.fingerprint))
     }
 
     async fn data(
@@ -305,6 +361,7 @@ impl SshSession {
         username: &str,
         credential: &DecryptedCredential,
         auth_type: &AuthType,
+        expected_host_key_fingerprint: Option<String>,
     ) -> Result<(Self, mpsc::Receiver<Vec<u8>>), SshError> {
         let config = client::Config {
             inactivity_timeout: Some(std::time::Duration::from_secs(300)),
@@ -317,16 +374,40 @@ impl SshSession {
         let (terminal_output_tx, _) = broadcast::channel(256);
         let terminal_channel_id = Arc::new(Mutex::new(None));
 
+        let observed_host_key = Arc::new(Mutex::new(None));
         let handler = SshClientHandler {
             data_tx,
             terminal_output_tx: terminal_output_tx.clone(),
             terminal_channel_id: terminal_channel_id.clone(),
+            expected_host_key_fingerprint: expected_host_key_fingerprint.clone(),
+            observed_host_key: observed_host_key.clone(),
         };
 
         let addr = format!("{}:{}", host, port);
-        let mut handle = client::connect(config, &addr, handler)
-            .await
-            .map_err(|e| SshError::Connection(e.to_string()))?;
+        let mut handle = match client::connect(config, &addr, handler).await {
+            Ok(handle) => handle,
+            Err(error) => {
+                let observed = observed_host_key.lock().await.clone();
+                if let Some(observed) = observed {
+                    return match expected_host_key_fingerprint {
+                        Some(expected) => Err(SshError::ChangedHostKey {
+                            host: host.to_owned(),
+                            port,
+                            expected,
+                            actual: observed.fingerprint,
+                            key_type: observed.key_type,
+                        }),
+                        None => Err(SshError::UnknownHostKey {
+                            host: host.to_owned(),
+                            port,
+                            fingerprint: observed.fingerprint,
+                            key_type: observed.key_type,
+                        }),
+                    };
+                }
+                return Err(SshError::Connection(error.to_string()));
+            }
+        };
 
         match auth_type {
             AuthType::Password => {

@@ -562,14 +562,20 @@ const activeTerminalInfo = ref<{ host: string; port: number; username: string } 
 
 // --- Connection dialog ---
 const connDialogVisible = ref(false)
-const connDialogStatus = ref<'connecting' | 'authenticating' | 'success' | 'error'>('connecting')
+type ConnectionDialogStatus = 'connecting' | 'verifying' | 'authenticating' | 'success' | 'error' | 'host-key-confirm' | 'host-key-changed'
+type HostKeyInfo = { algorithm: string; fingerprint: string; expectedFingerprint?: string }
+
+const connDialogStatus = ref<ConnectionDialogStatus>('connecting')
 const connDialogInfo = ref<{ host: string; port: number; username: string; profileName: string }>({ host: '', port: 22, username: '', profileName: '' })
 const connDialogError = ref('')
+const pendingHostKey = ref<HostKeyInfo | null>(null)
 const pendingProfile = ref<SshProfileView | null>(null)
+const reconnectingSessionId = ref<string | null>(null)
+const reconnectVersions = ref<Record<string, number>>({})
 
-async function handleConnect(profile: SshProfileView) {
-  const existingTab = sessionStore.tabs.find(t => t.profileId === profile.id)
-  if (existingTab) {
+async function handleConnect(profile: SshProfileView, reuseSessionId?: string) {
+  const existingTab = sessionStore.tabs.find((tab) => tab.profileId === profile.id)
+  if (existingTab && !reuseSessionId) {
     sessionStore.setActiveTab(existingTab.sessionId)
     updateTerminalInfo(existingTab.sessionId)
     await nextTick()
@@ -587,43 +593,112 @@ async function handleConnect(profile: SshProfileView) {
   }
   connDialogStatus.value = 'connecting'
   connDialogError.value = ''
+  pendingHostKey.value = null
   sessionStore.error = null
   connDialogVisible.value = true
 
   // 模拟进度
   await new Promise(r => setTimeout(r, 300))
   if (!connDialogVisible.value) return
-  connDialogStatus.value = 'authenticating'
+  connDialogStatus.value = 'verifying'
 
   // 发起连接
   activeTerminalInfo.value = { host: profile.host, port: profile.port, username: profile.username }
-  const sessionId = await sessionStore.connect(profile.id, profile.name)
+  const sessionId = await sessionStore.connect(profile.id, profile.name, reuseSessionId)
 
   if (sessionId) {
+    if (reuseSessionId) {
+      reconnectVersions.value = {
+        ...reconnectVersions.value,
+        [sessionId]: (reconnectVersions.value[sessionId] ?? 0) + 1,
+      }
+    }
+    reconnectingSessionId.value = null
     connDialogStatus.value = 'success'
     await nextTick()
     await new Promise(resolve => setTimeout(resolve, 200))
     terminalRefs.value[sessionId]?.triggerResize()
   } else {
+    const connectionError = sessionStore.error || '连接失败'
+    const hostKeyError = parseHostKeyError(connectionError)
+    if (hostKeyError) {
+      pendingHostKey.value = hostKeyError
+      connDialogStatus.value = hostKeyError.expectedFingerprint ? 'host-key-changed' : 'host-key-confirm'
+      return
+    }
     connDialogStatus.value = 'error'
-    connDialogError.value = sessionStore.error || '连接失败'
+    connDialogError.value = connectionError
+  }
+}
+
+function parseHostKeyError(error: string): HostKeyInfo | null {
+  const message = error.replace(/^Error:\s*/, '')
+  const [kind, algorithm, expectedOrFingerprint, actual] = message.split('|')
+  if (kind === 'HOST_KEY_UNKNOWN' && algorithm && expectedOrFingerprint) {
+    return { algorithm, fingerprint: expectedOrFingerprint }
+  }
+  if (kind === 'HOST_KEY_CHANGED' && algorithm && expectedOrFingerprint && actual) {
+    return { algorithm, expectedFingerprint: expectedOrFingerprint, fingerprint: actual }
+  }
+  return null
+}
+
+async function handleTrustHostKey() {
+  const profile = pendingProfile.value
+  const hostKey = pendingHostKey.value
+  if (!profile || !hostKey || hostKey.expectedFingerprint) return
+  try {
+    await invoke('trust_host_key', {
+      host: profile.host,
+      port: profile.port,
+      algorithm: hostKey.algorithm,
+      fingerprint: hostKey.fingerprint,
+    })
+    await handleConnect(profile, reconnectingSessionId.value ?? undefined)
+  } catch (error) {
+    connDialogStatus.value = 'error'
+    connDialogError.value = String(error)
   }
 }
 
 async function handleRetry() {
-  connDialogVisible.value = false
   if (pendingProfile.value) {
-    await handleConnect(pendingProfile.value)
+    await handleConnect(pendingProfile.value, reconnectingSessionId.value ?? undefined)
   }
+}
+
+function handleTerminalDisconnected(sessionId: string, reason: string) {
+  const tab = sessionStore.tabs.find((item) => item.sessionId === sessionId)
+  const profile = tab && vaultStore.profiles.find((item) => item.id === tab.profileId)
+  if (!tab || !profile) return
+
+  sessionStore.setActiveTab(sessionId)
+  activeTerminalInfo.value = { host: profile.host, port: profile.port, username: profile.username }
+  pendingProfile.value = profile
+  reconnectingSessionId.value = sessionId
+  connDialogInfo.value = {
+    host: profile.host,
+    port: profile.port,
+    username: profile.username,
+    profileName: profile.name,
+  }
+  pendingHostKey.value = null
+  connDialogError.value = reason
+  connDialogStatus.value = 'error'
+  connDialogVisible.value = true
 }
 
 function handleCloseConnDialog() {
   connDialogVisible.value = false
+  const sessionId = reconnectingSessionId.value
+  reconnectingSessionId.value = null
+  if (sessionId) {
+    sessionStore.closeTab(sessionId)
+    return
+  }
   if (pendingProfile.value) {
-    const tab = sessionStore.tabs.find(t => t.profileId === pendingProfile.value!.id)
-    if (tab) {
-      sessionStore.closeTab(tab.sessionId)
-    }
+    const tab = sessionStore.tabs.find((item) => item.profileId === pendingProfile.value!.id)
+    if (tab) sessionStore.closeTab(tab.sessionId)
   }
 }
 
@@ -862,11 +937,45 @@ onBeforeUnmount(() => {
   window.removeEventListener('sync-configuration-changed', handleSyncConfigurationChanged)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
   document.removeEventListener('pointerdown', closeTransfersOnOutsideClick)
+  window.removeEventListener('error', handleWindowError)
+  window.removeEventListener('unhandledrejection', handleUnhandledRejection)
 })
 
 // --- Settings ---
 const showSettings = ref(false)
 const settingsSection = ref<'terminal' | 'ai' | 'sync' | 'system'>('terminal')
+const showDiagnosticExportConfirm = ref(false)
+const diagnosticExporting = ref(false)
+
+async function confirmDiagnosticExport() {
+  diagnosticExporting.value = true
+  try {
+    const path = await invoke<string>('export_diagnostic_bundle')
+    showDiagnosticExportConfirm.value = false
+    window.alert(t('diagnostics.success', { path }))
+  } catch {
+    window.alert(t('diagnostics.failed'))
+  } finally {
+    diagnosticExporting.value = false
+  }
+}
+
+function recordFrontendCrash(kind: 'error' | 'unhandled_rejection', message: string, stack?: string) {
+  void invoke('record_frontend_crash', { kind, message, stack }).catch(() => {})
+}
+
+function handleWindowError(event: ErrorEvent) {
+  recordFrontendCrash('error', event.message || 'Unhandled frontend error', event.error?.stack)
+}
+
+function handleUnhandledRejection(event: PromiseRejectionEvent) {
+  const message = event.reason instanceof Error ? event.reason.message : String(event.reason)
+  const stack = event.reason instanceof Error ? event.reason.stack : undefined
+  recordFrontendCrash('unhandled_rejection', message, stack)
+}
+
+window.addEventListener('error', handleWindowError)
+window.addEventListener('unhandledrejection', handleUnhandledRejection)
 
 function openSettings() {
   settingsSection.value = 'terminal'
@@ -1033,6 +1142,8 @@ function openSyncSettings() {
               :ref="(el: any) => { if (el) terminalRefs[tab.sessionId] = el }"
               :session-id="tab.sessionId"
               :dark="isDarkTheme"
+              :reconnect-version="reconnectVersions[tab.sessionId]"
+              @disconnected="handleTerminalDisconnected(tab.sessionId, $event)"
             />
           </div>
 
@@ -1290,7 +1401,9 @@ function openSyncSettings() {
           :color="pendingProfile?.color || '#3b82f6'"
           :status="connDialogStatus"
           :error="connDialogError"
+          :host-key="pendingHostKey ?? undefined"
           :dark="isDarkTheme"
+          @trust-host-key="handleTrustHostKey"
           @retry="handleRetry"
           @close="handleCloseConnDialog"
         />
@@ -1331,11 +1444,31 @@ function openSyncSettings() {
                     <div class="settings-row"><div><strong>MJJSSH</strong><p>{{ t('settings.appDescription') }}</p></div><span class="settings-value">v0.1.0</span></div>
                     <div class="settings-row"><div><strong>{{ t('settings.theme') }}</strong><p>{{ t('settings.themeDescription', { theme: isDarkTheme ? t('settings.dark') : t('settings.light') }) }}</p></div><span class="settings-value">{{ isDarkTheme ? t('settings.dark') : t('settings.light') }}</span></div>
                   </div>
+                  <h3>{{ t('diagnostics.title') }}</h3>
+                  <div class="settings-panel">
+                    <div class="settings-row"><div><strong>{{ t('diagnostics.title') }}</strong><p>{{ t('diagnostics.description') }}</p></div><n-button size="small" @click="showDiagnosticExportConfirm = true">{{ t('diagnostics.export') }}</n-button></div>
+                  </div>
                 </template>
               </main>
             </div>
           </section>
         </div>
+
+        <n-modal v-model:show="showDiagnosticExportConfirm" preset="dialog" :title="t('diagnostics.confirmTitle')" :mask-closable="!diagnosticExporting" :closable="!diagnosticExporting">
+          <div class="diagnostic-export-confirmation">
+            <strong>{{ t('diagnostics.includedTitle') }}</strong>
+            <p>{{ t('diagnostics.includedItems') }}</p>
+            <strong>{{ t('diagnostics.excludedTitle') }}</strong>
+            <p>{{ t('diagnostics.excludedItems') }}</p>
+            <n-alert type="warning" :show-icon="false">{{ t('diagnostics.warning') }}</n-alert>
+          </div>
+          <template #action>
+            <n-space justify="end">
+              <n-button :disabled="diagnosticExporting" @click="showDiagnosticExportConfirm = false">{{ t('diagnostics.cancel') }}</n-button>
+              <n-button type="primary" :loading="diagnosticExporting" @click="confirmDiagnosticExport">{{ diagnosticExporting ? t('diagnostics.exporting') : t('diagnostics.confirm') }}</n-button>
+            </n-space>
+          </template>
+        </n-modal>
 
         <PermissionsDialog
           :show="Boolean(permissionTarget)"
@@ -2112,6 +2245,9 @@ function openSyncSettings() {
 .settings-row strong, .sync-intro strong, .empty-settings strong { font-size: 14px; color: var(--app-text); }
 .settings-row p, .sync-intro p, .empty-settings p { margin: 4px 0 0; font-size: 12px; color: var(--app-muted); }
 .settings-value { flex-shrink: 0; font-size: 12px; color: var(--app-accent); }
+.diagnostic-export-confirmation { display: grid; gap: 8px; }
+.diagnostic-export-confirmation p { margin: 0 0 8px; color: var(--app-muted); font-size: 13px; line-height: 1.6; }
+.diagnostic-export-confirmation :deep(.n-alert) { margin-top: 4px; line-height: 1.6; }
 
 .sync-intro {
   display: flex;

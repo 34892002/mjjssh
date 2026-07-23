@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
-import { KeyRound } from '@lucide/vue'
+import { Copy, KeyRound, Plus, WandSparkles } from '@lucide/vue'
 import EntityCard from './EntityCard.vue'
 import {
   NButton,
@@ -13,13 +13,25 @@ import {
   NInput,
   NSelect,
   NAlert,
+  NRadioButton,
+  NRadioGroup,
 } from 'naive-ui'
 import { useVaultStore } from '../stores/vault'
-import type { SshKeyView, CreateKeyRequest } from '../types'
+import type { SshKeyView, CreateKeyRequest, GenerateSshKeyRequest } from '../types'
+import { useLocale } from '../composables/useLocale'
 
 const vaultStore = useVaultStore()
+const { t } = useLocale()
 
 const showForm = ref(false)
+const showGenerator = ref(false)
+const generatedPublicKey = ref('')
+const generateForm = ref<GenerateSshKeyRequest>({
+  name: '',
+  algorithm: 'ed25519',
+})
+const generateError = ref('')
+const publicKeyCopied = ref(false)
 const editingKey = ref<SshKeyView | null>(null)
 const form = ref<CreateKeyRequest>({
   name: '',
@@ -43,6 +55,43 @@ function openCreate() {
   form.value = { name: '', key_type: 'key', private_key: '', cert_data: '' }
   formError.value = ''
   showForm.value = true
+}
+
+function openGenerate() {
+  generateForm.value = { name: '', algorithm: 'ed25519' }
+  generatedPublicKey.value = ''
+  generateError.value = ''
+  publicKeyCopied.value = false
+  showGenerator.value = true
+}
+
+async function handleGenerate() {
+  generateError.value = ''
+  if (!generateForm.value.name.trim()) {
+    generateError.value = t('keys.nameRequired')
+    return
+  }
+
+  const result = await vaultStore.generateSshKey({
+    ...generateForm.value,
+    name: generateForm.value.name.trim(),
+  })
+  if (!result) {
+    generateError.value = vaultStore.error || t('keys.generateFailed')
+    return
+  }
+
+  generatedPublicKey.value = result.publicKey
+}
+
+async function copyPublicKey() {
+  try {
+    const { writeText } = await import('@tauri-apps/plugin-clipboard-manager')
+    await writeText(generatedPublicKey.value)
+    publicKeyCopied.value = true
+  } catch {
+    generateError.value = t('keys.copyFailed')
+  }
 }
 
 function openEdit(key: SshKeyView) {
@@ -120,15 +169,16 @@ async function handleDelete(id: string) {
   <div class="keys-view">
     <div class="keys-header">
       <h2>密钥管理</h2>
-      <n-button type="primary" @click="openCreate">
-        <template #icon>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="12" y1="5" x2="12" y2="19"/>
-            <line x1="5" y1="12" x2="19" y2="12"/>
-          </svg>
-        </template>
-        新增密钥
-      </n-button>
+      <n-space>
+        <n-button @click="openGenerate">
+          <template #icon><WandSparkles :size="15" /></template>
+          {{ t('keys.generate') }}
+        </n-button>
+        <n-button type="primary" @click="openCreate">
+          <template #icon><Plus :size="15" /></template>
+          新增密钥
+        </n-button>
+      </n-space>
     </div>
 
     <n-empty v-if="vaultStore.sshKeys.length === 0" description="暂无密钥" style="padding: 60px 0">
@@ -167,6 +217,49 @@ async function handleDelete(id: string) {
         </template>
       </EntityCard>
     </div>
+
+    <n-modal v-model:show="showGenerator" :title="t('keys.generateTitle')" preset="card" style="width: 520px">
+      <n-alert v-if="generateError" type="error" style="margin-bottom: 16px">
+        {{ generateError }}
+      </n-alert>
+
+      <n-form v-if="!generatedPublicKey" label-placement="left" label-width="80">
+        <n-form-item :label="t('keys.name')" required>
+          <n-input v-model:value="generateForm.name" :placeholder="t('keys.namePlaceholder')" @keyup.enter="handleGenerate" />
+        </n-form-item>
+        <n-form-item :label="t('keys.algorithm')">
+          <n-radio-group v-model:value="generateForm.algorithm">
+            <n-radio-button value="ed25519">Ed25519</n-radio-button>
+            <n-radio-button value="rsa">RSA-4096</n-radio-button>
+          </n-radio-group>
+        </n-form-item>
+        <n-alert type="info" :show-icon="false">
+          {{ generateForm.algorithm === 'ed25519' ? t('keys.ed25519Description') : t('keys.rsaDescription') }}
+        </n-alert>
+      </n-form>
+
+      <div v-else>
+        <n-alert type="success" style="margin-bottom: 16px">{{ t('keys.generatedDescription') }}</n-alert>
+        <n-form label-placement="top">
+          <n-form-item :label="t('keys.publicKey')">
+            <n-input :value="generatedPublicKey" type="textarea" :rows="4" readonly />
+          </n-form-item>
+        </n-form>
+      </div>
+
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showGenerator = false">{{ generatedPublicKey ? t('keys.done') : t('form.cancel') }}</n-button>
+          <n-button v-if="generatedPublicKey" type="primary" @click="copyPublicKey">
+            <template #icon><Copy :size="15" /></template>
+            {{ publicKeyCopied ? t('keys.copied') : t('keys.copyPublicKey') }}
+          </n-button>
+          <n-button v-else type="primary" :loading="vaultStore.loading" @click="handleGenerate">
+            {{ t('keys.generate') }}
+          </n-button>
+        </n-space>
+      </template>
+    </n-modal>
 
     <!-- Add/edit key modal -->
     <n-modal v-model:show="showForm" :title="editingKey ? '编辑密钥' : '新增密钥'" preset="card" style="width: 520px">

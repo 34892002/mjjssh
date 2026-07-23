@@ -1,7 +1,15 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import type { SshProfileView, CreateProfileRequest, UpdateProfileRequest, SshKeyView, CreateKeyRequest } from '../types'
+import type {
+  SshProfileView,
+  CreateProfileRequest,
+  UpdateProfileRequest,
+  SshKeyView,
+  CreateKeyRequest,
+  GenerateSshKeyRequest,
+  GenerateSshKeyResult,
+} from '../types'
 
 export const useVaultStore = defineStore('vault', () => {
   const isReady = ref(false)
@@ -142,6 +150,22 @@ export const useVaultStore = defineStore('vault', () => {
     }
   }
 
+  async function generateSshKey(req: GenerateSshKeyRequest): Promise<GenerateSshKeyResult | null> {
+    loading.value = true
+    error.value = null
+    try {
+      const result = await invoke<GenerateSshKeyResult>('generate_ssh_key', { request: req })
+      sshKeys.value.push(result.key)
+      keysLoaded.value = true
+      return result
+    } catch (e) {
+      error.value = String(e)
+      return null
+    } finally {
+      loading.value = false
+    }
+  }
+
   async function deleteKey(id: string): Promise<boolean> {
     loading.value = true
     error.value = null
@@ -189,6 +213,7 @@ export const useVaultStore = defineStore('vault', () => {
     deleteProfile,
     loadKeys,
     createKey,
+    generateSshKey,
     updateKey,
     deleteKey,
   }

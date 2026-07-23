@@ -52,6 +52,8 @@ fn terminal_write_error_category(error: &crate::ssh::SshError) -> &'static str {
         crate::ssh::SshError::SessionNotFound(_) => "session_not_found",
         crate::ssh::SshError::Channel(_) => "channel_error",
         crate::ssh::SshError::Connection(_) => "connection_error",
+        crate::ssh::SshError::UnknownHostKey { .. } => "unknown_host_key",
+        crate::ssh::SshError::ChangedHostKey { .. } => "changed_host_key",
         crate::ssh::SshError::Auth(_) => "authentication_error",
         crate::ssh::SshError::Io(_) => "io_error",
         crate::ssh::SshError::Ssh(_) => "ssh_error",
@@ -61,6 +63,28 @@ fn terminal_write_error_category(error: &crate::ssh::SshError) -> &'static str {
 #[derive(serde::Serialize)]
 pub struct SessionInfo {
     pub id: String,
+}
+
+#[tauri::command]
+pub async fn trust_host_key(
+    state: State<'_, AppState>,
+    host: String,
+    port: u16,
+    algorithm: String,
+    fingerprint: String,
+) -> Result<(), String> {
+    if !fingerprint.starts_with("SHA256:") || fingerprint.len() > 128 {
+        return Err("无效的主机指纹。".into());
+    }
+    if algorithm.is_empty() || algorithm.len() > 64 {
+        return Err("无效的主机密钥算法。".into());
+    }
+    state
+        .known_hosts
+        .lock()
+        .await
+        .trust(&host, port, algorithm, fingerprint)
+        .map_err(|error| format!("无法保存主机指纹: {error}"))
 }
 
 #[tauri::command]
@@ -79,6 +103,16 @@ pub async fn connect_ssh(
         .await
         .map_err(|e| e.to_string())?;
 
+    let trusted_host_key = state
+        .known_hosts
+        .lock()
+        .await
+        .get(&profile.host, profile.port)
+        .cloned();
+    let expected_host_key_fingerprint = trusted_host_key
+        .as_ref()
+        .map(|trusted_key| trusted_key.fingerprint.clone());
+
     let (session, mut data_rx) = SshSession::connect(
         session_id.clone(),
         profile_id,
@@ -87,9 +121,23 @@ pub async fn connect_ssh(
         &profile.username,
         &credential,
         &profile.auth_type,
+        expected_host_key_fingerprint,
     )
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|error| match error {
+        crate::ssh::SshError::UnknownHostKey {
+            fingerprint,
+            key_type,
+            ..
+        } => format!("HOST_KEY_UNKNOWN|{key_type}|{fingerprint}"),
+        crate::ssh::SshError::ChangedHostKey {
+            expected,
+            actual,
+            key_type,
+            ..
+        } => format!("HOST_KEY_CHANGED|{key_type}|{expected}|{actual}"),
+        error => error.to_string(),
+    })?;
 
     let sessions = state.sessions.clone();
     sessions.add_session(session).await;

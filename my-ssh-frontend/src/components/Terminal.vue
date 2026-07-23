@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted, onBeforeUnmount, watch } from 'vue'
+import { nextTick, ref, onMounted, onBeforeUnmount, watch } from 'vue'
+import { ChevronDown, ChevronUp, Regex, X } from '@lucide/vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
@@ -12,9 +13,19 @@ import { useSessionStore } from '../stores/session'
 const props = defineProps<{
   sessionId: string
   dark: boolean
+  reconnectVersion?: number
+}>()
+
+const emit = defineEmits<{
+  disconnected: [reason: string]
 }>()
 
 const containerRef = ref<HTMLDivElement | null>(null)
+const searchInputRef = ref<HTMLInputElement | null>(null)
+const searchVisible = ref(false)
+const searchQuery = ref('')
+const searchCaseSensitive = ref(false)
+const searchRegex = ref(false)
 const sessionStore = useSessionStore()
 
 let terminal: Terminal
@@ -40,6 +51,42 @@ function terminalTheme() {
         black: '#172033', red: '#dc2626', green: '#15803d', yellow: '#a16207', blue: '#2563eb', magenta: '#a21caf', cyan: '#0f766e', white: '#e2e8f0',
         brightBlack: '#64748b', brightRed: '#ef4444', brightGreen: '#22c55e', brightYellow: '#ca8a04', brightBlue: '#3b82f6', brightMagenta: '#c026d3', brightCyan: '#0891b2', brightWhite: '#ffffff',
       }
+}
+
+function searchOptions() {
+  return {
+    caseSensitive: searchCaseSensitive.value,
+    regex: searchRegex.value,
+  }
+}
+
+function runSearch(forward: boolean) {
+  if (!searchQuery.value || !searchAddon) return false
+  return forward
+    ? searchAddon.findNext(searchQuery.value, searchOptions())
+    : searchAddon.findPrevious(searchQuery.value, searchOptions())
+}
+
+function openSearch() {
+  searchVisible.value = true
+  void nextTick(() => searchInputRef.value?.select())
+}
+
+function closeSearch() {
+  searchVisible.value = false
+  searchAddon?.clearDecorations()
+  terminal?.focus()
+}
+
+function handleSearchKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') {
+    event.preventDefault()
+    closeSearch()
+  }
+  if (event.key === 'Enter') {
+    event.preventDefault()
+    runSearch(!event.shiftKey)
+  }
 }
 
 function markTerminalUnavailable(message: string) {
@@ -108,6 +155,18 @@ onMounted(async () => {
     console.warn('WebGL addon failed, falling back to canvas:', e)
   }
 
+  terminal.attachCustomKeyEventHandler((event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
+      if (event.type === 'keydown') openSearch()
+      return false
+    }
+    if (event.key === 'Escape' && searchVisible.value && event.type === 'keydown') {
+      closeSearch()
+      return false
+    }
+    return true
+  })
+
   terminal.onData((data) => {
     void writeTerminalData(data)
   })
@@ -133,12 +192,21 @@ onMounted(async () => {
   })
   unlistenDisconnected = await listen<string>(`ssh-disconnected:${props.sessionId}`, (event) => {
     markTerminalUnavailable(`connection disconnected: ${event.payload}`)
+    emit('disconnected', event.payload)
   })
   sessionStore.notifyTerminalReady(props.sessionId)
 })
 
 watch(() => props.dark, () => {
   if (terminal) terminal.options.theme = terminalTheme()
+})
+
+watch(() => props.reconnectVersion, (version, previousVersion) => {
+  if (version === undefined || version === previousVersion || !terminalUnavailable) return
+  terminalUnavailable = false
+  terminal.options.disableStdin = false
+  terminal.write('\r\n\x1b[32m[SSH connection restored]\x1b[0m\r\n')
+  scheduleFit()
 })
 
 onBeforeUnmount(() => {
@@ -179,7 +247,24 @@ defineExpose({ focus, triggerResize })
     ref="containerRef"
     class="terminal-container"
     @click="focus"
-  />
+  >
+    <form v-if="searchVisible" class="terminal-search" @submit.prevent="runSearch(true)">
+      <input
+        ref="searchInputRef"
+        v-model="searchQuery"
+        type="search"
+        spellcheck="false"
+        placeholder="Search"
+        @input="runSearch(true)"
+        @keydown="handleSearchKeydown"
+      />
+      <button type="button" title="Previous match" aria-label="Previous match" @click="runSearch(false)"><ChevronUp :size="15" /></button>
+      <button type="button" title="Next match" aria-label="Next match" @click="runSearch(true)"><ChevronDown :size="15" /></button>
+      <button type="button" :class="{ active: searchCaseSensitive }" title="Match case" aria-label="Match case" @click="searchCaseSensitive = !searchCaseSensitive; runSearch(true)">Aa</button>
+      <button type="button" :class="{ active: searchRegex }" title="Use regular expression" aria-label="Use regular expression" @click="searchRegex = !searchRegex; runSearch(true)"><Regex :size="15" /></button>
+      <button type="button" title="Close search" aria-label="Close search" @click="closeSearch"><X :size="15" /></button>
+    </form>
+  </div>
 </template>
 
 <style scoped>
@@ -187,9 +272,57 @@ defineExpose({ focus, triggerResize })
   box-sizing: border-box;
   width: 100%;
   height: 100%;
+  position: relative;
   overflow: hidden;
   background: var(--app-terminal);
   padding: 5px 8px;
+}
+
+.terminal-search {
+  position: absolute;
+  z-index: 2;
+  top: 10px;
+  right: 16px;
+  display: flex;
+  align-items: center;
+  height: 30px;
+  border: 1px solid #3b465d;
+  border-radius: 5px;
+  background: #1c2330;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, .25);
+  overflow: hidden;
+}
+
+.terminal-search input {
+  width: 190px;
+  height: 100%;
+  padding: 0 8px;
+  border: 0;
+  outline: 0;
+  color: #d8deeb;
+  background: transparent;
+  font: 12px 'Cascadia Code', 'Fira Code', Consolas, monospace;
+}
+
+.terminal-search button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid #3b465d;
+  color: #9aa8be;
+  background: transparent;
+  cursor: pointer;
+  font: 11px system-ui, sans-serif;
+}
+
+.terminal-search button:hover,
+.terminal-search button.active {
+  color: #d8deeb;
+  background: #30394b;
 }
 
 .terminal-container :deep(.xterm) {

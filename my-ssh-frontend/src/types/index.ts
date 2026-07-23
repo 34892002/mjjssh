@@ -63,3 +63,15 @@ export interface CreateKeyRequest {
   private_key: string
   cert_data?: string
 }
+
+export type SshKeyAlgorithm = 'ed25519' | 'rsa'
+
+export interface GenerateSshKeyRequest {
+  name: string
+  algorithm: SshKeyAlgorithm
+}
+
+export interface GenerateSshKeyResult {
+  key: SshKeyView
+  publicKey: string
+}

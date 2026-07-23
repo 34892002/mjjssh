@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 
 use crate::ai::risk_confirmation::RiskConfirmationStore;
 use crate::ai::service::{AiTaskManager, SshSafetyContext};
-use crate::ssh::SessionManager;
+use crate::ssh::{known_hosts::KnownHosts, SessionManager};
 use crate::vault::{Vault, VaultError};
 
 pub struct ServerStatsSample {
@@ -21,6 +21,7 @@ pub struct AppState {
     pub vault: Arc<Mutex<Option<Vault>>>,
     pub app_dir: PathBuf,
     pub sessions: Arc<SessionManager>,
+    pub known_hosts: Arc<Mutex<KnownHosts>>,
     pub ai_tasks: AiTaskManager,
     pub risk_confirmations: RiskConfirmationStore,
     pub ssh_safety_contexts: Arc<Mutex<HashMap<String, SshSafetyContext>>>,
@@ -31,8 +32,11 @@ impl AppState {
     pub fn new(app_dir: PathBuf) -> Self {
         Self {
             vault: Arc::new(Mutex::new(None)),
-            app_dir,
+            app_dir: app_dir.clone(),
             sessions: Arc::new(SessionManager::new()),
+            known_hosts: Arc::new(Mutex::new(
+                KnownHosts::open(app_dir.clone()).expect("Failed to open known_hosts"),
+            )),
             ai_tasks: AiTaskManager::default(),
             risk_confirmations: RiskConfirmationStore::default(),
             ssh_safety_contexts: Arc::new(Mutex::new(HashMap::new())),
