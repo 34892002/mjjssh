@@ -2,7 +2,7 @@
 import { defineAsyncComponent, ref, computed, onBeforeUnmount, onMounted, nextTick, watch, type Component } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { Archive, Box, Cloud, CloudCog, Code2, Container, Copy, Cpu, Database, Download, EthernetPort, FileCode2, Globe2, HardDrive, Layers3, ListFilter, MapPin, MemoryStick, MonitorCog, Moon, Network, RadioTower, RefreshCw, Router, Server, ServerCog, Settings, ShieldCheck, Sparkles, Square, Sun, TerminalSquare, Upload, Waypoints, Workflow, X, Zap } from '@lucide/vue'
+import { Archive, Box, Cloud, CloudCog, Code2, Container, Copy, Cpu, Database, Download, EthernetPort, FileCode2, Globe2, HardDrive, Languages, Layers3, ListFilter, MapPin, MemoryStick, MonitorCog, Moon, Network, RadioTower, RefreshCw, Router, Server, ServerCog, Settings, ShieldCheck, Sparkles, Square, Sun, TerminalSquare, Upload, Waypoints, Workflow, X, Zap } from '@lucide/vue'
 import {
   darkTheme,
   NConfigProvider,
@@ -18,6 +18,7 @@ import {
   NSpace,
   NPopconfirm,
   NPopover,
+  NDropdown,
   NEmpty,
   NGlobalStyle,
   type GlobalThemeOverrides,
@@ -25,6 +26,7 @@ import {
 import { useVaultStore } from './stores/vault'
 import { useSessionStore } from './stores/session'
 import { useTransferStore } from './stores/transfer'
+import { useLocale, type AppLanguage } from './composables/useLocale'
 import EntityCard from './components/EntityCard.vue'
 const Terminal = defineAsyncComponent(() => import('./components/Terminal.vue'))
 const ConnectionDialog = defineAsyncComponent(() => import('./components/ConnectionDialog.vue'))
@@ -42,6 +44,16 @@ const vaultStore = useVaultStore()
 const sessionStore = useSessionStore()
 const transferStore = useTransferStore()
 const appWindow = getCurrentWindow()
+const { language, languageLabel, naiveLocale, naiveDateLocale, setLanguage, t } = useLocale()
+const languageOptions = computed(() => [
+  { label: t('language.zh'), key: 'zh-CN' },
+  { label: t('language.en'), key: 'en-US' },
+])
+const dateLocale = computed(() => language.value === 'zh-CN' ? 'zh-CN' : 'en-US')
+
+function formatDate(value: string) {
+  return new Date(value).toLocaleString(dateLocale.value)
+}
 const savedTheme = localStorage.getItem('my-ssh-theme')
 const isDarkTheme = ref(savedTheme !== 'light')
 const naiveTheme = computed(() => isDarkTheme.value ? darkTheme : null)
@@ -131,12 +143,12 @@ let transferNoticeTimer: ReturnType<typeof setTimeout> | null = null
 const syncProviderLabel = computed(() => syncStatus.value?.provider === 'gitee_snippet' ? 'Gitee 私有代码片段' : 'GitHub Gist')
 const syncVersionState = computed(() => {
   const state = remoteSyncStatus.value?.state
-  if (!state) return '尚未检查云端'
+  if (!state) return t('sync.notCheckedRemote')
   return {
-    in_sync: '本地与云端已同步',
-    local_ahead: '本地有更新，等待上传',
-    remote_ahead: '云端有更新，等待下载',
-    conflict: '两端均有更新，需要处理冲突',
+    in_sync: t('sync.inSync'),
+    local_ahead: t('sync.localAhead'),
+    remote_ahead: t('sync.remoteAhead'),
+    conflict: t('sync.conflict'),
   }[state]
 })
 
@@ -145,9 +157,9 @@ const remoteSyncAction = computed(() => {
   if (!state) return ''
   return {
     in_sync: '',
-    local_ahead: '建议上传本地配置',
-    remote_ahead: '建议下载云端配置',
-    conflict: '请在同步设置中选择保留哪一份配置',
+    local_ahead: t('sync.uploadSuggestion'),
+    remote_ahead: t('sync.downloadSuggestion'),
+    conflict: t('sync.conflictSuggestion'),
   }[state]
 })
 
@@ -209,11 +221,11 @@ async function syncNow(automatic = false) {
     syncStatus.value = download.sync
     if (download.status === 'downloaded') {
       await vaultStore.refreshAfterSync()
-      syncNotice.value = '已下载云端更新。'
+      syncNotice.value = t('sync.downloaded')
     } else {
       const upload = await invoke<SyncOperationResult>('upload_sync_vault', { token: syncStatus.value.token })
       syncStatus.value = upload.sync
-      syncNotice.value = upload.status === 'uploaded' ? '已上传本地更新。' : '已是最新状态。'
+      syncNotice.value = upload.status === 'uploaded' ? t('sync.uploaded') : t('sync.upToDate')
     }
     if (automatic) autoSyncState.value = 'success'
     vaultMd5 = await readVaultMd5()
@@ -289,21 +301,27 @@ const autoSyncBadgeType = computed<'info' | 'success' | 'warning' | 'error' | un
 const autoSyncBadgeTitle = computed(() => {
   if (autoSyncState.value === 'pending' && autoSyncDueAt.value) {
     const seconds = Math.max(0, Math.ceil((autoSyncDueAt.value - autoSyncNow.value) / 1_000))
-    return `将在 ${seconds} 秒后自动同步`
+    return t('sync.autoInSeconds', { seconds })
   }
   return {
-    idle: '云同步',
-    pending: '即将自动同步',
-    syncing: '正在自动同步',
-    success: '自动同步成功',
-    conflict: '自动同步发生冲突，请选择覆盖方式',
-    error: '自动同步失败，请打开云同步查看详情',
+    idle: t('sync.title'),
+    pending: t('sync.pending'),
+    syncing: t('sync.syncing'),
+    success: t('sync.success'),
+    conflict: t('sync.conflictNotice'),
+    error: t('sync.errorNotice'),
   }[autoSyncState.value]
 })
 
 function toggleTheme() {
   isDarkTheme.value = !isDarkTheme.value
   localStorage.setItem('my-ssh-theme', isDarkTheme.value ? 'dark' : 'light')
+}
+
+function changeLanguage(nextLanguage: string | number) {
+  if (nextLanguage === 'zh-CN' || nextLanguage === 'en-US') {
+    setLanguage(nextLanguage as AppLanguage)
+  }
 }
 
 async function minimizeWindow() {
@@ -340,27 +358,34 @@ const form = ref<CreateProfileRequest>({
   color: '#3b82f6',
 })
 
-const authOptions = [
-  { label: '密码认证', value: 'password' },
-  { label: '密钥认证', value: 'key' },
-  { label: '证书认证', value: 'certificate' },
-]
+const authOptions = computed(() => [
+  { label: t('auth.password'), value: 'password' },
+  { label: t('auth.key'), value: 'key' },
+  { label: t('auth.certificate'), value: 'certificate' },
+])
 
-const hostIconOptions: Array<{ id: string; label: string; icon: Component }> = [
-  { id: 'server', label: '服务器', icon: Server }, { id: 'server-cog', label: '管理服务器', icon: ServerCog },
-  { id: 'monitor-cog', label: '工作站', icon: MonitorCog }, { id: 'terminal', label: '终端', icon: TerminalSquare },
-  { id: 'cloud', label: '云主机', icon: Cloud }, { id: 'cloud-cog', label: '云服务', icon: CloudCog },
-  { id: 'database', label: '数据库', icon: Database }, { id: 'hard-drive', label: '存储', icon: HardDrive },
-  { id: 'container', label: '容器', icon: Container }, { id: 'box', label: '虚拟机', icon: Box },
-  { id: 'network', label: '网络', icon: Network }, { id: 'router', label: '路由器', icon: Router },
-  { id: 'ethernet-port', label: '交换机', icon: EthernetPort }, { id: 'radio-tower', label: '网关', icon: RadioTower },
-  { id: 'globe', label: '网站', icon: Globe2 }, { id: 'code', label: '开发环境', icon: Code2 },
-  { id: 'file-code', label: '代码服务', icon: FileCode2 }, { id: 'workflow', label: '自动化', icon: Workflow },
-  { id: 'layers', label: '集群', icon: Layers3 }, { id: 'waypoints', label: '代理', icon: Waypoints },
-  { id: 'cpu', label: '计算节点', icon: Cpu }, { id: 'archive', label: '备份', icon: Archive },
-  { id: 'shield', label: '安全服务', icon: ShieldCheck }, { id: 'zap', label: '边缘服务', icon: Zap },
-]
-const hostIconMap = new Map(hostIconOptions.map((option) => [option.id, option.icon]))
+const hostIconOptions = computed<Array<{ id: string; label: string; icon: Component }>>(() => [
+  { id: 'server', label: t('icon.server'), icon: Server }, { id: 'server-cog', label: t('icon.serverCog'), icon: ServerCog },
+  { id: 'monitor-cog', label: t('icon.workstation'), icon: MonitorCog }, { id: 'terminal', label: t('icon.terminal'), icon: TerminalSquare },
+  { id: 'cloud', label: t('icon.cloudHost'), icon: Cloud }, { id: 'cloud-cog', label: t('icon.cloudService'), icon: CloudCog },
+  { id: 'database', label: t('icon.database'), icon: Database }, { id: 'hard-drive', label: t('icon.storage'), icon: HardDrive },
+  { id: 'container', label: t('icon.container'), icon: Container }, { id: 'box', label: t('icon.virtualMachine'), icon: Box },
+  { id: 'network', label: t('icon.network'), icon: Network }, { id: 'router', label: t('icon.router'), icon: Router },
+  { id: 'ethernet-port', label: t('icon.switch'), icon: EthernetPort }, { id: 'radio-tower', label: t('icon.gateway'), icon: RadioTower },
+  { id: 'globe', label: t('icon.website'), icon: Globe2 }, { id: 'code', label: t('icon.development'), icon: Code2 },
+  { id: 'file-code', label: t('icon.codeService'), icon: FileCode2 }, { id: 'workflow', label: t('icon.automation'), icon: Workflow },
+  { id: 'layers', label: t('icon.cluster'), icon: Layers3 }, { id: 'waypoints', label: t('icon.proxy'), icon: Waypoints },
+  { id: 'cpu', label: t('icon.compute'), icon: Cpu }, { id: 'archive', label: t('icon.backup'), icon: Archive },
+  { id: 'shield', label: t('icon.security'), icon: ShieldCheck }, { id: 'zap', label: t('icon.edge'), icon: Zap },
+])
+const hostIconMap = new Map([
+  ['server', Server], ['server-cog', ServerCog], ['monitor-cog', MonitorCog], ['terminal', TerminalSquare],
+  ['cloud', Cloud], ['cloud-cog', CloudCog], ['database', Database], ['hard-drive', HardDrive],
+  ['container', Container], ['box', Box], ['network', Network], ['router', Router],
+  ['ethernet-port', EthernetPort], ['radio-tower', RadioTower], ['globe', Globe2], ['code', Code2],
+  ['file-code', FileCode2], ['workflow', Workflow], ['layers', Layers3], ['waypoints', Waypoints],
+  ['cpu', Cpu], ['archive', Archive], ['shield', ShieldCheck], ['zap', Zap],
+])
 const hostColorOptions = ['#3b82f6', '#14b8a6', '#22c55e', '#eab308', '#f97316', '#ef4444', '#ec4899', '#a855f7']
 const profileKeyOptions = computed(() => vaultStore.sshKeys
   .filter((key) => form.value.auth_type !== 'certificate' || key.key_type === 'certificate')
@@ -377,7 +402,7 @@ const refreshingProfileId = ref<string | null>(null)
 const groupedProfiles = computed(() => {
   const groups = new Map<string, SshProfileView[]>()
   for (const p of vaultStore.profiles) {
-    const group = p.group_name || '默认分组'
+    const group = p.group_name || t('hosts.defaultGroup')
     if (!groups.has(group)) groups.set(group, [])
     groups.get(group)!.push(p)
   }
@@ -475,19 +500,19 @@ function openEditForm(profile: SshProfileView) {
 async function handleFormSubmit() {
   formError.value = null
   if (!form.value.name.trim() || !form.value.host.trim() || !form.value.username.trim()) {
-    formError.value = '请填写名称、主机地址和用户名。'
+    formError.value = t('form.requiredFields')
     return
   }
 
   if (form.value.auth_type === 'password') {
     if (!form.value.credential && !isEditing.value) {
-      formError.value = '请填写密码。'
+      formError.value = t('form.passwordRequired')
       return
     }
   } else if (!form.value.key_id) {
     formError.value = form.value.auth_type === 'certificate'
-      ? '请选择包含 SSH 用户证书的密钥。'
-      : '请选择用于连接的密钥。'
+      ? t('form.certificateKeyRequired')
+      : t('form.keyRequired')
     return
   }
 
@@ -509,7 +534,7 @@ async function handleFormSubmit() {
     : await vaultStore.createProfile(data)
 
   if (!profile) {
-    formError.value = vaultStore.error || '保存主机失败，请稍后重试。'
+    formError.value = vaultStore.error || t('form.saveFailed')
     return
   }
 
@@ -861,7 +886,7 @@ function openSyncSettings() {
 </script>
 
 <template>
-  <n-config-provider :theme="naiveTheme" :theme-overrides="naiveThemeOverrides">
+  <n-config-provider :theme="naiveTheme" :theme-overrides="naiveThemeOverrides" :locale="naiveLocale" :date-locale="naiveDateLocale">
     <n-global-style />
     <n-message-provider>
       <!-- 主应用 -->
@@ -888,21 +913,27 @@ function openSyncSettings() {
               @click="handleTabClick(tab.sessionId)"
             >
               <span class="tab-title">{{ tab.profileName }}</span>
-              <span class="tab-dot" title="已连接" />
+              <span class="tab-dot" :title="t('app.connected')" />
               <span class="tab-close" @click.stop="handleCloseTab(tab.sessionId)">×</span>
             </div>
 
-            <div class="tab new-tab" title="主机列表" aria-label="主机列表" @click="sessionStore.activeTabId = null; activeTerminalInfo = null">
+            <div class="tab new-tab" :title="t('app.hostList')" :aria-label="t('app.hostList')" @click="sessionStore.activeTabId = null; activeTerminalInfo = null">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                 <path d="M12 5v14M5 12h14" />
               </svg>
             </div>
           </div>
           <div class="titlebar-drag-region" data-tauri-drag-region @mousedown="startWindowDrag" />
-          <div class="titlebar-actions" aria-label="应用功能">
+          <div class="titlebar-actions" :aria-label="t('app.features')">
+            <n-dropdown trigger="click" :options="languageOptions" :value="language" @select="changeLanguage">
+              <button class="titlebar-language" :title="t('app.language', { language: languageLabel })" :aria-label="t('app.switchLanguage')">
+                <Languages :size="16" />
+                <span>{{ languageLabel }}</span>
+              </button>
+            </n-dropdown>
             <n-popover trigger="click" placement="bottom-end" :show="syncPopoverVisible" @update:show="handleSyncPopoverShow">
               <template #trigger>
-                <button class="titlebar-action" :class="{ active: syncPopoverVisible }" :title="autoSyncBadgeTitle" aria-label="云同步">
+                <button class="titlebar-action" :class="{ active: syncPopoverVisible }" :title="autoSyncBadgeTitle" :aria-label="t('sync.title')">
                   <span class="sync-cloud-icon">
                     <Cloud :size="17" />
                     <span v-if="autoSyncBadgeType" class="sync-status-dot" :class="`is-${autoSyncBadgeType}`" />
@@ -911,42 +942,42 @@ function openSyncSettings() {
               </template>
               <section class="quick-sync-panel">
                 <header>
-                  <strong>云同步</strong>
-                  <button class="quick-sync-settings" :class="{ enabled: syncStatus?.configured }" title="打开云同步配置" @click="openSyncSettings(); syncPopoverVisible = false">
-                    <span :class="{ enabled: syncStatus?.configured }">{{ syncStatus?.configured ? (syncStatus.autoSync ? '自动同步' : '手动同步') : '同步配置' }}</span>
+                  <strong>{{ t('sync.title') }}</strong>
+                  <button class="quick-sync-settings" :class="{ enabled: syncStatus?.configured }" :title="t('sync.openSettings')" @click="openSyncSettings(); syncPopoverVisible = false">
+                    <span :class="{ enabled: syncStatus?.configured }">{{ syncStatus?.configured ? (syncStatus.autoSync ? t('sync.auto') : t('sync.manual')) : t('sync.configure') }}</span>
                     <Settings :size="15" />
                   </button>
                 </header>
                 <template v-if="syncStatus?.configured">
                   <div class="quick-sync-provider"><Cloud :size="18" /><span>{{ syncProviderLabel }}</span></div>
                   <dl>
-                    <div><dt>同步文件</dt><dd>{{ syncStatus.remoteFileName }}</dd></div>
-                    <div><dt>本地版本</dt><dd>v{{ remoteSyncStatus?.localVaultRevision ?? syncStatus.localVaultRevision }}</dd></div>
-                    <div><dt>云端版本</dt><dd>{{ remoteSyncStatus ? `v${remoteSyncStatus.remoteVaultRevision}` : '尚未检查' }}</dd></div>
-                    <div><dt>当前状态</dt><dd>{{ syncVersionState }}</dd></div>
-                    <div v-if="remoteSyncStatus?.remoteUpdatedAt"><dt>云端更新时间</dt><dd>{{ new Date(remoteSyncStatus.remoteUpdatedAt).toLocaleString() }}</dd></div>
-                    <div><dt>上次同步</dt><dd>{{ syncStatus.lastSyncedAt ? new Date(syncStatus.lastSyncedAt).toLocaleString() : '尚未同步' }}</dd></div>
+                    <div><dt>{{ t('sync.file') }}</dt><dd>{{ syncStatus.remoteFileName }}</dd></div>
+                    <div><dt>{{ t('sync.localVersion') }}</dt><dd>v{{ remoteSyncStatus?.localVaultRevision ?? syncStatus.localVaultRevision }}</dd></div>
+                    <div><dt>{{ t('sync.remoteVersion') }}</dt><dd>{{ remoteSyncStatus ? `v${remoteSyncStatus.remoteVaultRevision}` : t('sync.notChecked') }}</dd></div>
+                    <div><dt>{{ t('sync.currentState') }}</dt><dd>{{ syncVersionState }}</dd></div>
+                    <div v-if="remoteSyncStatus?.remoteUpdatedAt"><dt>{{ t('sync.remoteUpdatedAt') }}</dt><dd>{{ formatDate(remoteSyncStatus.remoteUpdatedAt) }}</dd></div>
+                    <div><dt>{{ t('sync.lastSyncedAt') }}</dt><dd>{{ syncStatus.lastSyncedAt ? formatDate(syncStatus.lastSyncedAt) : t('sync.notSynced') }}</dd></div>
                   </dl>
                   <n-alert v-if="remoteSyncAction" type="info" :show-icon="false">{{ remoteSyncAction }}</n-alert>
                   <n-alert v-if="syncError" type="error" :show-icon="false">{{ syncError }}</n-alert>
                   <n-alert v-if="syncNotice" type="success" :show-icon="false">{{ syncNotice }}</n-alert>
                   <div class="quick-sync-actions">
-                    <n-button secondary :loading="remoteSyncLoading" @click="checkRemoteSyncStatus">检查云端状态</n-button>
-                    <n-button type="primary" :loading="syncLoading" @click="syncNow()">立即同步</n-button>
+                    <n-button secondary :loading="remoteSyncLoading" @click="checkRemoteSyncStatus">{{ t('sync.check') }}</n-button>
+                    <n-button type="primary" :loading="syncLoading" @click="syncNow()">{{ t('sync.now') }}</n-button>
                   </div>
                 </template>
                 <template v-else>
-                  <p>连接 GitHub Gist 或 Gitee 私有代码片段，在设备间同步主机和密钥配置。</p>
+                  <p>{{ t('sync.connectDescription') }}</p>
                   <n-alert v-if="syncError" type="error" :show-icon="false">{{ syncError }}</n-alert>
                 </template>
               </section>
             </n-popover>
-            <button class="titlebar-action" :title="isDarkTheme ? '切换为浅色主题' : '切换为深色主题'" aria-label="切换主题" @click="toggleTheme"><Sun v-if="isDarkTheme" :size="17" /><Moon v-else :size="17" /></button>
+            <button class="titlebar-action" :title="isDarkTheme ? t('app.lightTheme') : t('app.darkTheme')" :aria-label="isDarkTheme ? t('app.lightTheme') : t('app.darkTheme')" @click="toggleTheme"><Sun v-if="isDarkTheme" :size="17" /><Moon v-else :size="17" /></button>
           </div>
           <div class="window-controls">
-            <button class="window-control" title="最小化" aria-label="最小化" @click="minimizeWindow"><svg class="minimize-icon" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M2.5 7h9" /></svg></button>
-            <button class="window-control" :title="isMaximized ? '还原' : '最大化'" @click="toggleMaximizeWindow"><Copy v-if="isMaximized" :size="14" /><Square v-else :size="13" /></button>
-            <button class="window-control close" title="关闭" @click="closeWindow"><X :size="17" /></button>
+            <button class="window-control" :title="t('app.minimize')" :aria-label="t('app.minimize')" @click="minimizeWindow"><svg class="minimize-icon" width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><path d="M2.5 7h9" /></svg></button>
+            <button class="window-control" :title="isMaximized ? t('app.restore') : t('app.maximize')" :aria-label="isMaximized ? t('app.restore') : t('app.maximize')" @click="toggleMaximizeWindow"><Copy v-if="isMaximized" :size="14" /><Square v-else :size="13" /></button>
+            <button class="window-control close" :title="t('app.close')" :aria-label="t('app.close')" @click="closeWindow"><X :size="17" /></button>
           </div>
         </header>
 
@@ -1022,13 +1053,13 @@ function openSyncSettings() {
                       <line x1="8" y1="21" x2="16" y2="21"/>
                       <line x1="12" y1="17" x2="12" y2="21"/>
                     </svg>
-                    <span>主机</span>
+                    <span>{{ t('nav.hosts') }}</span>
                   </div>
                   <div class="nav-item" :class="{ active: activeView === 'keys' }" @click="activeView = 'keys'">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                       <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/>
                     </svg>
-                    <span>密钥</span>
+                    <span>{{ t('nav.keys') }}</span>
                   </div>
                 </div>
 
@@ -1038,7 +1069,7 @@ function openSyncSettings() {
                       <circle cx="12" cy="12" r="3"/>
                       <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
                     </svg>
-                    <span>设置</span>
+                    <span>{{ t('nav.settings') }}</span>
                   </div>
                 </div>
               </div>
@@ -1052,8 +1083,8 @@ function openSyncSettings() {
                 <template v-else>
                 <div class="content-header">
                   <div class="header-left">
-                    <h2>主机</h2>
-                    <span class="host-count">{{ vaultStore.profiles.length }} 条</span>
+                    <h2>{{ t('nav.hosts') }}</h2>
+                    <span class="host-count">{{ t('hosts.count', { count: vaultStore.profiles.length }) }}</span>
                   </div>
                   <n-button type="primary" @click="openCreateForm">
                     <template #icon>
@@ -1062,22 +1093,22 @@ function openSyncSettings() {
                         <line x1="5" y1="12" x2="19" y2="12"/>
                       </svg>
                     </template>
-                    新建主机
+                    {{ t('hosts.new') }}
                   </n-button>
                 </div>
 
 
 
-                <n-empty v-if="vaultStore.profiles.length === 0 && !vaultStore.loading" description="暂无主机" style="padding: 60px 0">
+                <n-empty v-if="vaultStore.profiles.length === 0 && !vaultStore.loading" :description="t('hosts.empty')" style="padding: 60px 0">
                   <template #extra>
-                    <n-button type="primary" @click="openCreateForm">创建第一个主机</n-button>
+                    <n-button type="primary" @click="openCreateForm">{{ t('hosts.createFirst') }}</n-button>
                   </template>
                 </n-empty>
 
                 <div v-else v-for="[group, items] in groupedProfiles" :key="group" class="host-group">
                   <div class="group-header">
                     <span class="group-name">{{ group }}</span>
-                    <span class="group-count">{{ items.length }} 条</span>
+                    <span class="group-count">{{ t('hosts.count', { count: items.length }) }}</span>
                   </div>
 
                   <div class="host-grid">
@@ -1093,14 +1124,14 @@ function openSyncSettings() {
                     >
                       <template #actions>
                         <div class="host-actions" @click.stop>
-                          <n-button size="tiny" quaternary title="编辑主机" aria-label="编辑主机" @click="openEditForm(profile)">
+                          <n-button size="tiny" quaternary :title="t('hosts.edit')" :aria-label="t('hosts.edit')" @click="openEditForm(profile)">
                             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                           </n-button>
                           <n-popconfirm @positive-click="handleDeleteProfile(profile.id)">
                             <template #trigger>
-                              <n-button size="tiny" quaternary type="error" title="删除主机" aria-label="删除主机"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2 2V6m3 0V4a2 2 0 0 1 2 2v2"/></svg></n-button>
+                              <n-button size="tiny" quaternary type="error" :title="t('hosts.delete')" :aria-label="t('hosts.delete')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2 2V6m3 0V4a2 2 0 0 1 2 2v2"/></svg></n-button>
                             </template>
-                            确定删除 "{{ profile.name }}"？
+                            {{ t('hosts.deleteConfirm', { name: profile.name }) }}
                           </n-popconfirm>
                         </div>
                       </template>
@@ -1117,7 +1148,7 @@ function openSyncSettings() {
                           @click.stop="refreshProfileInfo(profile)"
                         >
                           <RefreshCw :size="14" :class="{ 'is-spinning': refreshingProfileId === profile.id }" />
-                          更新信息
+                          {{ t('hosts.refreshInfo') }}
                         </button>
                       </template>
                     </EntityCard>
@@ -1174,7 +1205,7 @@ function openSyncSettings() {
         <!-- Profile form modal -->
         <n-modal
           v-model:show="showForm"
-          :title="isEditing ? '编辑主机' : '新建主机'"
+          :title="isEditing ? t('form.editHost') : t('form.createHost')"
           preset="card"
           style="width: 500px"
         >
@@ -1182,51 +1213,51 @@ function openSyncSettings() {
             <n-alert v-if="formError" type="error" closable style="margin-bottom: 16px" @close="formError = null">
               {{ formError }}
             </n-alert>
-            <n-form-item label="名称" required>
+            <n-form-item :label="t('form.name')" required>
               <n-input v-model:value="form.name" placeholder="My Server" />
             </n-form-item>
-            <n-form-item label="主机" required>
+            <n-form-item :label="t('form.host')" required>
               <n-input v-model:value="form.host" placeholder="192.168.1.100" />
             </n-form-item>
-            <n-form-item label="端口">
+            <n-form-item :label="t('form.port')">
               <n-input-number v-model:value="form.port" :min="1" :max="65535" style="width: 120px" />
             </n-form-item>
-            <n-form-item label="用户名" required>
+            <n-form-item :label="t('form.username')" required>
               <n-input v-model:value="form.username" placeholder="root" />
             </n-form-item>
-            <n-form-item label="认证方式">
+            <n-form-item :label="t('form.auth')">
               <n-select v-model:value="form.auth_type" :options="authOptions" />
             </n-form-item>
-            <n-form-item v-if="form.auth_type === 'password'" label="密码" required>
+            <n-form-item v-if="form.auth_type === 'password'" :label="t('form.password')" required>
               <n-input
                 v-model:value="form.credential"
                 type="password"
-                placeholder="请输入密码"
+                :placeholder="t('form.passwordPlaceholder')"
                 show-password-on="click"
               />
             </n-form-item>
-            <n-form-item v-if="form.auth_type !== 'password'" label="密钥" required>
+            <n-form-item v-if="form.auth_type !== 'password'" :label="t('form.key')" required>
               <n-select
                 :value="form.key_id"
                 :options="profileKeyOptions"
-                placeholder="选择已配置的密钥"
+                :placeholder="t('form.keyPlaceholder')"
                 @update:value="(val: string) => { form.key_id = val }"
               />
               <n-button v-if="vaultStore.sshKeys.length === 0" size="small" type="primary" style="margin-left: 8px" @click="activeView = 'keys'; showForm = false">
-                去创建
+                {{ t('form.createKey') }}
               </n-button>
             </n-form-item>
-            <n-form-item label="分组">
-              <n-input v-model:value="form.group_name" placeholder="可选，如: 生产环境" />
+            <n-form-item :label="t('form.group')">
+              <n-input v-model:value="form.group_name" :placeholder="t('form.groupPlaceholder')" />
             </n-form-item>
-            <n-form-item label="图标">
-              <div class="host-icon-picker" role="listbox" aria-label="主机图标">
+            <n-form-item :label="t('form.icon')">
+              <div class="host-icon-picker" role="listbox" :aria-label="t('form.hostIcon')">
                 <button v-for="option in hostIconOptions" :key="option.id" type="button" :class="{ selected: form.icon === option.id }" :title="option.label" :aria-label="option.label" @click="form.icon = option.id"><component :is="option.icon" :size="17" /></button>
               </div>
             </n-form-item>
-            <n-form-item label="颜色">
-              <div class="host-color-picker" role="radiogroup" aria-label="主机图标颜色">
-                <button v-for="color in hostColorOptions" :key="color" type="button" :class="{ selected: form.color === color }" :style="{ '--picker-color': color }" :title="color" :aria-label="`选择颜色 ${color}`" @click="form.color = color" />
+            <n-form-item :label="t('form.color')">
+              <div class="host-color-picker" role="radiogroup" :aria-label="t('form.hostColor')">
+                <button v-for="color in hostColorOptions" :key="color" type="button" :class="{ selected: form.color === color }" :style="{ '--picker-color': color }" :title="color" :aria-label="t('form.selectColor', { color })" @click="form.color = color" />
               </div>
             </n-form-item>
           </n-form>
@@ -1239,11 +1270,11 @@ function openSyncSettings() {
                 :disabled="Boolean(refreshingProfileId)"
                 @click="refreshProfileInfo(editingProfile)"
               >
-                更新信息
+                {{ t('hosts.refreshInfo') }}
               </n-button>
-              <n-button @click="showForm = false; formError = null">取消</n-button>
+              <n-button @click="showForm = false; formError = null">{{ t('form.cancel') }}</n-button>
               <n-button type="primary" :loading="vaultStore.loading" @click="handleFormSubmit">
-                {{ isEditing ? '保存' : '创建' }}
+                {{ isEditing ? t('form.save') : t('form.create') }}
               </n-button>
             </n-space>
           </template>
@@ -1265,40 +1296,40 @@ function openSyncSettings() {
         />
 
 
-        <div v-if="showSettings" class="settings-overlay" role="dialog" aria-modal="true" aria-label="设置">
+        <div v-if="showSettings" class="settings-overlay" role="dialog" aria-modal="true" :aria-label="t('settings.title')">
           <section class="settings-window">
             <header class="settings-titlebar">
-              <h2>设置</h2>
-              <button class="settings-close" aria-label="关闭设置" @click="showSettings = false"><X :size="18" /></button>
+              <h2>{{ t('settings.title') }}</h2>
+              <button class="settings-close" :aria-label="t('settings.close')" @click="showSettings = false"><X :size="18" /></button>
             </header>
             <div class="settings-body">
-              <nav class="settings-nav" aria-label="设置分类">
+              <nav class="settings-nav" :aria-label="t('settings.categories')">
                 <button :class="{ active: settingsSection === 'terminal' }" @click="settingsSection = 'terminal'">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="15" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></svg>
-                  终端
+                  {{ t('settings.terminal') }}
                 </button>
                 <button :class="{ active: settingsSection === 'ai' }" @click="settingsSection = 'ai'"><Sparkles :size="16" />AI</button>
-                <button :class="{ active: settingsSection === 'sync' }" @click="settingsSection = 'sync'"><Cloud :size="16" />云同步</button>
+                <button :class="{ active: settingsSection === 'sync' }" @click="settingsSection = 'sync'"><Cloud :size="16" />{{ t('sync.title') }}</button>
                 <button :class="{ active: settingsSection === 'system' }" @click="settingsSection = 'system'">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
-                  系统
+                  {{ t('settings.system') }}
                 </button>
               </nav>
               <main class="settings-content">
                 <template v-if="settingsSection === 'terminal'">
-                  <h3>终端</h3>
+                  <h3>{{ t('settings.terminal') }}</h3>
                   <div class="settings-panel">
-                    <div class="settings-row"><div><strong>终端渲染</strong><p>使用 WebGL 加速渲染 SSH 终端。</p></div><span class="settings-value">已启用</span></div>
-                    <div class="settings-row"><div><strong>滚动缓冲区</strong><p>保留最近 5000 行终端输出。</p></div><span class="settings-value">5000 行</span></div>
+                    <div class="settings-row"><div><strong>{{ t('settings.renderer') }}</strong><p>{{ t('settings.rendererDescription') }}</p></div><span class="settings-value">{{ t('settings.enabled') }}</span></div>
+                    <div class="settings-row"><div><strong>{{ t('settings.buffer') }}</strong><p>{{ t('settings.bufferDescription') }}</p></div><span class="settings-value">{{ t('settings.lines') }}</span></div>
                   </div>
                 </template>
                 <AiSettings v-else-if="settingsSection === 'ai'" />
                 <SyncSettings v-else-if="settingsSection === 'sync'" />
                 <template v-else>
-                  <h3>系统</h3>
+                  <h3>{{ t('settings.system') }}</h3>
                   <div class="settings-panel">
-                    <div class="settings-row"><div><strong>MJJSSH</strong><p>多窗口 SSH 客户端</p></div><span class="settings-value">v0.1.0</span></div>
-                    <div class="settings-row"><div><strong>界面主题</strong><p>使用应用当前的{{ isDarkTheme ? '深色' : '亮色' }}配色方案。</p></div><span class="settings-value">{{ isDarkTheme ? '深色' : '亮色' }}</span></div>
+                    <div class="settings-row"><div><strong>MJJSSH</strong><p>{{ t('settings.appDescription') }}</p></div><span class="settings-value">v0.1.0</span></div>
+                    <div class="settings-row"><div><strong>{{ t('settings.theme') }}</strong><p>{{ t('settings.themeDescription', { theme: isDarkTheme ? t('settings.dark') : t('settings.light') }) }}</p></div><span class="settings-value">{{ isDarkTheme ? t('settings.dark') : t('settings.light') }}</span></div>
                   </div>
                 </template>
               </main>
@@ -1392,6 +1423,8 @@ function openSyncSettings() {
 .titlebar-drag-region { min-width: 16px; flex: 1; height: 100%; }
 .titlebar-actions, .window-controls { display: flex; align-self: stretch; }
 .titlebar-action, .window-control { display: grid; place-items: center; width: 40px; height: 100%; padding: 0; border: 0; background: transparent; color: var(--app-muted); cursor: pointer; }
+.titlebar-language { display: inline-flex; align-items: center; align-self: stretch; gap: 5px; padding: 0 10px; border: 0; background: transparent; color: var(--app-muted); font: inherit; font-size: 12px; cursor: pointer; }
+.titlebar-language:hover { background: var(--app-hover); color: var(--app-text); }
 .sync-cloud-icon { position: relative; display: grid; place-items: center; width: 17px; height: 17px; }
 .sync-status-dot { position: absolute; top: -3px; right: -5px; width: 6px; height: 6px; border: 1px solid var(--app-surface); border-radius: 50%; }
 .sync-status-dot.is-info { background: #38bdf8; }
