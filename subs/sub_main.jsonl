@@ -1,1 +1,8 @@
-{"__meta": "官方订阅源", "id": 1}
+# MJJSSH official scripts
+# Review each command before execution. These examples are intentionally read-only.
+{"schemaVersion":1,"id":"system-uptime","name":"查看系统运行时间","description":"显示系统负载与运行时间。","tags":["system","status"],"command":"uptime","riskLevel":"low","platforms":["linux","macos"],"version":"1.0.0"}
+{"schemaVersion":1,"id":"disk-usage","name":"查看磁盘使用率","description":"以易读格式显示已挂载文件系统的空间使用情况。","tags":["system","disk"],"command":"df -h","riskLevel":"low","platforms":["linux","macos"],"version":"1.0.0"}
+{"schemaVersion":1,"id":"memory-summary","name":"查看内存摘要","description":"显示 Linux 内存和交换分区使用情况。","tags":["system","memory"],"command":"free -h","riskLevel":"low","platforms":["linux"],"version":"1.0.0"}
+{"schemaVersion":1,"id":"install-1panel","name":"安装 1Panel","description":"下载并运行 1Panel 官方快速安装脚本。","tags":["panel","install","1panel"],"command":"bash -c \"$(curl -sSL https://resource.fit2cloud.com/1panel/package/v2/quick_start.sh)\"","riskLevel":"high","platforms":["linux"],"version":"1.0.0","homepage":"https://1panel.cn/"}
+{"schemaVersion":1,"id":"install-3x-ui","name":"安装 3x-ui","description":"下载并运行 3x-ui 项目的安装脚本。","tags":["panel","install","3x-ui"],"command":"bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh)","riskLevel":"high","platforms":["linux"],"version":"1.0.0","homepage":"https://github.com/mhsanaei/3x-ui"}
+{"schemaVersion":1,"id":"install-dpanel","name":"安装 DPanel","description":"下载 DPanel 快速安装脚本，并使用 sudo 执行。","tags":["panel","install","dpanel"],"command":"curl -sSL https://dpanel.cc/quick.sh -o quick.sh && sudo bash quick.sh","riskLevel":"high","platforms":["linux"],"version":"1.0.0","homepage":"https://dpanel.cc/"}
