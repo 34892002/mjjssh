@@ -6,7 +6,9 @@ use rand_chacha::ChaCha20Rng;
 use serde::Deserialize;
 use ssh_key::{Algorithm, LineEnding, PrivateKey};
 use tauri::State;
+use tokio::sync::mpsc;
 use tokio::time::timeout;
+use tokio_util::sync::CancellationToken;
 
 use crate::ssh::SshSession;
 use crate::state::AppState;
@@ -144,13 +146,17 @@ pub async fn refresh_profile_info(
         .await
         .map_err(|error| error.to_string())?;
 
-    let expected_host_key_fingerprint = state
+    let expected_host_key = state
         .known_hosts
         .lock()
         .await
         .get(&profile.host, profile.port)
-        .map(|trusted_key| trusted_key.fingerprint.clone());
+        .map(|trusted_key| crate::ssh::ExpectedHostKey {
+            algorithm: trusted_key.algorithm.clone(),
+            fingerprint: trusted_key.fingerprint.clone(),
+        });
     let temporary_session_id = format!("profile-info-{}", uuid::Uuid::new_v4());
+    let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
     let (session, _data_rx) = timeout(
         Duration::from_secs(15),
         SshSession::connect(
@@ -161,7 +167,9 @@ pub async fn refresh_profile_info(
             &profile.username,
             &credential,
             &profile.auth_type,
-            expected_host_key_fingerprint,
+            expected_host_key,
+            progress_tx,
+            CancellationToken::new(),
         ),
     )
     .await

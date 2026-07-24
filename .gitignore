@@ -15,6 +15,7 @@ dist/
 # IDE
 .vscode/
 .idea/
+.zed/
 
 # OS
 .DS_Store

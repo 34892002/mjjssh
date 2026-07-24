@@ -19,6 +19,8 @@ use crate::vault::{AuthType, DecryptedCredential};
 pub enum SshError {
     #[error("SSH connection failed: {0}")]
     Connection(String),
+    #[error("SSH connection was cancelled")]
+    Cancelled,
 
     #[error("SSH authentication failed: {0}")]
     Auth(String),
@@ -35,13 +37,16 @@ pub enum SshError {
         fingerprint: String,
         key_type: String,
     },
-    #[error("Host key changed for {host}:{port}. Expected {expected}, received {actual}")]
+    #[error(
+        "Host key changed for {host}:{port}. Expected {expected_key_type} {expected}, received {actual_key_type} {actual}"
+    )]
     ChangedHostKey {
         host: String,
         port: u16,
+        expected_key_type: String,
         expected: String,
+        actual_key_type: String,
         actual: String,
-        key_type: String,
     },
     #[error("Session not found: {0}")]
     SessionNotFound(String),
@@ -87,6 +92,26 @@ fn completion_status(output: &str, marker: &str) -> Option<(usize, i32)> {
 }
 
 #[derive(Clone)]
+pub struct ExpectedHostKey {
+    pub algorithm: String,
+    pub fingerprint: String,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectionProgressStage {
+    VerifyingHostKey,
+    Authenticating,
+}
+
+#[derive(Clone, serde::Serialize)]
+pub struct ConnectionProgress {
+    pub stage: ConnectionProgressStage,
+    pub algorithm: Option<String>,
+    pub fingerprint: Option<String>,
+}
+
+#[derive(Clone)]
 struct ObservedHostKey {
     fingerprint: String,
     key_type: String,
@@ -96,8 +121,9 @@ pub struct SshClientHandler {
     data_tx: mpsc::Sender<Vec<u8>>,
     terminal_output_tx: broadcast::Sender<Vec<u8>>,
     terminal_channel_id: Arc<Mutex<Option<ChannelId>>>,
-    expected_host_key_fingerprint: Option<String>,
+    expected_host_key: Option<ExpectedHostKey>,
     observed_host_key: Arc<Mutex<Option<ObservedHostKey>>>,
+    progress_tx: mpsc::UnboundedSender<ConnectionProgress>,
 }
 
 fn host_key_fingerprint(server_public_key: &PublicKey) -> Result<ObservedHostKey, SshError> {
@@ -227,10 +253,14 @@ impl Handler for SshClientHandler {
     ) -> Result<bool, Self::Error> {
         let observed = host_key_fingerprint(server_public_key)?;
         *self.observed_host_key.lock().await = Some(observed.clone());
-        Ok(self
-            .expected_host_key_fingerprint
-            .as_deref()
-            .is_some_and(|expected| expected == observed.fingerprint))
+        let _ = self.progress_tx.send(ConnectionProgress {
+            stage: ConnectionProgressStage::VerifyingHostKey,
+            algorithm: Some(observed.key_type.clone()),
+            fingerprint: Some(observed.fingerprint.clone()),
+        });
+        Ok(self.expected_host_key.as_ref().is_some_and(|expected| {
+            expected.algorithm == observed.key_type && expected.fingerprint == observed.fingerprint
+        }))
     }
 
     async fn data(
@@ -361,7 +391,9 @@ impl SshSession {
         username: &str,
         credential: &DecryptedCredential,
         auth_type: &AuthType,
-        expected_host_key_fingerprint: Option<String>,
+        expected_host_key: Option<ExpectedHostKey>,
+        progress_tx: mpsc::UnboundedSender<ConnectionProgress>,
+        cancellation_token: CancellationToken,
     ) -> Result<(Self, mpsc::Receiver<Vec<u8>>), SshError> {
         let config = client::Config {
             inactivity_timeout: Some(std::time::Duration::from_secs(300)),
@@ -379,23 +411,29 @@ impl SshSession {
             data_tx,
             terminal_output_tx: terminal_output_tx.clone(),
             terminal_channel_id: terminal_channel_id.clone(),
-            expected_host_key_fingerprint: expected_host_key_fingerprint.clone(),
+            expected_host_key: expected_host_key.clone(),
             observed_host_key: observed_host_key.clone(),
+            progress_tx: progress_tx.clone(),
         };
 
         let addr = format!("{}:{}", host, port);
-        let mut handle = match client::connect(config, &addr, handler).await {
-            Ok(handle) => handle,
-            Err(error) => {
+        let connect_result = tokio::select! {
+            _ = cancellation_token.cancelled() => return Err(SshError::Cancelled),
+            result = timeout(Duration::from_secs(30), client::connect(config, &addr, handler)) => result,
+        };
+        let mut handle = match connect_result {
+            Ok(Ok(handle)) => handle,
+            Ok(Err(error)) => {
                 let observed = observed_host_key.lock().await.clone();
                 if let Some(observed) = observed {
-                    return match expected_host_key_fingerprint {
+                    return match expected_host_key {
                         Some(expected) => Err(SshError::ChangedHostKey {
                             host: host.to_owned(),
                             port,
-                            expected,
+                            expected_key_type: expected.algorithm,
+                            expected: expected.fingerprint,
+                            actual_key_type: observed.key_type,
                             actual: observed.fingerprint,
-                            key_type: observed.key_type,
                         }),
                         None => Err(SshError::UnknownHostKey {
                             host: host.to_owned(),
@@ -407,7 +445,18 @@ impl SshSession {
                 }
                 return Err(SshError::Connection(error.to_string()));
             }
+            Err(_) => {
+                return Err(SshError::Connection(
+                    "Connection timed out after 30 seconds".into(),
+                ))
+            }
         };
+
+        let _ = progress_tx.send(ConnectionProgress {
+            stage: ConnectionProgressStage::Authenticating,
+            algorithm: None,
+            fingerprint: None,
+        });
 
         match auth_type {
             AuthType::Password => {

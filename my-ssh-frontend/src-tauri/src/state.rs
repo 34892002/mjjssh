@@ -3,6 +3,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 
 use crate::ai::risk_confirmation::RiskConfirmationStore;
 use crate::ai::service::{AiTaskManager, SshSafetyContext};
@@ -21,6 +22,7 @@ pub struct AppState {
     pub vault: Arc<Mutex<Option<Vault>>>,
     pub app_dir: PathBuf,
     pub sessions: Arc<SessionManager>,
+    pub pending_ssh_connections: Arc<Mutex<HashMap<String, CancellationToken>>>,
     pub known_hosts: Arc<Mutex<KnownHosts>>,
     pub ai_tasks: AiTaskManager,
     pub risk_confirmations: RiskConfirmationStore,
@@ -34,6 +36,7 @@ impl AppState {
             vault: Arc::new(Mutex::new(None)),
             app_dir: app_dir.clone(),
             sessions: Arc::new(SessionManager::new()),
+            pending_ssh_connections: Arc::new(Mutex::new(HashMap::new())),
             known_hosts: Arc::new(Mutex::new(
                 KnownHosts::open(app_dir.clone()).expect("Failed to open known_hosts"),
             )),

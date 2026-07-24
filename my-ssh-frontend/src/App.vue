@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { defineAsyncComponent, ref, computed, onBeforeUnmount, onMounted, nextTick, watch, type Component } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { Archive, Box, Cloud, CloudCog, Code2, Container, Copy, Cpu, Database, Download, EthernetPort, FileCode2, Globe2, HardDrive, Languages, Layers3, ListFilter, MapPin, MemoryStick, MonitorCog, Moon, Network, RadioTower, RefreshCw, Router, Server, ServerCog, Settings, ShieldCheck, Sparkles, Square, Sun, TerminalSquare, Upload, Waypoints, Workflow, X, Zap } from '@lucide/vue'
 import {
@@ -561,19 +562,53 @@ const terminalRefs = ref<Record<string, any>>({})
 const activeTerminalInfo = ref<{ host: string; port: number; username: string } | null>(null)
 
 // --- Connection dialog ---
-const connDialogVisible = ref(false)
 type ConnectionDialogStatus = 'connecting' | 'verifying' | 'authenticating' | 'success' | 'error' | 'host-key-confirm' | 'host-key-changed'
-type HostKeyInfo = { algorithm: string; fingerprint: string; expectedFingerprint?: string }
+type HostKeyInfo = {
+  algorithm: string
+  fingerprint: string
+  expectedAlgorithm?: string
+  expectedFingerprint?: string
+}
 
-const connDialogStatus = ref<ConnectionDialogStatus>('connecting')
-const connDialogInfo = ref<{ host: string; port: number; username: string; profileName: string }>({ host: '', port: 22, username: '', profileName: '' })
-const connDialogError = ref('')
-const pendingHostKey = ref<HostKeyInfo | null>(null)
-const pendingProfile = ref<SshProfileView | null>(null)
-const reconnectingSessionId = ref<string | null>(null)
+type ConnectionProgress = {
+  stage: 'verifying_host_key' | 'authenticating'
+  algorithm?: string
+  fingerprint?: string
+}
+
+type ConnectionState = {
+  profile: SshProfileView
+  info: { host: string; port: number; username: string; profileName: string }
+  status: ConnectionDialogStatus
+  error: string
+  hostKey: HostKeyInfo | null
+  reconnecting: boolean
+}
+
+const connectionStates = ref<Record<string, ConnectionState>>({})
 const reconnectVersions = ref<Record<string, number>>({})
 
-async function handleConnect(profile: SshProfileView, reuseSessionId?: string) {
+function setConnectionState(sessionId: string, state: ConnectionState) {
+  connectionStates.value = { ...connectionStates.value, [sessionId]: state }
+}
+
+function updateConnectionState(sessionId: string, update: Partial<ConnectionState>) {
+  const current = connectionStates.value[sessionId]
+  if (!current) return
+  setConnectionState(sessionId, { ...current, ...update })
+}
+
+function removeConnectionState(sessionId: string) {
+  if (!(sessionId in connectionStates.value)) return
+  const { [sessionId]: _, ...remaining } = connectionStates.value
+  connectionStates.value = remaining
+}
+
+async function handleConnect(
+  profile: SshProfileView,
+  reuseSessionId?: string,
+  isReconnect = false,
+) {
   const existingTab = sessionStore.tabs.find((tab) => tab.profileId === profile.id)
   if (existingTab && !reuseSessionId) {
     sessionStore.setActiveTab(existingTab.sessionId)
@@ -583,88 +618,115 @@ async function handleConnect(profile: SshProfileView, reuseSessionId?: string) {
     return
   }
 
-  // 显示连接弹窗
-  pendingProfile.value = profile
-  connDialogInfo.value = {
-    host: profile.host,
-    port: profile.port,
-    username: profile.username,
-    profileName: profile.name,
-  }
-  connDialogStatus.value = 'connecting'
-  connDialogError.value = ''
-  pendingHostKey.value = null
+  const sessionId = reuseSessionId ?? crypto.randomUUID()
+  setConnectionState(sessionId, {
+    profile,
+    info: {
+      host: profile.host,
+      port: profile.port,
+      username: profile.username,
+      profileName: profile.name,
+    },
+    status: 'connecting',
+    error: '',
+    hostKey: null,
+    reconnecting: isReconnect,
+  })
   sessionStore.error = null
-  connDialogVisible.value = true
-
-  // 模拟进度
-  await new Promise(r => setTimeout(r, 300))
-  if (!connDialogVisible.value) return
-  connDialogStatus.value = 'verifying'
-
-  // 发起连接
   activeTerminalInfo.value = { host: profile.host, port: profile.port, username: profile.username }
-  const sessionId = await sessionStore.connect(profile.id, profile.name, reuseSessionId)
 
-  if (sessionId) {
-    if (reuseSessionId) {
-      reconnectVersions.value = {
-        ...reconnectVersions.value,
-        [sessionId]: (reconnectVersions.value[sessionId] ?? 0) + 1,
+  let unlistenProgress: UnlistenFn | undefined
+  try {
+    // Register before connect_ssh starts so every visual step maps to a real
+    // SSH handshake event emitted by the backend.
+    unlistenProgress = await listen<ConnectionProgress>(`ssh-connection-progress:${sessionId}`, ({ payload }) => {
+      if (!connectionStates.value[sessionId]) return
+      if (payload.stage === 'verifying_host_key') {
+        updateConnectionState(sessionId, {
+          status: 'verifying',
+          hostKey: payload.algorithm && payload.fingerprint
+            ? { algorithm: payload.algorithm, fingerprint: payload.fingerprint }
+            : null,
+        })
+      } else if (payload.stage === 'authenticating') {
+        updateConnectionState(sessionId, { status: 'authenticating' })
       }
-    }
-    reconnectingSessionId.value = null
-    connDialogStatus.value = 'success'
-    await nextTick()
-    await new Promise(resolve => setTimeout(resolve, 200))
-    terminalRefs.value[sessionId]?.triggerResize()
-  } else {
-    const connectionError = sessionStore.error || '连接失败'
-    const hostKeyError = parseHostKeyError(connectionError)
-    if (hostKeyError) {
-      pendingHostKey.value = hostKeyError
-      connDialogStatus.value = hostKeyError.expectedFingerprint ? 'host-key-changed' : 'host-key-confirm'
+    })
+
+    const result = await sessionStore.connect(profile.id, profile.name, sessionId)
+    // The tab may be closed while the network request is pending. Its late
+    // completion must not change the dialog state for a later connection.
+    if (!connectionStates.value[sessionId]) return
+
+    if (result.ok) {
+      if (isReconnect) {
+        reconnectVersions.value = {
+          ...reconnectVersions.value,
+          [sessionId]: (reconnectVersions.value[sessionId] ?? 0) + 1,
+        }
+      }
+      updateConnectionState(sessionId, { status: 'success', reconnecting: false })
+      await nextTick()
+      await new Promise(resolve => setTimeout(resolve, 200))
+      terminalRefs.value[sessionId]?.triggerResize()
+      await new Promise(resolve => setTimeout(resolve, 600))
+      if (connectionStates.value[sessionId]?.status === 'success') removeConnectionState(sessionId)
       return
     }
-    connDialogStatus.value = 'error'
-    connDialogError.value = connectionError
+
+    const connectionError = result.error || '连接失败'
+    const hostKeyError = parseHostKeyError(connectionError)
+    if (hostKeyError) {
+      updateConnectionState(sessionId, {
+        status: hostKeyError.expectedFingerprint ? 'host-key-changed' : 'host-key-confirm',
+        error: '',
+        hostKey: hostKeyError,
+      })
+      return
+    }
+    updateConnectionState(sessionId, { status: 'error', error: connectionError })
+  } finally {
+    unlistenProgress?.()
   }
 }
 
 function parseHostKeyError(error: string): HostKeyInfo | null {
   const message = error.replace(/^Error:\s*/, '')
-  const [kind, algorithm, expectedOrFingerprint, actual] = message.split('|')
-  if (kind === 'HOST_KEY_UNKNOWN' && algorithm && expectedOrFingerprint) {
-    return { algorithm, fingerprint: expectedOrFingerprint }
+  const [kind, firstAlgorithm, firstFingerprint, actualAlgorithm, actualFingerprint] = message.split('|')
+  if (kind === 'HOST_KEY_UNKNOWN' && firstAlgorithm && firstFingerprint) {
+    return { algorithm: firstAlgorithm, fingerprint: firstFingerprint }
   }
-  if (kind === 'HOST_KEY_CHANGED' && algorithm && expectedOrFingerprint && actual) {
-    return { algorithm, expectedFingerprint: expectedOrFingerprint, fingerprint: actual }
+  if (kind === 'HOST_KEY_CHANGED' && firstAlgorithm && firstFingerprint && actualAlgorithm && actualFingerprint) {
+    return {
+      expectedAlgorithm: firstAlgorithm,
+      expectedFingerprint: firstFingerprint,
+      algorithm: actualAlgorithm,
+      fingerprint: actualFingerprint,
+    }
   }
   return null
 }
 
-async function handleTrustHostKey() {
-  const profile = pendingProfile.value
-  const hostKey = pendingHostKey.value
-  if (!profile || !hostKey || hostKey.expectedFingerprint) return
+async function handleTrustHostKey(sessionId: string) {
+  const connection = connectionStates.value[sessionId]
+  const hostKey = connection?.hostKey
+  if (!connection || !hostKey || hostKey.expectedFingerprint) return
   try {
     await invoke('trust_host_key', {
-      host: profile.host,
-      port: profile.port,
+      host: connection.profile.host,
+      port: connection.profile.port,
       algorithm: hostKey.algorithm,
       fingerprint: hostKey.fingerprint,
     })
-    await handleConnect(profile, reconnectingSessionId.value ?? undefined)
+    await handleConnect(connection.profile, sessionId, connection.reconnecting)
   } catch (error) {
-    connDialogStatus.value = 'error'
-    connDialogError.value = String(error)
+    updateConnectionState(sessionId, { status: 'error', error: String(error) })
   }
 }
 
-async function handleRetry() {
-  if (pendingProfile.value) {
-    await handleConnect(pendingProfile.value, reconnectingSessionId.value ?? undefined)
-  }
+async function handleRetry(sessionId: string) {
+  const connection = connectionStates.value[sessionId]
+  if (connection) await handleConnect(connection.profile, sessionId, connection.reconnecting)
 }
 
 function handleTerminalDisconnected(sessionId: string, reason: string) {
@@ -674,32 +736,28 @@ function handleTerminalDisconnected(sessionId: string, reason: string) {
 
   sessionStore.setActiveTab(sessionId)
   activeTerminalInfo.value = { host: profile.host, port: profile.port, username: profile.username }
-  pendingProfile.value = profile
-  reconnectingSessionId.value = sessionId
-  connDialogInfo.value = {
-    host: profile.host,
-    port: profile.port,
-    username: profile.username,
-    profileName: profile.name,
-  }
-  pendingHostKey.value = null
-  connDialogError.value = reason
-  connDialogStatus.value = 'error'
-  connDialogVisible.value = true
+  setConnectionState(sessionId, {
+    profile,
+    info: {
+      host: profile.host,
+      port: profile.port,
+      username: profile.username,
+      profileName: profile.name,
+    },
+    status: 'error',
+    error: reason,
+    hostKey: null,
+    reconnecting: true,
+  })
 }
 
-function handleCloseConnDialog() {
-  connDialogVisible.value = false
-  const sessionId = reconnectingSessionId.value
-  reconnectingSessionId.value = null
-  if (sessionId) {
-    sessionStore.closeTab(sessionId)
-    return
-  }
-  if (pendingProfile.value) {
-    const tab = sessionStore.tabs.find((item) => item.profileId === pendingProfile.value!.id)
-    if (tab) sessionStore.closeTab(tab.sessionId)
-  }
+function clearConnectionDialogForSession(sessionId: string) {
+  removeConnectionState(sessionId)
+}
+
+function handleCloseConnDialog(sessionId: string) {
+  clearConnectionDialogForSession(sessionId)
+  sessionStore.closeTab(sessionId)
 }
 
 function updateTerminalInfo(sessionId: string) {
@@ -721,6 +779,7 @@ function handleTabClick(sessionId: string) {
 }
 
 function handleCloseTab(sessionId: string) {
+  clearConnectionDialogForSession(sessionId)
   sftpOpenSessions.value.delete(sessionId)
   sftpOpenSessions.value = new Set(sftpOpenSessions.value)
   aiOpenSessions.value.delete(sessionId)
@@ -1145,6 +1204,23 @@ function openSyncSettings() {
               :reconnect-version="reconnectVersions[tab.sessionId]"
               @disconnected="handleTerminalDisconnected(tab.sessionId, $event)"
             />
+            <ConnectionDialog
+              v-if="connectionStates[tab.sessionId]"
+              :show="true"
+              :host="connectionStates[tab.sessionId].info.host"
+              :port="connectionStates[tab.sessionId].info.port"
+              :username="connectionStates[tab.sessionId].info.username"
+              :profile-name="connectionStates[tab.sessionId].info.profileName"
+              :icon="hostIcon(connectionStates[tab.sessionId].profile.icon ?? null)"
+              :color="connectionStates[tab.sessionId].profile.color || '#3b82f6'"
+              :status="connectionStates[tab.sessionId].status"
+              :error="connectionStates[tab.sessionId].error"
+              :host-key="connectionStates[tab.sessionId].hostKey ?? undefined"
+              :dark="isDarkTheme"
+              @trust-host-key="handleTrustHostKey(tab.sessionId)"
+              @retry="handleRetry(tab.sessionId)"
+              @close="handleCloseConnDialog(tab.sessionId)"
+            />
           </div>
 
           <!-- 首页内容 - 无页签激活时显示 -->
@@ -1390,23 +1466,6 @@ function openSyncSettings() {
             </n-space>
           </template>
         </n-modal>
-        <!-- Connection dialog -->
-        <ConnectionDialog
-          v-model:show="connDialogVisible"
-          :host="connDialogInfo.host"
-          :port="connDialogInfo.port"
-          :username="connDialogInfo.username"
-          :profile-name="connDialogInfo.profileName"
-          :icon="hostIcon(pendingProfile?.icon ?? null)"
-          :color="pendingProfile?.color || '#3b82f6'"
-          :status="connDialogStatus"
-          :error="connDialogError"
-          :host-key="pendingHostKey ?? undefined"
-          :dark="isDarkTheme"
-          @trust-host-key="handleTrustHostKey"
-          @retry="handleRetry"
-          @close="handleCloseConnDialog"
-        />
 
 
         <div v-if="showSettings" class="settings-overlay" role="dialog" aria-modal="true" :aria-label="t('settings.title')">

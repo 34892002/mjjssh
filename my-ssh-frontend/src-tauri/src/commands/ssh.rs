@@ -2,7 +2,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use tauri::{AppHandle, Emitter, State};
+use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
+use tokio_util::sync::CancellationToken;
 
 use crate::ai::service::SshSafetyContext;
 use crate::ssh::SshSession;
@@ -12,6 +14,9 @@ const SSH_SAFETY_PROBE: &str = "printf '__MYSSH_SAFETY_CONNECTION__ '; printf '%
 
 pub const UNRESPONSIVE_TERMINAL_REASON: &str =
     "Interactive terminal did not recover after an interrupted AI command.";
+
+const SSH_CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
+const SSH_CONNECTION_CANCELLED_REASON: &str = "SSH connection was cancelled.";
 
 pub async fn disconnect_unresponsive_terminal(
     app: &AppHandle,
@@ -52,6 +57,7 @@ fn terminal_write_error_category(error: &crate::ssh::SshError) -> &'static str {
         crate::ssh::SshError::SessionNotFound(_) => "session_not_found",
         crate::ssh::SshError::Channel(_) => "channel_error",
         crate::ssh::SshError::Connection(_) => "connection_error",
+        crate::ssh::SshError::Cancelled => "connection_cancelled",
         crate::ssh::SshError::UnknownHostKey { .. } => "unknown_host_key",
         crate::ssh::SshError::ChangedHostKey { .. } => "changed_host_key",
         crate::ssh::SshError::Auth(_) => "authentication_error",
@@ -109,38 +115,91 @@ pub async fn connect_ssh(
         .await
         .get(&profile.host, profile.port)
         .cloned();
-    let expected_host_key_fingerprint = trusted_host_key
-        .as_ref()
-        .map(|trusted_key| trusted_key.fingerprint.clone());
+    let expected_host_key = trusted_host_key.map(|trusted_key| crate::ssh::ExpectedHostKey {
+        algorithm: trusted_key.algorithm,
+        fingerprint: trusted_key.fingerprint,
+    });
 
-    let (session, mut data_rx) = SshSession::connect(
-        session_id.clone(),
-        profile_id,
-        &profile.host,
-        profile.port,
-        &profile.username,
-        &credential,
-        &profile.auth_type,
-        expected_host_key_fingerprint,
-    )
-    .await
-    .map_err(|error| match error {
-        crate::ssh::SshError::UnknownHostKey {
-            fingerprint,
-            key_type,
-            ..
-        } => format!("HOST_KEY_UNKNOWN|{key_type}|{fingerprint}"),
-        crate::ssh::SshError::ChangedHostKey {
-            expected,
-            actual,
-            key_type,
-            ..
-        } => format!("HOST_KEY_CHANGED|{key_type}|{expected}|{actual}"),
-        error => error.to_string(),
-    })?;
+    let (progress_tx, mut progress_rx) = mpsc::unbounded_channel();
+    let progress_event = format!("ssh-connection-progress:{}", session_id);
+    let progress_app = app.clone();
+    tokio::spawn(async move {
+        while let Some(progress) = progress_rx.recv().await {
+            let _ = progress_app.emit(&progress_event, progress);
+        }
+    });
+
+    let cancellation_token = CancellationToken::new();
+    state
+        .pending_ssh_connections
+        .lock()
+        .await
+        .insert(session_id.clone(), cancellation_token.clone());
+
+    let connection_result = tokio::select! {
+        _ = cancellation_token.cancelled() => Err(SSH_CONNECTION_CANCELLED_REASON.to_owned()),
+        result = timeout(
+            SSH_CONNECTION_TIMEOUT,
+            SshSession::connect(
+                session_id.clone(),
+                profile_id,
+                &profile.host,
+                profile.port,
+                &profile.username,
+                &credential,
+                &profile.auth_type,
+                expected_host_key,
+                progress_tx,
+                cancellation_token.clone(),
+            ),
+        ) => match result {
+            Ok(result) => result.map_err(|error| match error {
+                crate::ssh::SshError::UnknownHostKey {
+                    fingerprint,
+                    key_type,
+                    ..
+                } => format!("HOST_KEY_UNKNOWN|{key_type}|{fingerprint}"),
+                crate::ssh::SshError::ChangedHostKey {
+                    expected_key_type,
+                    expected,
+                    actual_key_type,
+                    actual,
+                    ..
+                } => format!("HOST_KEY_CHANGED|{expected_key_type}|{expected}|{actual_key_type}|{actual}"),
+                error => error.to_string(),
+            }),
+            Err(_) => Err(format!("SSH connection timed out after {} seconds.", SSH_CONNECTION_TIMEOUT.as_secs())),
+        },
+    };
+
+    let (session, mut data_rx) = match connection_result {
+        Ok(connection) => connection,
+        Err(error) => {
+            state
+                .pending_ssh_connections
+                .lock()
+                .await
+                .remove(&session_id);
+            return Err(error);
+        }
+    };
 
     let sessions = state.sessions.clone();
     sessions.add_session(session).await;
+    if cancellation_token.is_cancelled() {
+        let _ = sessions.close_session(&session_id).await;
+        state
+            .pending_ssh_connections
+            .lock()
+            .await
+            .remove(&session_id);
+        return Err(SSH_CONNECTION_CANCELLED_REASON.to_owned());
+    }
+    state
+        .pending_ssh_connections
+        .lock()
+        .await
+        .remove(&session_id);
     let ai_tasks = state.ai_tasks.clone();
     let ssh_safety_contexts = state.ssh_safety_contexts.clone();
 
@@ -219,6 +278,14 @@ pub async fn connect_ssh(
 
 #[tauri::command]
 pub async fn disconnect_ssh(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
+    if let Some(cancellation_token) = state
+        .pending_ssh_connections
+        .lock()
+        .await
+        .remove(&session_id)
+    {
+        cancellation_token.cancel();
+    }
     state.ai_tasks.cancel_tasks_for_session(&session_id).await;
     state
         .sessions

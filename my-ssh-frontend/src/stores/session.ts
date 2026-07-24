@@ -15,6 +15,10 @@ export interface TerminalSelection {
   lineCount: number
 }
 
+export type ConnectResult =
+  | { ok: true; sessionId: string }
+  | { ok: false; error: string }
+
 const TERMINAL_SELECTION_MAX_BYTES = 8 * 1024
 const TERMINAL_SELECTION_TTL_MS = 2 * 60 * 1000
 
@@ -66,13 +70,16 @@ export const useSessionStore = defineStore('session', () => {
     tabs.value.find((t) => t.sessionId === activeTabId.value) ?? null,
   )
 
-  async function connect(profileId: string, profileName: string, reuseSessionId?: string): Promise<string | null> {
+  async function connect(
+    profileId: string,
+    profileName: string,
+    sessionId = generateId(),
+  ): Promise<ConnectResult> {
     loading.value = true
     error.value = null
-    const sessionId = reuseSessionId ?? generateId()
-    const isReconnect = Boolean(reuseSessionId)
     try {
-      if (!isReconnect) {
+      const existingTab = tabs.value.some((tab) => tab.sessionId === sessionId)
+      if (!existingTab) {
         // Create the tab first so Terminal can subscribe before the SSH stream starts.
         const terminalReady = new Promise<void>((resolve) => {
           terminalReadyResolvers.set(sessionId, resolve)
@@ -92,23 +99,25 @@ export const useSessionStore = defineStore('session', () => {
       await invoke<string>('connect_ssh', { profileId, sessionId })
 
       await loadSessions()
-      return sessionId
+      return { ok: true, sessionId }
     } catch (e) {
-      error.value = String(e)
+      const connectionError = String(e)
+      error.value = connectionError
       terminalReadyResolvers.delete(sessionId)
-      if (!isReconnect) {
-        const failedTab = tabs.value.find((tab) => tab.sessionId === sessionId)
-        if (failedTab) {
-          const idx = tabs.value.indexOf(failedTab)
-          tabs.value.splice(idx, 1)
-          if (activeTabId.value === failedTab.sessionId) {
-            activeTabId.value = tabs.value.length > 0 ? tabs.value[tabs.value.length - 1].sessionId : null
-          }
-        }
-      }
-      return null
+      // Keep the new tab alive so an in-tab connection surface can show a
+      // host-key confirmation or a recoverable error and allow retry.
+      return { ok: false, error: connectionError }
     } finally {
       loading.value = false
+    }
+  }
+
+  function removeTab(sessionId: string) {
+    clearTerminalSelection(sessionId)
+    const idx = tabs.value.findIndex((tab) => tab.sessionId === sessionId)
+    if (idx !== -1) tabs.value.splice(idx, 1)
+    if (activeTabId.value === sessionId) {
+      activeTabId.value = tabs.value.length > 0 ? tabs.value[tabs.value.length - 1].sessionId : null
     }
   }
 
@@ -117,12 +126,7 @@ export const useSessionStore = defineStore('session', () => {
     error.value = null
     try {
       await invoke('disconnect_ssh', { sessionId })
-      clearTerminalSelection(sessionId)
-      const idx = tabs.value.findIndex((t) => t.sessionId === sessionId)
-      if (idx !== -1) tabs.value.splice(idx, 1)
-      if (activeTabId.value === sessionId) {
-        activeTabId.value = tabs.value.length > 0 ? tabs.value[tabs.value.length - 1].sessionId : null
-      }
+      removeTab(sessionId)
       await loadSessions()
       return true
     } catch (e) {
@@ -135,7 +139,10 @@ export const useSessionStore = defineStore('session', () => {
 
   function closeTab(sessionId: string) {
     terminalReadyResolvers.delete(sessionId)
-    void disconnect(sessionId)
+    removeTab(sessionId)
+    // Host-key checks can fail before a backend session exists. Local tab
+    // removal must not depend on best-effort backend cleanup succeeding.
+    void invoke('disconnect_ssh', { sessionId }).catch(() => undefined)
   }
 
   function notifyTerminalReady(sessionId: string) {
@@ -188,6 +195,7 @@ export const useSessionStore = defineStore('session', () => {
     connect,
     disconnect,
     closeTab,
+    removeTab,
     notifyTerminalReady,
     rememberTerminalSelection,
     consumeTerminalSelection,
