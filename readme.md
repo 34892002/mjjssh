@@ -1,61 +1,30 @@
 # MJJSSH
 
+[![中文](https://img.shields.io/badge/中文-点击查看-yellow)](readme.md)
+[![English](https://img.shields.io/badge/English-Click-yellow)](README-en.md)
+
 多窗口 SSH 客户端，基于 Tauri + Vue 3 + Rust 构建。
 
 ## 功能特性
 
-- ☁️ 可选端到端加密云同步（GitHub Gist / Gitee 私有片段）
-- 🗂️ 多页签管理，类似 Chrome 浏览器
-- 🔑 密钥/证书统一管理，支持复用
-- 🌙 深色主题（Catppuccin Mocha）
-- ⚡ 快速连接，双击即连
+- **多会话终端**：以页签管理多个 SSH 连接，支持双击快速连接、终端大小自适应和 WebGL 渲染。
+- **连接与安全**：支持密码、SSH 私钥和 SSH 用户证书认证；首次连接时校验并确认主机密钥指纹。
+- **主机与密钥管理**：集中保存主机配置和密钥，可生成 Ed25519 或 RSA 4096 位 SSH 密钥，并在连接间复用。
+- **SFTP 文件管理**：在会话中浏览远端文件，上传、下载、新建目录、重命名、删除、修改权限，以及打包或解压 `.tar.gz` 文件。
+- **AI 助手**：可配置兼容 OpenAI API 的服务，在终端中协助生成或执行操作；高风险操作需要手动确认。
+- **加密云同步**：可通过 GitHub Gist 或 Gitee 私有代码片段在设备间同步主机和密钥配置。同步数据使用独立同步密码、Argon2id 和 AES-256-GCM 加密。
+- **同步保护**：支持手动或自动同步；发生冲突时可选择保留本地或远端数据，并自动保留冲突备份。
+- **服务器概览**：可读取远端操作系统及 IP 地理位置等基本信息。
 
 ## 技术栈
 
 | 层级 | 技术 |
 |------|------|
-| 前端 | Vue 3 + TypeScript + Vite + Naive UI |
-| 后端 | Rust + Tauri 2 + russh |
-| 持久化 | JSON Vault |
+| 桌面应用 | Tauri 2 + Rust |
+| 界面 | Vue 3 + TypeScript + Vite + Naive UI |
+| SSH 与终端 | russh + xterm.js + WebGL |
+| 本地数据 | JSON Vault |
 | 云同步加密 | Argon2id + AES-256-GCM |
-| 终端 | xterm.js + WebGL |
-
-## 项目结构
-
-```
-my-ssh/
-├── docs/
-│   ├── db.md                  # Vault 存储设计
-│   └── cloud-sync.md          # 云同步设计与迁移方案
-├── my-ssh-frontend/
-│   ├── src/
-│   │   ├── App.vue            # 主界面（页签 + 侧栏 + 终端）
-│   │   ├── components/        # 组件
-│   │   │   ├── Terminal.vue       # xterm.js 终端
-│   │   │   ├── ConnectionDialog.vue  # 连接状态弹窗
-│   │   │   └── KeysView.vue      # 密钥管理
-│   │   ├── stores/
-│   │   │   ├── vault.ts      # 凭证库状态
-│   │   │   └── session.ts    # SSH 会话状态
-│   │   ├── types/             # TypeScript 类型
-│   │   └── style.css          # 全局样式
-│   ├── src-tauri/
-│   │   ├── src/
-│   │   │   ├── vault/         # 本地 JSON Vault
-│   │   │   │   ├── store.rs       # 校验、原子写入与备份恢复
-│   │   │   │   └── models.rs      # 数据模型
-│   │   │   ├── sync/          # 云端加密与远端适配器
-│   │   │   │   ├── crypto.rs      # Argon2id 与 AES-256-GCM
-│   │   │   │   ├── github_gist.rs
-│   │   │   │   └── gitee_snippet.rs
-│   │   │   ├── ssh/           # SSH 连接
-│   │   │   │   └── client.rs      # russh 客户端
-│   │   │   ├── commands/      # Tauri 命令
-│   │   │   └── state.rs       # 应用状态
-│   │   └── Cargo.toml
-│   └── package.json
-└── readme.md
-```
 
 ## 快速开始
 
