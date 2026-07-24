@@ -91,5 +91,5 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: MJJSSH ${{ github.ref_name }}
           releaseBody: Windows installer release for ${{ github.ref_name }}.
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
