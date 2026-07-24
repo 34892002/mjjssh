@@ -32,11 +32,13 @@ import EntityCard from './components/EntityCard.vue'
 const Terminal = defineAsyncComponent(() => import('./components/Terminal.vue'))
 const ConnectionDialog = defineAsyncComponent(() => import('./components/ConnectionDialog.vue'))
 const KeysView = defineAsyncComponent(() => import('./components/KeysView.vue'))
+const ScriptsView = defineAsyncComponent(() => import('./components/ScriptsView.vue'))
 const SftpView = defineAsyncComponent(() => import('./components/SftpView.vue'))
 const AiChatPanel = defineAsyncComponent(() => import('./components/AiChatPanel.vue'))
 const AiSettings = defineAsyncComponent(() => import('./components/AiSettings.vue'))
 const SyncSettings = defineAsyncComponent(() => import('./components/SyncSettings.vue'))
 const TransferPanel = defineAsyncComponent(() => import('./components/TransferPanel.vue'))
+const ScriptPanel = defineAsyncComponent(() => import('./components/ScriptPanel.vue'))
 const PermissionsDialog = defineAsyncComponent(() => import('./components/PermissionsDialog.vue'))
 const ActionDialog = defineAsyncComponent(() => import('./components/ActionDialog.vue'))
 import type { SshProfileView, CreateProfileRequest } from './types'
@@ -138,6 +140,8 @@ let vaultMd5: string | null = null
 let vaultMd5Timer: ReturnType<typeof setInterval> | null = null
 const transferPanelRef = ref<HTMLElement | null>(null)
 const transferButtonRef = ref<HTMLButtonElement | null>(null)
+const scriptPanelRef = ref<HTMLElement | null>(null)
+const scriptButtonRef = ref<HTMLButtonElement | null>(null)
 const transferNoticeVisible = ref(false)
 let transferNoticeTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -411,12 +415,13 @@ const groupedProfiles = computed(() => {
 })
 
 // --- Lifecycle ---
-const activeView = ref<'hosts' | 'keys'>('hosts')
+const activeView = ref<'hosts' | 'keys' | 'scripts'>('hosts')
 
-function closeTransfersOnOutsideClick(event: PointerEvent) {
+function closeTerminalPopoversOnOutsideClick(event: PointerEvent) {
   const target = event.target as Node
-  if (transferPanelRef.value?.contains(target) || transferButtonRef.value?.contains(target)) return
+  if (transferPanelRef.value?.contains(target) || transferButtonRef.value?.contains(target) || scriptPanelRef.value?.contains(target) || scriptButtonRef.value?.contains(target)) return
   transferPanelOpen.value = false
+  scriptPanelOpen.value = false
 }
 
 function showTransferNotice() {
@@ -427,8 +432,21 @@ function showTransferNotice() {
 
 function openTransfers() {
   transferPanelOpen.value = !transferPanelOpen.value
+  scriptPanelOpen.value = false
   transferNoticeVisible.value = false
   if (transferPanelOpen.value) transferSeenCount.value = transferStore.tasks.length
+}
+
+function openScripts() {
+  scriptPanelOpen.value = !scriptPanelOpen.value
+  transferPanelOpen.value = false
+}
+
+async function insertScriptIntoTerminal(command: string) {
+  const sessionId = sessionStore.activeTabId
+  if (!sessionId) return
+  const inserted = await sessionStore.writeData(sessionId, command.replace(/[\r\n]+$/, ''))
+  if (inserted) scriptPanelOpen.value = false
 }
 
 onMounted(async () => {
@@ -438,7 +456,7 @@ onMounted(async () => {
   vaultMd5Timer = setInterval(() => { void checkVaultMd5() }, 10_000)
   window.addEventListener('sync-configuration-changed', handleSyncConfigurationChanged)
   autoSyncCountdownTimer = setInterval(() => { autoSyncNow.value = Date.now() }, 1_000)
-  document.addEventListener('pointerdown', closeTransfersOnOutsideClick)
+  document.addEventListener('pointerdown', closeTerminalPopoversOnOutsideClick)
 })
 
 watch(activeView, (view) => {
@@ -797,6 +815,7 @@ function handleCloseTab(sessionId: string) {
 const sftpOpenSessions = ref<Set<string>>(new Set())
 const aiOpenSessions = ref<Set<string>>(new Set())
 const transferPanelOpen = ref(false)
+const scriptPanelOpen = ref(false)
 const transferSeenCount = ref(0)
 const hasUnreadTransfers = computed(() => transferStore.tasks.length > transferSeenCount.value)
 const sftpPanelWidth = ref(400)
@@ -995,7 +1014,7 @@ onBeforeUnmount(() => {
   if (vaultMd5Timer) clearInterval(vaultMd5Timer)
   window.removeEventListener('sync-configuration-changed', handleSyncConfigurationChanged)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
-  document.removeEventListener('pointerdown', closeTransfersOnOutsideClick)
+  document.removeEventListener('pointerdown', closeTerminalPopoversOnOutsideClick)
   window.removeEventListener('error', handleWindowError)
   window.removeEventListener('unhandledrejection', handleUnhandledRejection)
 })
@@ -1164,6 +1183,7 @@ function openSyncSettings() {
           </div>
           <div class="toolbar-right">
             <button class="toolbar-btn" :class="{ active: currentAiOpen }" title="AI 对话" @click="openAiChat"><Sparkles :size="16" /></button>
+            <button ref="scriptButtonRef" class="toolbar-btn" :class="{ active: scriptPanelOpen }" title="脚本" aria-label="脚本" @click="openScripts"><FileCode2 :size="16" /></button>
             <div class="transfer-control">
               <button ref="transferButtonRef" class="toolbar-btn transfer-button" :class="{ active: transferPanelOpen, unread: hasUnreadTransfers }" title="传输任务" @click="openTransfers"><Download :size="16" /><span v-if="hasUnreadTransfers" class="transfer-badge" /></button>
               <div v-if="transferNoticeVisible && transferStore.tasks[0]" class="transfer-notice" role="status" @pointerdown.stop>
@@ -1180,6 +1200,13 @@ function openSyncSettings() {
           </div>
         </div>
 
+        <div
+          v-if="scriptPanelOpen && sessionStore.activeTabId"
+          ref="scriptPanelRef"
+          class="main-script-panel"
+        >
+          <ScriptPanel @insert="insertScriptIntoTerminal" />
+        </div>
         <div
           v-if="transferPanelOpen && sessionStore.activeTabId"
           ref="transferPanelRef"
@@ -1248,6 +1275,10 @@ function openSyncSettings() {
                     </svg>
                     <span>{{ t('nav.keys') }}</span>
                   </div>
+                  <div class="nav-item" :class="{ active: activeView === 'scripts' }" @click="activeView = 'scripts'">
+                    <FileCode2 :size="16" />
+                    <span>{{ t('nav.scripts') }}</span>
+                  </div>
                 </div>
 
                 <div class="sidebar-bottom">
@@ -1265,6 +1296,7 @@ function openSyncSettings() {
               <div class="main-content">
                 <!-- Keys view -->
                 <KeysView v-if="activeView === 'keys'" />
+                <ScriptsView v-else-if="activeView === 'scripts'" />
 
                 <!-- Hosts view -->
                 <template v-else>
@@ -1887,6 +1919,7 @@ function openSyncSettings() {
   background: #ed476c;
 }
 
+.main-script-panel,
 .main-transfer-panel {
   position: absolute;
   z-index: 180;
@@ -1894,6 +1927,8 @@ function openSyncSettings() {
   right: 44px;
   width: min(396px, calc(100% - 16px));
 }
+
+.main-script-panel { right: 72px; }
 
 /* ==================== Connection Info (deprecated) ==================== */
 .connection-info {

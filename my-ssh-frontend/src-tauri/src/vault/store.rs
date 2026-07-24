@@ -8,13 +8,14 @@ use serde::{Deserialize, Serialize};
 
 use super::models::{
     AiAgentConfig, AiModelConfig, AiProviderConfigSecret, AiProviderConfigView, AuthType,
-    CreateKeyRequest, CreateProfileRequest, DecryptedCredential, SaveAiAgentConfigRequest,
-    SaveAiProviderConfigRequest, SshKey, SshKeyView, SshProfile, UpdateProfileRequest,
+    CreateKeyRequest, CreateProfileRequest, CreateScriptRequest, DecryptedCredential,
+    SaveAiAgentConfigRequest, SaveAiProviderConfigRequest, Script, SshKey, SshKeyView, SshProfile,
+    UpdateProfileRequest, UpdateScriptRequest,
 };
 
 const VAULT_FILE_NAME: &str = "vault.json";
 const BACKUP_FILE_NAME: &str = "vault.json.bak";
-const FORMAT_VERSION: u32 = 1;
+const FORMAT_VERSION: u32 = 2;
 const DEFAULT_AGENT_ID: &str = "mjj-agent";
 const DEFAULT_AGENT_NAME: &str = "MJJ Agent";
 const DEFAULT_AGENT_PROMPT: &str = r#"# Role: MJJ Agent (高级远程运维专家 & SSH 智能助手)
@@ -43,6 +44,10 @@ pub enum VaultError {
     AiAgentNotFound(String),
     #[error("The default AI Agent cannot be deleted")]
     DefaultAiAgentCannotBeDeleted,
+    #[error("Script not found: {0}")]
+    ScriptNotFound(String),
+    #[error("Invalid script: {0}")]
+    InvalidScript(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -62,6 +67,8 @@ struct VaultDocument {
     ai_agents: Vec<AiAgentConfig>,
     #[serde(default)]
     ai_executable_grants: Vec<StoredAiExecutableGrant>,
+    #[serde(default)]
+    scripts: Vec<Script>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -105,20 +112,24 @@ impl Vault {
         fs::create_dir_all(app_dir).map_err(io_error)?;
         let path = app_dir.join(VAULT_FILE_NAME);
         let document = if path.exists() {
-            match Self::load_document(&path).and_then(|document| {
-                Self::validate_document(&document)?;
-                Ok(document)
-            }) {
+            match Self::load_document(&path)
+                .and_then(Self::migrate_document)
+                .and_then(|document| {
+                    Self::validate_document(&document)?;
+                    Ok(document)
+                }) {
                 Ok(document) => document,
                 Err(primary_error) => {
                     let backup = app_dir.join(BACKUP_FILE_NAME);
                     if !backup.exists() {
                         return Err(primary_error);
                     }
-                    let document = Self::load_document(&backup).and_then(|document| {
-                        Self::validate_document(&document)?;
-                        Ok(document)
-                    })?;
+                    let document = Self::load_document(&backup)
+                        .and_then(Self::migrate_document)
+                        .and_then(|document| {
+                            Self::validate_document(&document)?;
+                            Ok(document)
+                        })?;
                     fs::remove_file(&path).map_err(io_error)?;
                     Self::write_document(&path, &document)?;
                     document
@@ -155,12 +166,27 @@ impl Vault {
                 updated_at: now,
             }],
             ai_executable_grants: Vec::new(),
+            scripts: Vec::new(),
         }
     }
 
     fn load_document(path: &Path) -> Result<VaultDocument, VaultError> {
         let content = fs::read_to_string(path).map_err(io_error)?;
         serde_json::from_str(&content).map_err(|error| VaultError::InvalidFormat(error.to_string()))
+    }
+
+    fn migrate_document(mut document: VaultDocument) -> Result<VaultDocument, VaultError> {
+        match document.format_version {
+            1 => {
+                document.format_version = FORMAT_VERSION;
+                document.scripts = Vec::new();
+                Ok(document)
+            }
+            FORMAT_VERSION => Ok(document),
+            version => Err(VaultError::InvalidFormat(format!(
+                "unsupported formatVersion: {version}"
+            ))),
+        }
     }
 
     fn validate_document(document: &VaultDocument) -> Result<(), VaultError> {
@@ -179,6 +205,21 @@ impl Vault {
         )?;
         ensure_unique_uuids(document.ssh_keys.iter().map(|key| &key.id), "SSH key")?;
         ensure_unique_ids(document.ai_agents.iter().map(|agent| &agent.id), "AI agent")?;
+        ensure_unique_uuids(document.scripts.iter().map(|script| &script.id), "script")?;
+        let mut script_names = HashSet::new();
+        for script in &document.scripts {
+            validate_script_fields(
+                &script.name,
+                script.description.as_deref(),
+                &script.tags,
+                &script.command,
+            )?;
+            if !script_names.insert(script.name.as_str()) {
+                return Err(VaultError::InvalidScript(
+                    "script names must be unique".into(),
+                ));
+            }
+        }
 
         for profile in &document.profiles {
             if let Some(key_id) = &profile.key_id {
@@ -277,6 +318,7 @@ impl Vault {
     pub fn replace_from_sync(&self, content: &[u8]) -> Result<(), VaultError> {
         let document: VaultDocument = serde_json::from_slice(content)
             .map_err(|error| VaultError::InvalidFormat(error.to_string()))?;
+        let document = Self::migrate_document(document)?;
         Self::validate_document(&document)?;
         Self::write_document(&self.path, &document)?;
         let mut current = self
@@ -285,6 +327,111 @@ impl Vault {
             .map_err(|_| VaultError::Storage("Vault lock poisoned".into()))?;
         *current = document;
         Ok(())
+    }
+
+    pub fn list_scripts(&self) -> Result<Vec<Script>, VaultError> {
+        self.read(|document| {
+            let mut scripts = document.scripts.clone();
+            scripts.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+            Ok(scripts)
+        })
+    }
+
+    pub fn get_script(&self, id: &str) -> Result<Script, VaultError> {
+        self.read(|document| {
+            document
+                .scripts
+                .iter()
+                .find(|script| script.id == id)
+                .cloned()
+                .ok_or_else(|| VaultError::ScriptNotFound(id.into()))
+        })
+    }
+
+    pub fn create_script(&self, request: &CreateScriptRequest) -> Result<Script, VaultError> {
+        validate_script_fields(
+            &request.name,
+            request.description.as_deref(),
+            &request.tags,
+            &request.command,
+        )?;
+        self.mutate(|document| {
+            let name = request.name.trim();
+            if document.scripts.iter().any(|script| script.name == name) {
+                return Err(VaultError::InvalidScript(
+                    "script name already exists".into(),
+                ));
+            }
+            let timestamp = now();
+            let script = Script {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: name.into(),
+                description: normalized_optional_text(request.description.as_deref()),
+                tags: normalized_tags(&request.tags),
+                command: request.command.clone(),
+                risk_level: request.risk_level.clone(),
+                created_at: timestamp.clone(),
+                updated_at: timestamp,
+            };
+            document.scripts.push(script.clone());
+            Ok(script)
+        })
+    }
+
+    pub fn update_script(
+        &self,
+        id: &str,
+        request: &UpdateScriptRequest,
+    ) -> Result<Script, VaultError> {
+        self.mutate(|document| {
+            let index = document
+                .scripts
+                .iter()
+                .position(|script| script.id == id)
+                .ok_or_else(|| VaultError::ScriptNotFound(id.into()))?;
+            let existing = document.scripts[index].clone();
+            let name = request.name.as_deref().unwrap_or(&existing.name);
+            let description = request
+                .description
+                .as_deref()
+                .or(existing.description.as_deref());
+            let tags = request.tags.as_deref().unwrap_or(&existing.tags);
+            let command = request.command.as_deref().unwrap_or(&existing.command);
+            validate_script_fields(name, description, tags, command)?;
+            let normalized_name = name.trim();
+            if document
+                .scripts
+                .iter()
+                .any(|script| script.id != id && script.name == normalized_name)
+            {
+                return Err(VaultError::InvalidScript(
+                    "script name already exists".into(),
+                ));
+            }
+            let script = &mut document.scripts[index];
+            script.name = normalized_name.into();
+            script.description = request
+                .description
+                .as_deref()
+                .map(|value| normalized_optional_text(Some(value)))
+                .unwrap_or(existing.description);
+            script.tags = normalized_tags(tags);
+            script.command = command.into();
+            script.risk_level = request.risk_level.clone().unwrap_or(existing.risk_level);
+            script.updated_at = now();
+            Ok(script.clone())
+        })
+    }
+
+    pub fn delete_script(&self, id: &str) -> Result<(), VaultError> {
+        self.mutate(|document| {
+            let before = document.scripts.len();
+            document.scripts.retain(|script| script.id != id);
+            if document.scripts.len() == before {
+                return Err(VaultError::ScriptNotFound(id.into()));
+            }
+            Ok(())
+        })
     }
 
     pub fn list_profiles(&self) -> Result<Vec<SshProfile>, VaultError> {
@@ -890,6 +1037,50 @@ impl Vault {
     }
 }
 
+fn validate_script_fields(
+    name: &str,
+    description: Option<&str>,
+    tags: &[String],
+    command: &str,
+) -> Result<(), VaultError> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 80 {
+        return Err(VaultError::InvalidScript(
+            "name must contain 1 to 80 characters".into(),
+        ));
+    }
+    if description.is_some_and(|value| value.chars().count() > 500) {
+        return Err(VaultError::InvalidScript(
+            "description must be at most 500 characters".into(),
+        ));
+    }
+    if tags.len() > 10
+        || tags
+            .iter()
+            .any(|tag| tag.trim().is_empty() || tag.chars().count() > 32)
+    {
+        return Err(VaultError::InvalidScript(
+            "scripts allow at most 10 non-empty tags of 32 characters".into(),
+        ));
+    }
+    if command.trim().is_empty() || command.len() > 32 * 1024 {
+        return Err(VaultError::InvalidScript(
+            "command must be non-empty and at most 32 KiB".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn normalized_optional_text(value: Option<&str>) -> Option<String> {
+    value
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+}
+
+fn normalized_tags(tags: &[String]) -> Vec<String> {
+    tags.iter().map(|tag| tag.trim().to_owned()).collect()
+}
+
 fn ensure_unique_uuids<'a>(
     values: impl Iterator<Item = &'a String>,
     entity: &str,
@@ -1057,6 +1248,61 @@ mod tests {
         assert!(profiles
             .iter()
             .all(|profile| profile.key_id.as_deref() == Some(key.id.as_str())));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn migrates_v1_vault_and_preserves_scripts_through_sync() {
+        let directory = test_dir();
+        let vault_id = uuid::Uuid::new_v4();
+        fs::create_dir_all(&directory).unwrap();
+        fs::write(
+            directory.join(VAULT_FILE_NAME),
+            format!(
+                r#"{{"formatVersion":1,"vaultId":"{vault_id}","revision":1,"updatedAt":"2026-01-01T00:00:00Z","profiles":[],"sshKeys":[],"aiAgents":[],"aiExecutableGrants":[]}}"#
+            ),
+        )
+        .unwrap();
+        let vault = Vault::open(&directory).unwrap();
+        assert!(vault.list_scripts().unwrap().is_empty());
+        let script = vault
+            .create_script(&CreateScriptRequest {
+                name: "Disk usage".into(),
+                description: None,
+                tags: vec!["system".into()],
+                command: "df -h".into(),
+                risk_level: super::super::models::ScriptRiskLevel::Low,
+            })
+            .unwrap();
+        let snapshot = vault.sync_snapshot().unwrap();
+        assert!(String::from_utf8(snapshot.content)
+            .unwrap()
+            .contains(&script.id));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn rejects_duplicate_or_invalid_scripts() {
+        let directory = test_dir();
+        let vault = Vault::open(&directory).unwrap();
+        let request = CreateScriptRequest {
+            name: "Disk usage".into(),
+            description: None,
+            tags: vec![],
+            command: "df -h".into(),
+            risk_level: super::super::models::ScriptRiskLevel::Low,
+        };
+        vault.create_script(&request).unwrap();
+        assert!(vault.create_script(&request).is_err());
+        assert!(vault
+            .create_script(&CreateScriptRequest {
+                name: "Bad".into(),
+                description: None,
+                tags: vec![],
+                command: " ".into(),
+                risk_level: super::super::models::ScriptRiskLevel::Low,
+            })
+            .is_err());
         fs::remove_dir_all(directory).unwrap();
     }
 

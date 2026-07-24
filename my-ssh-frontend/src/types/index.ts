@@ -1,3 +1,5 @@
+export * from './scripts'
+
 export type AuthType = 'password' | 'key' | 'certificate'
 
 export interface SshProfileView {

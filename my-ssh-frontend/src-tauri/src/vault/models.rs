@@ -1,6 +1,53 @@
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum ScriptRiskLevel {
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Script {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub tags: Vec<String>,
+    pub command: String,
+    pub risk_level: ScriptRiskLevel,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateScriptRequest {
+    pub name: String,
+    pub description: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    pub command: String,
+    #[serde(default = "default_script_risk_level")]
+    pub risk_level: ScriptRiskLevel,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateScriptRequest {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub tags: Option<Vec<String>>,
+    pub command: Option<String>,
+    pub risk_level: Option<ScriptRiskLevel>,
+}
+
+fn default_script_risk_level() -> ScriptRiskLevel {
+    ScriptRiskLevel::Medium
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
 pub enum AuthType {

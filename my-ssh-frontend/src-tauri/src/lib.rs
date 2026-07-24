@@ -5,6 +5,7 @@ mod commands;
 pub mod diagnostics;
 mod ssh;
 mod state;
+pub mod subscriptions;
 pub mod sync;
 pub mod vault;
 
@@ -81,6 +82,17 @@ pub fn run() {
             commands::sync::resolve_sync_conflict,
             commands::sync::disable_sync,
             commands::sync::delete_remote_sync_vault,
+            commands::scripts::list_scripts,
+            commands::scripts::get_script,
+            commands::scripts::create_script,
+            commands::scripts::update_script,
+            commands::scripts::delete_script,
+            commands::subscriptions::list_script_subscriptions,
+            commands::subscriptions::add_script_subscription,
+            commands::subscriptions::update_script_subscription,
+            commands::subscriptions::remove_script_subscription,
+            commands::subscriptions::refresh_script_subscription,
+            commands::subscriptions::list_cached_subscription_scripts,
             commands::vault::list_profiles,
             commands::vault::get_profile,
             commands::vault::create_profile,

@@ -25,7 +25,8 @@ Vault 的唯一业务数据格式为 JSON，存储位置：`<程序目录>/data/
   "sshKeys": [],
   "aiProviderConfig": null,
   "aiAgents": [],
-  "aiExecutableGrants": []
+  "aiExecutableGrants": [],
+  "scripts": []
 }
 ```
 
@@ -33,6 +34,7 @@ Vault 的唯一业务数据格式为 JSON，存储位置：`<程序目录>/data/
 - `vaultId` 是创建 Vault 时生成且不变的 UUID。
 - `revision` 每次成功的本地写入递增；同步仅将其作为辅助信息，不能以设备时间决定覆盖顺序。
 - `updatedAt` 使用 RFC3339，仅用于展示和诊断。
+- 当前 `formatVersion` 为 `2`；v1 Vault 会在打开时迁移，新增空的 `scripts` 数组。
 
 每次变更都先修改内存模型、执行完整性校验，再写入同目录临时文件并通过原子重命名替换 `vault.json`。替换前保留 `vault.json.bak`，以便从写入中断或文件损坏中恢复。
 
@@ -70,7 +72,11 @@ Vault 的唯一业务数据格式为 JSON，存储位置：`<程序目录>/data/
 | `createdAt` | string | 是 | RFC3339 |
 | `updatedAt` | string | 是 | RFC3339 |
 
-### 3.3 AI 配置与授权
+### 3.3 用户脚本
+
+`scripts` 保存用户创建的可复用 SSH 命令。每项包含 UUID、唯一名称、可选描述、最多 10 个标签、最大 32 KiB 的原始命令、风险提示级别和创建/修改时间。脚本不保存主机、用户名、凭据、私钥、Token 或环境变量；执行时由用户选择已连接会话。它与其他 Vault 业务数据一起同步时整体加密。
+
+### 3.4 AI 配置与授权
 
 - `aiProviderConfig`：单个服务地址、模型、超时和 API Key 配置，可为空。
 - `aiAgents`：Agent 名称、提示词和默认 Agent 标记。

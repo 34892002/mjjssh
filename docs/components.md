@@ -6,7 +6,7 @@
 
 | 组件名 | 组件功能 | 组件路径 |
 | --- | --- | --- |
-| App | 应用根组件；负责主界面布局、主机与密钥视图切换、SSH 页签、SFTP 面板及全局弹窗状态协调。 | `my-ssh-frontend/src/App.vue` |
+| App | 应用根组件；负责主界面布局、主机与密钥视图切换、SSH 页签、终端工具栏面板、SFTP 面板及全局弹窗状态协调。 | `my-ssh-frontend/src/App.vue` |
 | ActionDialog | 通用应用级操作弹窗，支持文本输入和确认操作两种模式，可用于替代浏览器原生提示框。 | `my-ssh-frontend/src/components/ActionDialog.vue` |
 | AiChatPanel | 按 SSH 会话展示 AI 对话侧栏，负责对话、Agent 选择和流式结果展示；AI 服务与 Agent 管理由设置页负责。 | `my-ssh-frontend/src/components/AiChatPanel.vue` |
 | AiSettings | 设置 → AI 页签的按需加载组件，管理 AI 服务配置、连接测试与 Agent 配置。 | `my-ssh-frontend/src/components/AiSettings.vue` |
@@ -14,6 +14,8 @@
 | EntityCard | 通用实体卡片外壳，统一主机和 SSH 密钥的图标、标题、辅助信息、操作区及可选底部信息布局。 | `my-ssh-frontend/src/components/EntityCard.vue` |
 | KeysView | 管理 SSH 私钥与证书，包括创建、编辑和删除；密钥列表使用 `EntityCard` 渲染。 | `my-ssh-frontend/src/components/KeysView.vue` |
 | PermissionsDialog | 编辑远程文件或目录的 Unix 读、写、执行权限，并输出八进制权限值。 | `my-ssh-frontend/src/components/PermissionsDialog.vue` |
+| ScriptPanel | 终端工具栏的脚本选择面板，按标签树状展示本地和已缓存的订阅脚本；双击脚本后仅将文本填入当前 SSH 终端，不自动执行。 | `my-ssh-frontend/src/components/ScriptPanel.vue` |
+| ScriptsView | 按需加载的脚本管理页，提供本地脚本 CRUD、订阅源管理与缓存浏览、搜索和复制。 | `my-ssh-frontend/src/components/ScriptsView.vue` |
 | SftpView | 提供远程 SFTP 文件浏览、排序、上传、文件操作及右键菜单。 | `my-ssh-frontend/src/components/SftpView.vue` |
 | Terminal | 基于 xterm.js 渲染 SSH 交互终端，处理终端输入、输出与尺寸同步。 | `my-ssh-frontend/src/components/Terminal.vue` |
 | TransferPanel | 按 SSH 会话展示 SFTP 上传、下载任务的进度与历史，并允许修改默认下载目录。 | `my-ssh-frontend/src/components/TransferPanel.vue` |
@@ -21,7 +23,7 @@
 ## 组件加载说明
 
 - 应用入口 `my-ssh-frontend/src/main.ts` 通过 `createApp(App)` 创建并挂载根组件。
-- `App.vue` 显式导入并组合使用 `ActionDialog`、`AiChatPanel`、`AiSettings`、`ConnectionDialog`、`EntityCard`、`KeysView`、`PermissionsDialog`、`SftpView` 和 `Terminal`；`SftpView` 内部按需加载 `TransferPanel`。
+- `App.vue` 显式导入并组合使用 `ActionDialog`、`AiChatPanel`、`AiSettings`、`ConnectionDialog`、`EntityCard`、`KeysView`、`PermissionsDialog`、`ScriptsView`、`SftpView` 和 `Terminal`；`ScriptPanel`、`ScriptsView`、`SftpView` 与 `TransferPanel` 保持按需加载。
 - `EntityCard` 使用具名插槽扩展具体实体：`actions` 用于编辑、删除等操作按钮，`footer` 用于 OS、地区等跨整张卡片的补充信息。主机由 `App.vue` 提供这两个区域，密钥由 `KeysView.vue` 提供 `actions`。
 - `EntityCard` 必填属性为 `icon`（Lucide Vue 组件）、`color`、`title` 和 `subtitle`。图标与颜色由调用方提供，组件不负责决定实体类型或持久化逻辑。
 - `ConnectionDialog` 由 `App.vue` 传入待连接主机的 `icon` 和 `color`，以保持连接进度弹窗与主机卡片的视觉配置一致。
