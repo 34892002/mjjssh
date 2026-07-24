@@ -1,4 +1,4 @@
-name: Windows build
+name: Desktop release
 
 on:
   pull_request:
@@ -18,10 +18,10 @@ jobs:
         working-directory: my-ssh-frontend
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -52,7 +52,7 @@ jobs:
       - name: Run Rust tests
         run: cargo test --manifest-path src-tauri/Cargo.toml --lib
 
-  release:
+  release-windows:
     name: Build Windows installers
     if: startsWith(github.ref, 'refs/tags/v')
     needs: verify
@@ -61,10 +61,10 @@ jobs:
       contents: write
     steps:
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: 22
           cache: npm
@@ -83,13 +83,64 @@ jobs:
         run: npm ci
 
       - name: Build and publish installers
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           projectPath: my-ssh-frontend
           tagName: ${{ github.ref_name }}
           releaseName: MJJSSH ${{ github.ref_name }}
-          releaseBody: Windows installer release for ${{ github.ref_name }}.
+          releaseBody: Desktop installers for ${{ github.ref_name }}.
           releaseDraft: false
           prerelease: false
+
+  release-macos:
+    name: Build macOS installer (${{ matrix.arch }})
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: release-windows
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: Apple Silicon
+            target: aarch64-apple-darwin
+          - arch: Intel
+            target: x86_64-apple-darwin
+    permissions:
+      contents: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: my-ssh-frontend/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Restore Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: my-ssh-frontend/src-tauri -> target
+
+      - name: Install frontend dependencies
+        working-directory: my-ssh-frontend
+        run: npm ci
+
+      - name: Build and publish macOS installer
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: my-ssh-frontend
+          tagName: ${{ github.ref_name }}
+          releaseDraft: false
+          prerelease: false
+          args: --target ${{ matrix.target }}
