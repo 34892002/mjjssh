@@ -1,4 +1,4 @@
-# MJJSSH official scripts
+# MJJ Scripts
 # Review each command before execution. These examples are intentionally read-only.
 {"schemaVersion":1,"id":"system-uptime","name":"查看系统运行时间","description":"显示系统负载与运行时间。","tags":["system","status"],"command":"uptime","riskLevel":"low","platforms":["linux","macos"],"version":"1.0.0"}
 {"schemaVersion":1,"id":"disk-usage","name":"查看磁盘使用率","description":"以易读格式显示已挂载文件系统的空间使用情况。","tags":["system","disk"],"command":"df -h","riskLevel":"low","platforms":["linux","macos"],"version":"1.0.0"}
