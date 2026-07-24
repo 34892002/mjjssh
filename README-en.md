@@ -1,6 +1,6 @@
 # MJJSSH
 
-[![中文](https://img.shields.io/badge/中文-点击查看-yellow)](readme.md)
+[![中文](https://img.shields.io/badge/中文-点击查看-orange)](readme.md)
 [![English](https://img.shields.io/badge/English-Click-yellow)](README-en.md)
 
 A multi-window SSH client built with Tauri, Vue 3, and Rust.
