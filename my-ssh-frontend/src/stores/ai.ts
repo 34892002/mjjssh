@@ -4,6 +4,7 @@ import type {
   AiActionResult,
   AiAgentConfig,
   AiConnectionTestResult,
+  DiscoverAiModelsRequest,
   AiPendingAction,
   AiProviderConfigView,
   SaveAiAgentConfigRequest,
@@ -215,6 +216,15 @@ export const useAiStore = defineStore('ai', {
         throw error
       } finally {
         this.loading = false
+      }
+    },
+    async discoverModels(request: DiscoverAiModelsRequest) {
+      this.error = null
+      try {
+        return await invoke<string[]>('discover_ai_models', { request })
+      } catch (error) {
+        this.error = String(error)
+        throw error
       }
     },
     async testConnection(model?: string) {

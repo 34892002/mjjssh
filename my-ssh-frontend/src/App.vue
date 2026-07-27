@@ -3,7 +3,7 @@ import { defineAsyncComponent, ref, computed, onBeforeUnmount, onMounted, nextTi
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { Archive, Box, Cloud, CloudCog, Code2, Container, Copy, Cpu, Database, Download, EthernetPort, FileCode2, Globe2, HardDrive, Languages, Layers3, ListFilter, MapPin, MemoryStick, MonitorCog, Moon, Network, RadioTower, RefreshCw, Router, Server, ServerCog, Settings, ShieldCheck, Sparkles, Square, Sun, TerminalSquare, Upload, Waypoints, Workflow, X, Zap } from '@lucide/vue'
+import { Archive, Box, Cloud, CloudCog, Code2, Container, Copy, Cpu, Database, Download, EthernetPort, FileCode2, Globe2, HardDrive, Languages, Layers3, ListFilter, MapPin, MemoryStick, MonitorCog, Moon, Network, Plus, RadioTower, RefreshCw, Router, Server, ServerCog, Settings, ShieldCheck, Sparkles, Square, Sun, TerminalSquare, Upload, Waypoints, Workflow, X, Zap } from '@lucide/vue'
 import {
   darkTheme,
   NConfigProvider,
@@ -42,6 +42,8 @@ const ScriptPanel = defineAsyncComponent(() => import('./components/ScriptPanel.
 const PermissionsDialog = defineAsyncComponent(() => import('./components/PermissionsDialog.vue'))
 const ActionDialog = defineAsyncComponent(() => import('./components/ActionDialog.vue'))
 import type { SshProfileView, CreateProfileRequest } from './types'
+import type { LocalShell } from './stores/session'
+import type { DropdownOption } from 'naive-ui'
 
 const vaultStore = useVaultStore()
 const sessionStore = useSessionStore()
@@ -449,9 +451,35 @@ async function insertScriptIntoTerminal(command: string) {
   if (inserted) scriptPanelOpen.value = false
 }
 
+type LocalShellInfo = { id: LocalShell; label: string }
+const localShells = ref<LocalShellInfo[]>([])
+const localTerminalOptions = computed<DropdownOption[]>(() => localShells.value.map((shell) => ({
+  key: shell.id,
+  label: `本地终端 · ${shell.label}`,
+})))
+
+async function startLocalTerminal(key: string | number) {
+  const shell = String(key) as LocalShell
+  const selectedShell = localShells.value.find((item) => item.id === shell)
+  if (!selectedShell) return
+  transferPanelOpen.value = false
+  scriptPanelOpen.value = false
+  const result = await sessionStore.startLocalTerminal(shell, selectedShell.label)
+  if (result.ok) {
+    await nextTick()
+    terminalRefs.value[result.sessionId]?.triggerResize()
+  }
+}
+
 onMounted(async () => {
   isMaximized.value = await appWindow.isMaximized()
-  await Promise.all([vaultStore.init(), transferStore.initialize(), loadSyncStatus()])
+  const [, , shells] = await Promise.all([
+    vaultStore.init(),
+    transferStore.initialize(),
+    invoke<LocalShellInfo[]>('list_local_shells'),
+    loadSyncStatus(),
+  ])
+  localShells.value = shells
   vaultMd5 = await readVaultMd5()
   vaultMd5Timer = setInterval(() => { void checkVaultMd5() }, 10_000)
   window.addEventListener('sync-configuration-changed', handleSyncConfigurationChanged)
@@ -578,6 +606,8 @@ async function handleDeleteProfile(id: string) {
 // --- Connection ---
 const terminalRefs = ref<Record<string, any>>({})
 const activeTerminalInfo = ref<{ host: string; port: number; username: string } | null>(null)
+const isLocalTerminal = computed(() => sessionStore.activeTab?.kind === 'local')
+const activeTerminalLabel = computed(() => sessionStore.activeTab?.profileName ?? '')
 
 // --- Connection dialog ---
 type ConnectionDialogStatus = 'connecting' | 'verifying' | 'authenticating' | 'success' | 'error' | 'host-key-confirm' | 'host-key-changed'
@@ -627,7 +657,7 @@ async function handleConnect(
   reuseSessionId?: string,
   isReconnect = false,
 ) {
-  const existingTab = sessionStore.tabs.find((tab) => tab.profileId === profile.id)
+  const existingTab = sessionStore.tabs.find((tab) => tab.kind === 'ssh' && tab.profileId === profile.id)
   if (existingTab && !reuseSessionId) {
     sessionStore.setActiveTab(existingTab.sessionId)
     updateTerminalInfo(existingTab.sessionId)
@@ -749,7 +779,9 @@ async function handleRetry(sessionId: string) {
 
 function handleTerminalDisconnected(sessionId: string, reason: string) {
   const tab = sessionStore.tabs.find((item) => item.sessionId === sessionId)
-  const profile = tab && vaultStore.profiles.find((item) => item.id === tab.profileId)
+  const profile = tab?.kind === 'ssh' && tab.profileId
+    ? vaultStore.profiles.find((item) => item.id === tab.profileId)
+    : undefined
   if (!tab || !profile) return
 
   sessionStore.setActiveTab(sessionId)
@@ -779,12 +811,14 @@ function handleCloseConnDialog(sessionId: string) {
 }
 
 function updateTerminalInfo(sessionId: string) {
-  const tab = sessionStore.tabs.find(t => t.sessionId === sessionId)
-  if (tab) {
-    const profile = vaultStore.profiles.find(p => p.id === tab.profileId)
-    if (profile) {
-      activeTerminalInfo.value = { host: profile.host, port: profile.port, username: profile.username }
-    }
+  const tab = sessionStore.tabs.find((item) => item.sessionId === sessionId)
+  if (tab?.kind !== 'ssh' || !tab.profileId) {
+    activeTerminalInfo.value = null
+    return
+  }
+  const profile = vaultStore.profiles.find((item) => item.id === tab.profileId)
+  if (profile) {
+    activeTerminalInfo.value = { host: profile.host, port: profile.port, username: profile.username }
   }
 }
 
@@ -846,7 +880,7 @@ const currentAiOpen = computed(() => {
 
 function openSftp() {
   const sid = sessionStore.activeTabId
-  if (!sid || !activeTerminalInfo.value) return
+  if (!sid || isLocalTerminal.value || !activeTerminalInfo.value) return
   if (sftpOpenSessions.value.has(sid)) {
     sftpOpenSessions.value.delete(sid)
   } else {
@@ -868,7 +902,7 @@ function closeSftp() {
 
 function openAiChat() {
   const sid = sessionStore.activeTabId
-  if (!sid) return
+  if (!sid || isLocalTerminal.value) return
   if (aiOpenSessions.value.has(sid)) {
     aiOpenSessions.value.delete(sid)
   } else {
@@ -994,7 +1028,7 @@ function stopServerStats() {
 function restartServerStats() {
   stopServerStats()
   serverStats.value = null
-  if (!sessionStore.activeTabId || document.hidden) return
+  if (!sessionStore.activeTabId || isLocalTerminal.value || document.hidden) return
   const generation = statsGeneration
   void scheduleServerStats(generation)
 }
@@ -1055,18 +1089,26 @@ function handleUnhandledRejection(event: PromiseRejectionEvent) {
 window.addEventListener('error', handleWindowError)
 window.addEventListener('unhandledrejection', handleUnhandledRejection)
 
+function setSettingsVisibility(show: boolean) {
+  showSettings.value = show
+}
+
+function selectSettingsSection(section: 'terminal' | 'ai' | 'sync' | 'system') {
+  settingsSection.value = section
+}
+
 function openSettings() {
-  settingsSection.value = 'terminal'
+  selectSettingsSection('terminal')
   showSettings.value = true
 }
 
 function openAiSettings() {
-  settingsSection.value = 'ai'
+  selectSettingsSection('ai')
   showSettings.value = true
 }
 
 function openSyncSettings() {
-  settingsSection.value = 'sync'
+  selectSettingsSection('sync')
   showSettings.value = true
 }
 
@@ -1169,10 +1211,10 @@ function openSyncSettings() {
         </header>
 
         <!-- 紧凑连接栏 -->
-        <div v-if="sessionStore.activeTabId && activeTerminalInfo" class="terminal-toolbar">
+        <div v-if="sessionStore.activeTabId && (isLocalTerminal || activeTerminalInfo)" class="terminal-toolbar">
           <div class="toolbar-left">
-            <span class="toolbar-info">{{ activeTerminalInfo.username }}@{{ activeTerminalInfo.host }}:{{ activeTerminalInfo.port }}</span>
-            <span v-if="serverStats" class="toolbar-stats">
+            <span class="toolbar-info">{{ isLocalTerminal ? activeTerminalLabel : `${activeTerminalInfo?.username}@${activeTerminalInfo?.host}:${activeTerminalInfo?.port}` }}</span>
+            <span v-if="!isLocalTerminal && serverStats" class="toolbar-stats">
               <span class="stat-item"><Cpu :size="11" />{{ serverStats.cpu }}</span>
               <span class="stat-item"><MemoryStick :size="11" />{{ serverStats.memory }}</span>
               <span class="stat-item"><HardDrive :size="11" />{{ serverStats.disk }}</span>
@@ -1182,9 +1224,9 @@ function openSyncSettings() {
             </span>
           </div>
           <div class="toolbar-right">
-            <button class="toolbar-btn" :class="{ active: currentAiOpen }" title="AI 对话" @click="openAiChat"><Sparkles :size="16" /></button>
+            <button v-if="!isLocalTerminal" class="toolbar-btn" :class="{ active: currentAiOpen }" title="AI 对话" @click="openAiChat"><Sparkles :size="16" /></button>
             <button ref="scriptButtonRef" class="toolbar-btn" :class="{ active: scriptPanelOpen }" title="脚本" aria-label="脚本" @click="openScripts"><FileCode2 :size="16" /></button>
-            <div class="transfer-control">
+            <div v-if="!isLocalTerminal" class="transfer-control">
               <button ref="transferButtonRef" class="toolbar-btn transfer-button" :class="{ active: transferPanelOpen, unread: hasUnreadTransfers }" title="传输任务" @click="openTransfers"><Download :size="16" /><span v-if="hasUnreadTransfers" class="transfer-badge" /></button>
               <div v-if="transferNoticeVisible && transferStore.tasks[0]" class="transfer-notice" role="status" @pointerdown.stop>
                 <strong>任务已添加</strong>
@@ -1192,7 +1234,7 @@ function openSyncSettings() {
                 <button @click="openTransfers">查看传输</button>
               </div>
             </div>
-            <button class="toolbar-btn" :class="{ active: currentSftpOpen }" title="SFTP 文件管理" @click="openSftp">
+            <button v-if="!isLocalTerminal" class="toolbar-btn" :class="{ active: currentSftpOpen }" title="SFTP 文件管理" @click="openSftp">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
                 <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
               </svg>
@@ -1208,7 +1250,7 @@ function openSyncSettings() {
           <ScriptPanel @insert="insertScriptIntoTerminal" />
         </div>
         <div
-          v-if="transferPanelOpen && sessionStore.activeTabId"
+          v-if="transferPanelOpen && sessionStore.activeTabId && !isLocalTerminal"
           ref="transferPanelRef"
           class="main-transfer-panel"
         >
@@ -1227,6 +1269,7 @@ function openSyncSettings() {
             <Terminal
               :ref="(el: any) => { if (el) terminalRefs[tab.sessionId] = el }"
               :session-id="tab.sessionId"
+              :kind="tab.kind"
               :dark="isDarkTheme"
               :reconnect-version="reconnectVersions[tab.sessionId]"
               @disconnected="handleTerminalDisconnected(tab.sessionId, $event)"
@@ -1305,15 +1348,17 @@ function openSyncSettings() {
                     <h2>{{ t('nav.hosts') }}</h2>
                     <span class="host-count">{{ t('hosts.count', { count: vaultStore.profiles.length }) }}</span>
                   </div>
-                  <n-button type="primary" @click="openCreateForm">
-                    <template #icon>
-                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <line x1="12" y1="5" x2="12" y2="19"/>
-                        <line x1="5" y1="12" x2="19" y2="12"/>
-                      </svg>
-                    </template>
-                    {{ t('hosts.new') }}
-                  </n-button>
+                  <div class="host-create-actions">
+                    <n-button type="primary" @click="openCreateForm">
+                      <template #icon><ServerCog :size="15" /></template>
+                      添加主机
+                    </n-button>
+                    <n-dropdown trigger="click" :options="localTerminalOptions" @select="startLocalTerminal">
+                      <n-button type="primary" class="local-terminal-trigger" title="新建本地终端" aria-label="新建本地终端">
+                        <template #icon><Plus :size="16" /></template>
+                      </n-button>
+                    </n-dropdown>
+                  </div>
                 </div>
 
 
@@ -1500,21 +1545,25 @@ function openSyncSettings() {
         </n-modal>
 
 
-        <div v-if="showSettings" class="settings-overlay" role="dialog" aria-modal="true" :aria-label="t('settings.title')">
-          <section class="settings-window">
+        <n-modal
+          v-model:show="showSettings"
+          :mask-closable="false"
+          @update:show="setSettingsVisibility"
+        >
+          <section class="settings-window" :class="{ 'theme-dark': isDarkTheme }" role="dialog" aria-modal="true" :aria-label="t('settings.title')">
             <header class="settings-titlebar">
               <h2>{{ t('settings.title') }}</h2>
-              <button class="settings-close" :aria-label="t('settings.close')" @click="showSettings = false"><X :size="18" /></button>
+              <button class="settings-close" :aria-label="t('settings.close')" @click="setSettingsVisibility(false)"><X :size="18" /></button>
             </header>
             <div class="settings-body">
               <nav class="settings-nav" :aria-label="t('settings.categories')">
-                <button :class="{ active: settingsSection === 'terminal' }" @click="settingsSection = 'terminal'">
+                <button :class="{ active: settingsSection === 'terminal' }" @click="selectSettingsSection('terminal')">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="15" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></svg>
                   {{ t('settings.terminal') }}
                 </button>
-                <button :class="{ active: settingsSection === 'ai' }" @click="settingsSection = 'ai'"><Sparkles :size="16" />AI</button>
-                <button :class="{ active: settingsSection === 'sync' }" @click="settingsSection = 'sync'"><Cloud :size="16" />{{ t('sync.title') }}</button>
-                <button :class="{ active: settingsSection === 'system' }" @click="settingsSection = 'system'">
+                <button :class="{ active: settingsSection === 'ai' }" @click="selectSettingsSection('ai')"><Sparkles :size="16" />AI</button>
+                <button :class="{ active: settingsSection === 'sync' }" @click="selectSettingsSection('sync')"><Cloud :size="16" />{{ t('sync.title') }}</button>
+                <button :class="{ active: settingsSection === 'system' }" @click="selectSettingsSection('system')">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
                   {{ t('settings.system') }}
                 </button>
@@ -1543,7 +1592,7 @@ function openSyncSettings() {
               </main>
             </div>
           </section>
-        </div>
+        </n-modal>
 
         <n-modal v-model:show="showDiagnosticExportConfirm" preset="dialog" :title="t('diagnostics.confirmTitle')" :mask-closable="!diagnosticExporting" :closable="!diagnosticExporting">
           <div class="diagnostic-export-confirmation">
@@ -2048,6 +2097,29 @@ function openSyncSettings() {
   margin-bottom: 24px;
 }
 
+.host-create-actions {
+  display: flex;
+  align-items: stretch;
+  gap: 1px;
+}
+
+.host-create-actions :deep(.n-button) {
+  border-radius: 0;
+}
+
+.host-create-actions :deep(.n-button:first-child) {
+  border-radius: 5px 0 0 5px;
+}
+
+.host-create-actions :deep(.n-button:last-child) {
+  border-radius: 0 5px 5px 0;
+}
+
+.local-terminal-trigger {
+  min-width: 34px;
+  padding-inline: 8px;
+}
+
 .header-left {
   display: flex;
   align-items: baseline;
@@ -2219,17 +2291,19 @@ function openSyncSettings() {
 .ai-panel { border-left-color: var(--app-border); }
 .toolbar-btn.active { color: var(--app-accent); background: var(--app-hover); }
 
-.settings-overlay {
-  position: absolute;
-  inset: 0;
-  z-index: 500;
-  display: grid;
-  padding: 20px;
-  background: var(--app-overlay);
-  place-items: center;
-}
-
 .settings-window {
+  --app-base: #f8fafc;
+  --app-surface: #ffffff;
+  --app-elevated: #f1f5f9;
+  --app-border: #dbe3ef;
+  --app-text: #1e293b;
+  --app-muted: #64748b;
+  --app-hover: #e8eef7;
+  --app-accent: #2563eb;
+  --app-panel: #ffffff;
+  --app-code: #f1f5f9;
+  --app-selection: #dbeafe;
+  --app-shadow: rgba(15, 23, 42, .16);
   display: flex;
   width: min(980px, calc(100vw - 40px));
   height: min(720px, calc(100vh - 40px));
@@ -2242,6 +2316,21 @@ function openSyncSettings() {
   border-radius: 10px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.45);
   overflow: hidden;
+}
+
+.settings-window.theme-dark {
+  --app-base: #1e1e2e;
+  --app-surface: #181825;
+  --app-elevated: #1c2330;
+  --app-border: #344057;
+  --app-text: #cdd6f4;
+  --app-muted: #9aa8be;
+  --app-hover: #252e3e;
+  --app-accent: #89b4fa;
+  --app-panel: #151a25;
+  --app-code: #111722;
+  --app-selection: #30394b;
+  --app-shadow: rgba(0, 0, 0, .32);
 }
 
 .settings-titlebar {
@@ -2383,7 +2472,6 @@ function openSyncSettings() {
 .empty-settings > svg { margin-bottom: 10px; color: var(--app-accent); }
 
 @media (max-width: 640px) {
-  .settings-overlay { padding: 10px; }
   .settings-window { width: calc(100vw - 20px); height: calc(100vh - 20px); }
   .settings-nav { width: 154px; }
   .settings-content { padding: 24px 16px; }

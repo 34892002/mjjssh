@@ -50,6 +50,12 @@ export interface SaveAiProviderConfigRequest {
   timeoutSeconds: number
 }
 
+export interface DiscoverAiModelsRequest {
+  baseUrl: string
+  apiKey: string
+  timeoutSeconds: number
+}
+
 export interface AiImageInput {
   dataUrl: string
   name: string

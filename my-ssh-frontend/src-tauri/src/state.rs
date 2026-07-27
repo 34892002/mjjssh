@@ -7,6 +7,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::ai::risk_confirmation::RiskConfirmationStore;
 use crate::ai::service::{AiTaskManager, SshSafetyContext};
+use crate::local_terminal::LocalTerminalManager;
 use crate::ssh::{known_hosts::KnownHosts, SessionManager};
 use crate::vault::{Vault, VaultError};
 
@@ -22,6 +23,7 @@ pub struct AppState {
     pub vault: Arc<Mutex<Option<Vault>>>,
     pub app_dir: PathBuf,
     pub sessions: Arc<SessionManager>,
+    pub local_terminals: Arc<LocalTerminalManager>,
     pub pending_ssh_connections: Arc<Mutex<HashMap<String, CancellationToken>>>,
     pub known_hosts: Arc<Mutex<KnownHosts>>,
     pub ai_tasks: AiTaskManager,
@@ -36,6 +38,7 @@ impl AppState {
             vault: Arc::new(Mutex::new(None)),
             app_dir: app_dir.clone(),
             sessions: Arc::new(SessionManager::new()),
+            local_terminals: Arc::new(LocalTerminalManager::default()),
             pending_ssh_connections: Arc::new(Mutex::new(HashMap::new())),
             known_hosts: Arc::new(Mutex::new(
                 KnownHosts::open(app_dir.clone()).expect("Failed to open known_hosts"),

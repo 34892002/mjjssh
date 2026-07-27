@@ -12,6 +12,7 @@ import { useSessionStore } from '../stores/session'
 
 const props = defineProps<{
   sessionId: string
+  kind: 'ssh' | 'local'
   dark: boolean
   reconnectVersion?: number
 }>()
@@ -93,7 +94,7 @@ function markTerminalUnavailable(message: string) {
   if (terminalUnavailable) return
   terminalUnavailable = true
   terminal.options.disableStdin = true
-  terminal.write(`\r\n\x1b[31m[SSH terminal unavailable: ${message}]\x1b[0m\r\n`)
+  terminal.write(`\r\n\x1b[31m[Terminal unavailable: ${message}]\x1b[0m\r\n`)
 }
 
 async function writeTerminalData(data: string) {
@@ -184,15 +185,15 @@ onMounted(async () => {
   })
   resizeObserver.observe(containerRef.value)
 
-  // 注册 SSH 数据监听
-  unlistenData = await listen<number[]>(`ssh-data:${props.sessionId}`, (event) => {
+  const eventPrefix = props.kind === 'local' ? 'local-terminal' : 'ssh'
+  unlistenData = await listen<number[]>(`${eventPrefix}-data:${props.sessionId}`, (event) => {
     const bytes = new Uint8Array(event.payload)
     const text = decoder.decode(bytes, { stream: true })
     if (text) terminal.write(text)
   })
-  unlistenDisconnected = await listen<string>(`ssh-disconnected:${props.sessionId}`, (event) => {
-    markTerminalUnavailable(`connection disconnected: ${event.payload}`)
-    emit('disconnected', event.payload)
+  unlistenDisconnected = await listen<string>(`${eventPrefix}-${props.kind === 'local' ? 'closed' : 'disconnected'}:${props.sessionId}`, (event) => {
+    markTerminalUnavailable(props.kind === 'local' ? event.payload : `connection disconnected: ${event.payload}`)
+    if (props.kind === 'ssh') emit('disconnected', event.payload)
   })
   sessionStore.notifyTerminalReady(props.sessionId)
 })
@@ -202,7 +203,7 @@ watch(() => props.dark, () => {
 })
 
 watch(() => props.reconnectVersion, (version, previousVersion) => {
-  if (version === undefined || version === previousVersion || !terminalUnavailable) return
+  if (props.kind !== 'ssh' || version === undefined || version === previousVersion || !terminalUnavailable) return
   terminalUnavailable = false
   terminal.options.disableStdin = false
   terminal.write('\r\n\x1b[32m[SSH connection restored]\x1b[0m\r\n')

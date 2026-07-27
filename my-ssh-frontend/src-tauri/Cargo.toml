@@ -52,6 +52,9 @@ base64 = "0.22"
 sha2 = "0.10"
 md5 = "0.7"
 
+# Local terminal PTY
+portable-pty = "0.8"
+
 # Shell command parsing
 # Keep authorization based on parsed command nodes rather than shell text heuristics.
 tree-sitter = "0.25"

@@ -3,10 +3,15 @@ import { ref, computed } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import type { SessionInfo } from '../types'
 
+export type SessionKind = 'ssh' | 'local'
+export type LocalShell = 'powershell' | 'git-bash'
+
 export interface TabInfo {
   sessionId: string
-  profileId: string
+  kind: SessionKind
+  profileId?: string
   profileName: string
+  localShell?: LocalShell
 }
 
 export interface TerminalSelection {
@@ -84,7 +89,7 @@ export const useSessionStore = defineStore('session', () => {
         const terminalReady = new Promise<void>((resolve) => {
           terminalReadyResolvers.set(sessionId, resolve)
         })
-        tabs.value.push({ sessionId, profileId, profileName })
+        tabs.value.push({ sessionId, kind: 'ssh', profileId, profileName })
         activeTabId.value = sessionId
 
         await Promise.race([
@@ -112,6 +117,38 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
+  async function startLocalTerminal(
+    shell: LocalShell,
+    label: string,
+    sessionId = generateId(),
+  ): Promise<ConnectResult> {
+    loading.value = true
+    error.value = null
+    try {
+      const terminalReady = new Promise<void>((resolve) => {
+        terminalReadyResolvers.set(sessionId, resolve)
+      })
+      tabs.value.push({ sessionId, kind: 'local', profileName: `本地终端 · ${label}`, localShell: shell })
+      activeTabId.value = sessionId
+
+      await Promise.race([
+        terminalReady,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Terminal initialization timed out')), 10_000)),
+      ])
+      terminalReadyResolvers.delete(sessionId)
+      await invoke('start_local_terminal', { sessionId, shell, cols: 80, rows: 24 })
+      return { ok: true, sessionId }
+    } catch (e) {
+      const startError = String(e)
+      error.value = startError
+      terminalReadyResolvers.delete(sessionId)
+      removeTab(sessionId)
+      return { ok: false, error: startError }
+    } finally {
+      loading.value = false
+    }
+  }
+
   function removeTab(sessionId: string) {
     clearTerminalSelection(sessionId)
     const idx = tabs.value.findIndex((tab) => tab.sessionId === sessionId)
@@ -125,9 +162,14 @@ export const useSessionStore = defineStore('session', () => {
     loading.value = true
     error.value = null
     try {
-      await invoke('disconnect_ssh', { sessionId })
+      const tab = tabs.value.find((item) => item.sessionId === sessionId)
+      if (tab?.kind === 'local') {
+        await invoke('close_local_terminal', { sessionId })
+      } else {
+        await invoke('disconnect_ssh', { sessionId })
+      }
       removeTab(sessionId)
-      await loadSessions()
+      if (tab?.kind !== 'local') await loadSessions()
       return true
     } catch (e) {
       error.value = String(e)
@@ -138,11 +180,13 @@ export const useSessionStore = defineStore('session', () => {
   }
 
   function closeTab(sessionId: string) {
+    const tab = tabs.value.find((item) => item.sessionId === sessionId)
     terminalReadyResolvers.delete(sessionId)
     removeTab(sessionId)
-    // Host-key checks can fail before a backend session exists. Local tab
-    // removal must not depend on best-effort backend cleanup succeeding.
-    void invoke('disconnect_ssh', { sessionId }).catch(() => undefined)
+    // Connection attempts can fail before a backend session exists. Tab removal
+    // must not depend on best-effort backend cleanup succeeding.
+    const command = tab?.kind === 'local' ? 'close_local_terminal' : 'disconnect_ssh'
+    void invoke(command, { sessionId }).catch(() => undefined)
   }
 
   function notifyTerminalReady(sessionId: string) {
@@ -164,7 +208,8 @@ export const useSessionStore = defineStore('session', () => {
   async function writeData(sessionId: string, data: string): Promise<boolean> {
     try {
       const encoder = new TextEncoder()
-      await invoke('write_ssh_data', {
+      const tab = tabs.value.find((item) => item.sessionId === sessionId)
+      await invoke(tab?.kind === 'local' ? 'write_local_terminal_data' : 'write_ssh_data', {
         sessionId,
         data: Array.from(encoder.encode(data)),
       })
@@ -177,7 +222,8 @@ export const useSessionStore = defineStore('session', () => {
 
   async function resize(sessionId: string, cols: number, rows: number): Promise<boolean> {
     try {
-      await invoke('resize_ssh', { sessionId, cols, rows })
+      const tab = tabs.value.find((item) => item.sessionId === sessionId)
+      await invoke(tab?.kind === 'local' ? 'resize_local_terminal' : 'resize_ssh', { sessionId, cols, rows })
       return true
     } catch (e) {
       error.value = String(e)
@@ -193,6 +239,7 @@ export const useSessionStore = defineStore('session', () => {
     loading,
     error,
     connect,
+    startLocalTerminal,
     disconnect,
     closeTab,
     removeTab,

@@ -1,6 +1,7 @@
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use serde::Deserialize;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::Mutex;
 use uuid::Uuid;
@@ -25,6 +26,24 @@ use crate::vault::{
     Vault,
 };
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoverAiModelsRequest {
+    pub base_url: String,
+    pub api_key: String,
+    pub timeout_seconds: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiModelsResponse {
+    data: Vec<OpenAiModel>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiModel {
+    id: String,
+}
+
 #[tauri::command]
 pub async fn get_ai_config_status(
     state: State<'_, AppState>,
@@ -44,6 +63,63 @@ pub async fn save_ai_config(
         .with_vault(|vault| vault.save_ai_config(&config))
         .await
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn discover_ai_models(
+    state: State<'_, AppState>,
+    request: DiscoverAiModelsRequest,
+) -> Result<Vec<String>, String> {
+    let base_url = request.base_url.trim().trim_end_matches('/');
+    if !(base_url.starts_with("https://") || base_url.starts_with("http://")) {
+        return Err("AI API address must start with http:// or https://".into());
+    }
+    if !(10..=300).contains(&request.timeout_seconds) {
+        return Err("AI request timeout must be between 10 and 300 seconds".into());
+    }
+
+    let api_key = if request.api_key.trim().is_empty() {
+        state
+            .with_vault(|vault| {
+                vault
+                    .get_ai_config_secret_for_model(None)?
+                    .map(|config| config.api_key)
+                    .ok_or_else(|| {
+                        crate::vault::VaultError::InvalidAiConfig("API key is required".into())
+                    })
+            })
+            .await
+            .map_err(|error| error.to_string())?
+    } else {
+        request.api_key.trim().to_owned()
+    };
+
+    let client = reqwest::Client::builder()
+        .http1_only()
+        .connect_timeout(Duration::from_secs(request.timeout_seconds.into()))
+        .timeout(Duration::from_secs(request.timeout_seconds.into()))
+        .build()
+        .map_err(|error| format!("could not create AI HTTP client: {error}"))?;
+    let response = client
+        .get(format!("{base_url}/models"))
+        .bearer_auth(api_key)
+        .send()
+        .await
+        .map_err(|error| format!("could not retrieve AI models: {error}"))?
+        .error_for_status()
+        .map_err(|error| format!("AI model discovery failed: {error}"))?;
+    let models = response
+        .json::<OpenAiModelsResponse>()
+        .await
+        .map_err(|error| format!("invalid AI models response: {error}"))?
+        .data
+        .into_iter()
+        .map(|model| model.id.trim().to_owned())
+        .filter(|id| !id.is_empty() && id.chars().count() <= 160)
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    Ok(models)
 }
 
 #[tauri::command]

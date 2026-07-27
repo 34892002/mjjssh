@@ -1,5 +1,6 @@
 pub mod ai;
 pub mod diagnostics;
+pub mod local_terminal;
 pub mod scripts;
 pub mod sftp;
 pub mod ssh;

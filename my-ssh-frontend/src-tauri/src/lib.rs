@@ -3,6 +3,7 @@
 pub mod ai;
 mod commands;
 pub mod diagnostics;
+mod local_terminal;
 mod ssh;
 mod state;
 pub mod subscriptions;
@@ -59,6 +60,7 @@ pub fn run() {
             commands::diagnostics::export_diagnostic_bundle,
             commands::ai::get_ai_config_status,
             commands::ai::save_ai_config,
+            commands::ai::discover_ai_models,
             commands::ai::test_ai_connection,
             commands::ai::delete_ai_config,
             commands::ai::list_ai_agents,
@@ -110,6 +112,11 @@ pub fn run() {
             commands::ssh::write_ssh_data,
             commands::ssh::resize_ssh,
             commands::ssh::list_sessions,
+            commands::local_terminal::list_local_shells,
+            commands::local_terminal::start_local_terminal,
+            commands::local_terminal::write_local_terminal_data,
+            commands::local_terminal::resize_local_terminal,
+            commands::local_terminal::close_local_terminal,
             commands::sftp::open_sftp_window,
             commands::sftp::sftp_get_home_directory,
             commands::sftp::sftp_list_files,
