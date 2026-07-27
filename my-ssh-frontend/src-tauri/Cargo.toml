@@ -67,6 +67,7 @@ thiserror = "2"
 anyhow = "1"
 zeroize = { version = "1", features = ["derive"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
+keyring = { version = "3", features = ["windows-native", "apple-native"] }
 
 [profile.release]
 lto = "thin"

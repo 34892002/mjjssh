@@ -146,13 +146,14 @@ type:
 
 
 
-- 本地唯一业务文件为 `<程序目录>/data/vault.json`。未启用云同步时，本地 Vault 为明文 JSON，启动和日常 SSH 使用不要求密码。
-- 不使用固定默认密码、随机本地加密密钥或平台特定系统密钥库。
-- 启用云同步后，用户输入同步密码；应用对完整 Vault JSON 执行 Argon2id 密钥派生和 AES-256-GCM 整体加密，再上传 GitHub Gist/Gitee 私有片段。
-- 同步密码仅用于云端副本，不影响本地 SSH 凭证、不会上传且不可找回。
-- `data/sync.json` 默认保存 provider、远端绑定、token 和 Base64 编码的 Argon2id 派生 AES key，以便后续同步免输入；绝不保存原始同步密码。日常同步复用远端 Vault 的随机 KDF salt 并更新 AES-GCM nonce；只有修改同步密码时才轮换 salt 和派生 key。其他已配置设备在改密后需要关闭本机同步绑定，再使用新密码重新连接并导入云端副本。该文件不使用系统凭据库；不得写入日志、远端片段、`vault.json` 或浏览器持久化存储。关闭同步或删除远端数据会删除该文件。
+- 本地唯一业务文件为 `<程序目录>/data/vault.json`，其业务 JSON 使用 AES-256-GCM 加密；`vault.json.bak`、临时文件和冲突中的本地快照必须使用相同保护。
+- 首次创建 Vault 时生成随机本地数据密钥，保存到 Windows Credential Manager 或 macOS Keychain。不得创建可复制的 `local.key`，也不得在缺失密钥时覆盖既有加密 Vault。
+- 启用云同步后，用户输入 Token 与同步密码；应用对完整 Vault JSON 执行 Argon2id 密钥派生和 AES-256-GCM 整体加密，再上传 GitHub Gist/Gitee 私有片段。
+- Token 和 Base64 编码的派生同步密钥以固定账户名保存于系统凭据管理器：`sync-v1:token` 与 `sync-v1:derived-key`。应用仅支持一个同步绑定，重复同步覆盖固定账户；关闭同步或删除远端库会清除这两项同步凭据。`data/sync.json` 只保存 provider、远端绑定、同步基线、设备 ID 和自动同步开关；状态接口及前端不得返回、缓存或传递 Token。
+- 同步密码仅用于首次绑定、重新验证和轮换，不影响本地 SSH 凭证、不会上传或持久化且不可找回。日常同步复用远端 Vault 的随机 KDF salt 并更新 AES-GCM nonce；只有修改同步密码时才轮换 salt 和派生 key。
 - 同步期间 Argon2id 每次用户输入密码后仅派生一次密钥；不得在每次 SSH 连接或读取配置时重复派生。
-- 完整设计见 [db.md](db.md) 和 [cloud-sync.md](cloud-sync.md)。
+- Windows 与 macOS 上的 `local_security` 平台条件单元测试会使用随机临时账户验证真实 Credential Manager/Keychain 的写入、读回、删除，以及读回密钥的 AES-256-GCM 加解密；不要把它改成固定应用账户。
+- 新项目不支持明文 Vault 或旧的含凭据 `sync.json`。完整设计见 [db.md](db.md) 和 [config-security-sync.md](config-security-sync.md)。
 
 ---
 

@@ -106,7 +106,6 @@ type SyncStatus = {
   state: string
   lastSyncedAt: string | null
   deviceId: string | null
-  token: string | null
   autoSync: boolean
   localVaultRevision: number | null
   lastSyncedVaultRevision: number | null
@@ -190,10 +189,10 @@ async function loadSyncStatus() {
 }
 
 async function checkRemoteSyncStatus() {
-  if (!syncStatus.value?.token || remoteSyncLoading.value) return
+  if (!syncStatus.value?.configured || remoteSyncLoading.value) return
   remoteSyncLoading.value = true
   try {
-    remoteSyncStatus.value = await invoke<RemoteSyncStatus>('check_remote_sync_status', { token: syncStatus.value.token })
+    remoteSyncStatus.value = await invoke<RemoteSyncStatus>('check_remote_sync_status')
   } catch (reason) {
     remoteSyncStatus.value = null
     syncError.value = formatQuickSyncError(reason)
@@ -215,7 +214,7 @@ async function handleSyncPopoverShow(visible: boolean) {
 }
 
 async function syncNow(automatic = false) {
-  if (!syncStatus.value?.token || syncLoading.value) return
+  if (!syncStatus.value?.configured || syncLoading.value) return
   syncError.value = null
   syncNotice.value = null
   syncLoading.value = true
@@ -224,13 +223,13 @@ async function syncNow(automatic = false) {
     autoSyncState.value = 'syncing'
   }
   try {
-    const download = await invoke<SyncOperationResult>('download_sync_vault', { token: syncStatus.value.token })
+    const download = await invoke<SyncOperationResult>('download_sync_vault')
     syncStatus.value = download.sync
     if (download.status === 'downloaded') {
       await vaultStore.refreshAfterSync()
       syncNotice.value = t('sync.downloaded')
     } else {
-      const upload = await invoke<SyncOperationResult>('upload_sync_vault', { token: syncStatus.value.token })
+      const upload = await invoke<SyncOperationResult>('upload_sync_vault')
       syncStatus.value = upload.sync
       syncNotice.value = upload.status === 'uploaded' ? t('sync.uploaded') : t('sync.upToDate')
     }
@@ -1089,9 +1088,7 @@ function handleUnhandledRejection(event: PromiseRejectionEvent) {
 window.addEventListener('error', handleWindowError)
 window.addEventListener('unhandledrejection', handleUnhandledRejection)
 
-function setSettingsVisibility(show: boolean) {
-  showSettings.value = show
-}
+
 
 function selectSettingsSection(section: 'terminal' | 'ai' | 'sync' | 'system') {
   settingsSection.value = section
@@ -1548,12 +1545,13 @@ function openSyncSettings() {
         <n-modal
           v-model:show="showSettings"
           :mask-closable="false"
-          @update:show="setSettingsVisibility"
+          :trap-focus="false"
+          :auto-focus="false"
         >
           <section class="settings-window" :class="{ 'theme-dark': isDarkTheme }" role="dialog" aria-modal="true" :aria-label="t('settings.title')">
             <header class="settings-titlebar">
               <h2>{{ t('settings.title') }}</h2>
-              <button class="settings-close" :aria-label="t('settings.close')" @click="setSettingsVisibility(false)"><X :size="18" /></button>
+              <button class="settings-close" :aria-label="t('settings.close')" @click="showSettings = false"><X :size="18" /></button>
             </header>
             <div class="settings-body">
               <nav class="settings-nav" :aria-label="t('settings.categories')">

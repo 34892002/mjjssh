@@ -89,6 +89,8 @@ pub async fn trust_host_key(
         .known_hosts
         .lock()
         .await
+        .as_mut()
+        .map_err(|error| error.clone())?
         .trust(&host, port, algorithm, fingerprint)
         .map_err(|error| format!("无法保存主机指纹: {error}"))
 }
@@ -113,6 +115,8 @@ pub async fn connect_ssh(
         .known_hosts
         .lock()
         .await
+        .as_ref()
+        .map_err(Clone::clone)?
         .get(&profile.host, profile.port)
         .cloned();
     let expected_host_key = trusted_host_key.map(|trusted_key| crate::ssh::ExpectedHostKey {

@@ -70,18 +70,18 @@ async fn synchronizes_two_local_vaults_and_detects_conflicts() {
         assert_eq!(second.list_profiles()?.len(), 1);
 
         second.create_profile(&profile("second-host"))?;
-        second_service.upload(&token).await?;
-        first_service.download(&token).await?;
+        second_service.upload().await?;
+        first_service.download().await?;
         assert_eq!(first.list_profiles()?.len(), 2);
 
         first.create_profile(&profile("first-conflict"))?;
         second.create_profile(&profile("second-conflict"))?;
-        second_service.upload(&token).await?;
+        second_service.upload().await?;
         assert!(matches!(
-            first_service.download(&token).await,
+            first_service.download().await,
             Err(SyncServiceError::Conflict)
         ));
-        first_service.resolve_accept_remote(&token).await?;
+        first_service.resolve_accept_remote().await?;
         assert_eq!(first.list_profiles()?.len(), 3);
         assert_eq!(
             fs::read_dir(first_directory.join("sync-conflicts"))
@@ -91,7 +91,7 @@ async fn synchronizes_two_local_vaults_and_detects_conflicts() {
         );
 
         first_service
-            .change_password(&token, TEST_PASSWORD.into(), UPDATED_TEST_PASSWORD.into())
+            .change_password(TEST_PASSWORD.into(), UPDATED_TEST_PASSWORD.into())
             .await?;
         second_service.disable()?;
         second_service
@@ -105,12 +105,12 @@ async fn synchronizes_two_local_vaults_and_detects_conflicts() {
 
         first.create_profile(&profile("first-keep-local"))?;
         second.create_profile(&profile("second-keep-remote"))?;
-        second_service.upload(&token).await?;
+        second_service.upload().await?;
         assert!(matches!(
-            first_service.download(&token).await,
+            first_service.download().await,
             Err(SyncServiceError::Conflict)
         ));
-        first_service.resolve_keep_local(&token).await?;
+        first_service.resolve_keep_local().await?;
         assert_eq!(first.list_profiles()?.len(), 4);
         assert_eq!(
             fs::read_dir(first_directory.join("sync-conflicts"))
@@ -119,7 +119,7 @@ async fn synchronizes_two_local_vaults_and_detects_conflicts() {
             4
         );
 
-        second_service.resolve_accept_remote(&token).await?;
+        second_service.resolve_accept_remote().await?;
         assert_eq!(second.list_profiles()?.len(), 4);
         assert!(second
             .list_profiles()?

@@ -25,7 +25,7 @@ pub struct AppState {
     pub sessions: Arc<SessionManager>,
     pub local_terminals: Arc<LocalTerminalManager>,
     pub pending_ssh_connections: Arc<Mutex<HashMap<String, CancellationToken>>>,
-    pub known_hosts: Arc<Mutex<KnownHosts>>,
+    pub known_hosts: Arc<Mutex<Result<KnownHosts, String>>>,
     pub ai_tasks: AiTaskManager,
     pub risk_confirmations: RiskConfirmationStore,
     pub ssh_safety_contexts: Arc<Mutex<HashMap<String, SshSafetyContext>>>,
@@ -41,7 +41,8 @@ impl AppState {
             local_terminals: Arc::new(LocalTerminalManager::default()),
             pending_ssh_connections: Arc::new(Mutex::new(HashMap::new())),
             known_hosts: Arc::new(Mutex::new(
-                KnownHosts::open(app_dir.clone()).expect("Failed to open known_hosts"),
+                KnownHosts::open(app_dir.clone())
+                    .map_err(|error| format!("无法读取本地主机信任记录: {error}")),
             )),
             ai_tasks: AiTaskManager::default(),
             risk_confirmations: RiskConfirmationStore::default(),
@@ -50,11 +51,18 @@ impl AppState {
         }
     }
 
-    /// 打开或创建本地 JSON Vault。日常本地使用不要求密码。
+    /// 打开或创建本地加密 Vault。日常本地使用不要求用户输入密码。
     pub async fn auto_open(&self) -> Result<(), VaultError> {
-        let vault = Vault::open(&self.app_dir)?;
-        *self.vault.lock().await = Some(vault);
-        Ok(())
+        match Vault::open(&self.app_dir) {
+            Ok(vault) => {
+                *self.vault.lock().await = Some(vault);
+                Ok(())
+            }
+            Err(error) => {
+                crate::diagnostics::log::event("vault", "open_failed", error.to_string());
+                Err(error)
+            }
+        }
     }
 
     pub async fn is_unlocked(&self) -> bool {

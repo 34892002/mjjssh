@@ -6,6 +6,11 @@ use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 
+use crate::local_security::{
+    create_local_vault_key, decrypt_vault, encrypt_vault, existing_local_vault_key,
+    LocalEncryptedVault, LocalSecurityError,
+};
+
 use super::models::{
     AiAgentConfig, AiModelConfig, AiProviderConfigSecret, AiProviderConfigView, AuthType,
     CreateKeyRequest, CreateProfileRequest, CreateScriptRequest, DecryptedCredential,
@@ -32,6 +37,10 @@ pub enum VaultError {
     NotInitialized,
     #[error("Vault storage error: {0}")]
     Storage(String),
+    #[error("Vault local encryption error: {0}")]
+    LocalSecurity(#[from] LocalSecurityError),
+    #[error("Vault encryption key is unavailable in the system credential store")]
+    LocalKeyUnavailable,
     #[error("Vault file is invalid: {0}")]
     InvalidFormat(String),
     #[error("Profile not found: {0}")]
@@ -104,6 +113,7 @@ pub struct VaultSyncSnapshot {
 
 pub struct Vault {
     path: PathBuf,
+    local_key: [u8; crate::local_security::LOCAL_KEY_LENGTH],
     document: Mutex<VaultDocument>,
 }
 
@@ -111,40 +121,49 @@ impl Vault {
     pub fn open(app_dir: &Path) -> Result<Self, VaultError> {
         fs::create_dir_all(app_dir).map_err(io_error)?;
         let path = app_dir.join(VAULT_FILE_NAME);
+        let key = if path.exists() {
+            existing_local_vault_key()?.ok_or(VaultError::LocalKeyUnavailable)?
+        } else {
+            create_local_vault_key()?
+        };
+        Self::open_with_key(app_dir, key)
+    }
+
+    fn open_with_key(
+        app_dir: &Path,
+        local_key: [u8; crate::local_security::LOCAL_KEY_LENGTH],
+    ) -> Result<Self, VaultError> {
+        fs::create_dir_all(app_dir).map_err(io_error)?;
+        let path = app_dir.join(VAULT_FILE_NAME);
         let document = if path.exists() {
-            match Self::load_document(&path)
-                .and_then(Self::migrate_document)
-                .and_then(|document| {
-                    Self::validate_document(&document)?;
-                    Ok(document)
-                }) {
+            match Self::load_document(&path, &local_key) {
                 Ok(document) => document,
                 Err(primary_error) => {
                     let backup = app_dir.join(BACKUP_FILE_NAME);
                     if !backup.exists() {
                         return Err(primary_error);
                     }
-                    let document = Self::load_document(&backup)
-                        .and_then(Self::migrate_document)
-                        .and_then(|document| {
-                            Self::validate_document(&document)?;
-                            Ok(document)
-                        })?;
-                    fs::remove_file(&path).map_err(io_error)?;
-                    Self::write_document(&path, &document)?;
+                    let document = Self::load_document(&backup, &local_key)?;
+                    Self::write_document(&path, &document, &local_key)?;
                     document
                 }
             }
         } else {
             let document = Self::new_document();
-            Self::write_document(&path, &document)?;
+            Self::write_document(&path, &document, &local_key)?;
             document
         };
         Self::validate_document(&document)?;
         Ok(Self {
             path,
+            local_key,
             document: Mutex::new(document),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn open_for_test(app_dir: &Path) -> Result<Self, VaultError> {
+        Self::open_with_key(app_dir, [7_u8; crate::local_security::LOCAL_KEY_LENGTH])
     }
 
     fn new_document() -> VaultDocument {
@@ -170,23 +189,19 @@ impl Vault {
         }
     }
 
-    fn load_document(path: &Path) -> Result<VaultDocument, VaultError> {
-        let content = fs::read_to_string(path).map_err(io_error)?;
-        serde_json::from_str(&content).map_err(|error| VaultError::InvalidFormat(error.to_string()))
-    }
-
-    fn migrate_document(mut document: VaultDocument) -> Result<VaultDocument, VaultError> {
-        match document.format_version {
-            1 => {
-                document.format_version = FORMAT_VERSION;
-                document.scripts = Vec::new();
-                Ok(document)
-            }
-            FORMAT_VERSION => Ok(document),
-            version => Err(VaultError::InvalidFormat(format!(
-                "unsupported formatVersion: {version}"
-            ))),
-        }
+    fn load_document(
+        path: &Path,
+        key: &[u8; crate::local_security::LOCAL_KEY_LENGTH],
+    ) -> Result<VaultDocument, VaultError> {
+        let content = fs::read(path).map_err(io_error)?;
+        let envelope: LocalEncryptedVault = serde_json::from_slice(&content).map_err(|_| {
+            VaultError::InvalidFormat("expected an encrypted local Vault envelope".into())
+        })?;
+        let plaintext = decrypt_vault(&envelope, key)?;
+        let document: VaultDocument = serde_json::from_slice(&plaintext)
+            .map_err(|error| VaultError::InvalidFormat(error.to_string()))?;
+        Self::validate_document(&document)?;
+        Ok(document)
     }
 
     fn validate_document(document: &VaultDocument) -> Result<(), VaultError> {
@@ -259,7 +274,7 @@ impl Vault {
         next.revision = next.revision.saturating_add(1);
         next.updated_at = now();
         Self::validate_document(&next)?;
-        Self::write_document(&self.path, &next)?;
+        Self::write_document(&self.path, &next, &self.local_key)?;
         *document = next;
         Ok(result)
     }
@@ -275,8 +290,15 @@ impl Vault {
         operation(&document)
     }
 
-    fn write_document(path: &Path, document: &VaultDocument) -> Result<(), VaultError> {
-        let serialized = serde_json::to_vec_pretty(document)
+    fn write_document(
+        path: &Path,
+        document: &VaultDocument,
+        key: &[u8; crate::local_security::LOCAL_KEY_LENGTH],
+    ) -> Result<(), VaultError> {
+        let serialized =
+            serde_json::to_vec(document).map_err(|error| VaultError::Storage(error.to_string()))?;
+        let envelope = encrypt_vault(&serialized, key)?;
+        let serialized = serde_json::to_vec_pretty(&envelope)
             .map_err(|error| VaultError::Storage(error.to_string()))?;
         let file_name = path
             .file_name()
@@ -318,9 +340,8 @@ impl Vault {
     pub fn replace_from_sync(&self, content: &[u8]) -> Result<(), VaultError> {
         let document: VaultDocument = serde_json::from_slice(content)
             .map_err(|error| VaultError::InvalidFormat(error.to_string()))?;
-        let document = Self::migrate_document(document)?;
         Self::validate_document(&document)?;
-        Self::write_document(&self.path, &document)?;
+        Self::write_document(&self.path, &document, &self.local_key)?;
         let mut current = self
             .document
             .lock()
@@ -332,7 +353,7 @@ impl Vault {
     pub fn list_scripts(&self) -> Result<Vec<Script>, VaultError> {
         self.read(|document| {
             let mut scripts = document.scripts.clone();
-            scripts.sort_by(|left, right| left.name.to_lowercase().cmp(&right.name.to_lowercase()));
+            scripts.sort_by_key(|script| script.name.to_lowercase());
             Ok(scripts)
         })
     }
@@ -1138,9 +1159,9 @@ mod tests {
     }
 
     #[test]
-    fn creates_persists_and_recovers_json_vault() {
+    fn creates_persists_and_recovers_encrypted_vault() {
         let directory = test_dir();
-        let vault = Vault::open(&directory).unwrap();
+        let vault = Vault::open_for_test(&directory).unwrap();
         let key = vault
             .create_key(&CreateKeyRequest {
                 name: "Production".into(),
@@ -1175,7 +1196,10 @@ mod tests {
         );
         drop(vault);
 
-        let reopened = Vault::open(&directory).unwrap();
+        let persisted = fs::read_to_string(directory.join(VAULT_FILE_NAME)).unwrap();
+        assert!(!persisted.contains("private-key"));
+        assert!(persisted.contains("\"ciphertext\""));
+        let reopened = Vault::open_for_test(&directory).unwrap();
         assert_eq!(reopened.list_profiles().unwrap().len(), 1);
         assert!(directory.join(VAULT_FILE_NAME).exists());
         assert!(directory.join(BACKUP_FILE_NAME).exists());
@@ -1185,7 +1209,7 @@ mod tests {
     #[test]
     fn recovers_from_backup_when_primary_file_is_invalid() {
         let directory = test_dir();
-        let vault = Vault::open(&directory).unwrap();
+        let vault = Vault::open_for_test(&directory).unwrap();
         vault
             .create_key(&CreateKeyRequest {
                 name: "Key".into(),
@@ -1205,7 +1229,7 @@ mod tests {
         drop(vault);
 
         fs::write(directory.join(VAULT_FILE_NAME), "not valid JSON").unwrap();
-        let recovered = Vault::open(&directory).unwrap();
+        let recovered = Vault::open_for_test(&directory).unwrap();
         assert_eq!(recovered.list_keys().unwrap().len(), 1);
         fs::remove_dir_all(directory).unwrap();
     }
@@ -1213,7 +1237,7 @@ mod tests {
     #[test]
     fn persists_two_hundred_profiles_with_a_shared_key() {
         let directory = test_dir();
-        let vault = Vault::open(&directory).unwrap();
+        let vault = Vault::open_for_test(&directory).unwrap();
         let key = vault
             .create_key(&CreateKeyRequest {
                 name: "Shared key".into(),
@@ -1242,7 +1266,7 @@ mod tests {
         }
         drop(vault);
 
-        let reopened = Vault::open(&directory).unwrap();
+        let reopened = Vault::open_for_test(&directory).unwrap();
         let profiles = reopened.list_profiles().unwrap();
         assert_eq!(profiles.len(), 200);
         assert!(profiles
@@ -1252,32 +1276,16 @@ mod tests {
     }
 
     #[test]
-    fn migrates_v1_vault_and_preserves_scripts_through_sync() {
+    fn rejects_plaintext_vault_files() {
         let directory = test_dir();
-        let vault_id = uuid::Uuid::new_v4();
         fs::create_dir_all(&directory).unwrap();
-        fs::write(
-            directory.join(VAULT_FILE_NAME),
-            format!(
-                r#"{{"formatVersion":1,"vaultId":"{vault_id}","revision":1,"updatedAt":"2026-01-01T00:00:00Z","profiles":[],"sshKeys":[],"aiAgents":[],"aiExecutableGrants":[]}}"#
-            ),
-        )
-        .unwrap();
-        let vault = Vault::open(&directory).unwrap();
-        assert!(vault.list_scripts().unwrap().is_empty());
-        let script = vault
-            .create_script(&CreateScriptRequest {
-                name: "Disk usage".into(),
-                description: None,
-                tags: vec!["system".into()],
-                command: "df -h".into(),
-                risk_level: super::super::models::ScriptRiskLevel::Low,
-            })
-            .unwrap();
-        let snapshot = vault.sync_snapshot().unwrap();
-        assert!(String::from_utf8(snapshot.content)
-            .unwrap()
-            .contains(&script.id));
+        fs::write(directory.join(VAULT_FILE_NAME), b"{\"formatVersion\":2}").unwrap();
+
+        assert!(matches!(
+            Vault::open_for_test(&directory),
+            Err(VaultError::InvalidFormat(_))
+        ));
+
         fs::remove_dir_all(directory).unwrap();
     }
 

@@ -3,6 +3,7 @@
 pub mod ai;
 mod commands;
 pub mod diagnostics;
+mod local_security;
 mod local_terminal;
 mod ssh;
 mod state;

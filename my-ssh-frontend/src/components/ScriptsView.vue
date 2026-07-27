@@ -20,10 +20,12 @@ import {
 } from 'naive-ui'
 import { useLocale } from '../composables/useLocale'
 import { useScriptStore } from '../stores/scripts'
+import { useVaultStore } from '../stores/vault'
 
 import type { CreateScriptRequest, ScriptRiskLevel, ScriptView, SubscriptionScriptView } from '../types'
 
 const scriptStore = useScriptStore()
+const vaultStore = useVaultStore()
 const { t } = useLocale()
 
 const activeTab = ref<'all' | 'local' | 'subscriptions'>('all')
@@ -86,6 +88,7 @@ async function loadAllSubscriptionScripts() {
 }
 
 onMounted(async () => {
+  if (!vaultStore.isReady) return
   await Promise.all([scriptStore.loadScripts(), scriptStore.loadSubscriptions()])
   await loadAllSubscriptionScripts()
 })
@@ -225,7 +228,11 @@ function tagType(level: ScriptRiskLevel) {
       {{ scriptStore.error }}
     </n-alert>
 
-    <n-tabs v-model:value="activeTab" type="line" animated>
+    <n-alert v-if="!vaultStore.isReady && vaultStore.error" type="error" :show-icon="false">
+      {{ vaultStore.error }}
+    </n-alert>
+
+    <n-tabs v-else v-model:value="activeTab" type="line" animated>
       <n-tab-pane name="all" :tab="t('scripts.all')">
         <div class="script-toolbar">
           <n-input v-model:value="allSearch" clearable :placeholder="t('scripts.search')">

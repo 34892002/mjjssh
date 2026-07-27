@@ -20,12 +20,15 @@ export const useVaultStore = defineStore('vault', () => {
 
   /// 初始化 vault，并只加载主机首页需要的数据
   async function init() {
+    error.value = null
     try {
       await invoke('init_vault')
       isReady.value = true
       await loadProfiles()
     } catch (e) {
-      error.value = String(e)
+      isReady.value = false
+      profiles.value = []
+      error.value = `无法打开本地配置：${String(e)}`
     }
   }
 

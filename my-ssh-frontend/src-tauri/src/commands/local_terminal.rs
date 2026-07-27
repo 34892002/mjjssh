@@ -42,9 +42,6 @@ pub fn resize_local_terminal(
 }
 
 #[tauri::command]
-pub fn close_local_terminal(
-    state: State<'_, AppState>,
-    session_id: String,
-) -> Result<(), String> {
+pub fn close_local_terminal(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
     state.local_terminals.close(&session_id)
 }

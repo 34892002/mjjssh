@@ -8,7 +8,6 @@ import {
   NFormItem,
   NInput,
   NInputNumber,
-  NModal,
   useMessage,
   useThemeVars,
   NPopconfirm,
@@ -38,14 +37,7 @@ const modalThemeStyle = computed(() => ({
   '--app-selection': themeVars.value.pressedColor,
   '--app-shadow': themeVars.value.boxShadow2,
 }))
-const discoveredModelsModalStyle = computed(() => ({
-  ...modalThemeStyle.value,
-  width: 'min(520px, calc(100vw - 32px))',
-}))
-const modelEditorModalStyle = computed(() => ({
-  ...modalThemeStyle.value,
-  width: 'min(680px, calc(100vw - 32px))',
-}))
+
 const activeTab = ref('provider')
 const configForm = ref({ baseUrl: '', apiKey: '', model: '', models: [] as AiModelConfig[], activeModelId: null as string | null, timeoutSeconds: 60 })
 const editingModel = ref<AiModelConfig | null>(null)
@@ -54,9 +46,7 @@ const modelForm = ref<AiModelConfig>(createModel())
 const savingConfig = ref(false)
 const testingConnection = ref(false)
 const discoveringModels = ref(false)
-const showDiscoveredModels = ref(false)
-const discoveredModelIds = ref<string[]>([])
-const pendingDiscoveredModelIds = ref<string[]>([])
+
 const connectionTest = ref<AiConnectionTestResult | null>(null)
 const editingAgent = ref<AiAgentConfig | null>(null)
 const showAgentEditor = ref(false)
@@ -66,9 +56,7 @@ const configured = computed(() => aiStore.config.configured)
 const providerOptions = [{ label: 'OpenAI-compatible', value: 'openai_compatible' }]
 const activeModel = computed(() => configForm.value.models.find((model) => model.id === configForm.value.activeModelId) ?? null)
 
-const discoveredModelOptions = computed(() => discoveredModelIds.value
-  .filter((id) => !configForm.value.models.some((model) => model.id === id))
-  .map((id) => ({ label: id, value: id })))
+
 
 function createModel(): AiModelConfig {
   return {
@@ -102,17 +90,7 @@ function selectModel(modelId: string | null) {
   configForm.value.model = model?.name ?? ''
 }
 
-function closeDiscoveredModels() {
-  pendingDiscoveredModelIds.value = []
-  showDiscoveredModels.value = false
-}
 
-function insertDiscoveredModels() {
-  const addedModels = pendingDiscoveredModelIds.value.map((id) => ({ ...createModel(), id, name: id }))
-  configForm.value.models.push(...addedModels)
-  if (!configForm.value.activeModelId && addedModels[0]) selectModel(addedModels[0].id)
-  closeDiscoveredModels()
-}
 
 async function discoverModels() {
   if (discoveringModels.value) return
@@ -133,13 +111,17 @@ async function discoverModels() {
       apiKey: configForm.value.apiKey,
       timeoutSeconds: configForm.value.timeoutSeconds,
     })
-    discoveredModelIds.value = models
-    if (!models.length) {
-      message.warning('该 API 未返回可用模型')
+    const existingModelIds = new Set(configForm.value.models.map((model) => model.id))
+    const addedModels = models
+      .filter((id) => !existingModelIds.has(id))
+      .map((id) => ({ ...createModel(), id, name: id }))
+    if (!addedModels.length) {
+      message.warning(models.length ? '接口返回的模型均已在列表中' : '该 API 未返回可用模型')
       return
     }
-    pendingDiscoveredModelIds.value = []
-    showDiscoveredModels.value = true
+    configForm.value.models.push(...addedModels)
+    if (!configForm.value.activeModelId) selectModel(addedModels[0].id)
+    message.success(`已添加 ${addedModels.length} 个模型`)
   } finally {
     discoveringModels.value = false
   }
@@ -163,9 +145,7 @@ function closeModelEditor() {
   showModelEditor.value = false
 }
 
-function handleModelEditorVisibility(show: boolean) {
-  if (!show) closeModelEditor()
-}
+
 
 function saveModel() {
   const model = { ...modelForm.value, id: modelForm.value.id.trim(), name: modelForm.value.name.trim() }
@@ -318,30 +298,8 @@ async function deleteAgent(agent: AiAgentConfig) {
             <p v-else class="model-empty">尚未添加模型。</p>
           </section>
 
-          <n-modal
-            v-model:show="showDiscoveredModels"
-            preset="card"
-            title="获取模型列表"
-            class="discovered-models-dialog"
-            :style="discoveredModelsModalStyle"
-            :mask-closable="false"
-            @update:show="(show) => { if (!show) closeDiscoveredModels() }"
-          >
-            <n-select v-model:value="pendingDiscoveredModelIds" :options="discoveredModelOptions" multiple filterable placeholder="搜索并选择接口返回的模型" />
-            <p class="model-selection-hint">已选择 {{ pendingDiscoveredModelIds.length }} 个模型。</p>
-            <div class="provider-actions"><n-button type="primary" :disabled="!pendingDiscoveredModelIds.length" @click="insertDiscoveredModels">插入</n-button><n-button @click="closeDiscoveredModels">取消</n-button></div>
-          </n-modal>
-
-          <n-modal
-            v-model:show="showModelEditor"
-            preset="card"
-            :title="editingModel ? '编辑模型' : '添加模型'"
-            class="model-editor"
-            :style="modelEditorModalStyle"
-            :mask-closable="false"
-            @update:show="handleModelEditorVisibility"
-          >
-            <form @submit.prevent="saveModel">
+          <form v-if="showModelEditor" class="model-editor" @submit.prevent="saveModel">
+            <h4>{{ editingModel ? '编辑模型' : '添加模型' }}</h4>
               <n-form label-placement="top" size="small">
                 <div class="model-form-grid"><n-form-item label="模型 ID"><n-input v-model:value="modelForm.id" maxlength="160" placeholder="例如 gpt-4.1-mini" required /></n-form-item><n-form-item label="显示名称"><n-input v-model:value="modelForm.name" maxlength="80" placeholder="例如 GPT-4.1 Mini" required /></n-form-item></div>
                 <div class="model-form-grid"><n-form-item label="最大上下文 Token"><n-input-number v-model:value="modelForm.maxContextTokens" :min="1" :precision="0" /></n-form-item><n-form-item label="最大输出 Token"><n-input-number v-model:value="modelForm.maxOutputTokens" :min="1" :precision="0" /></n-form-item></div>
@@ -350,8 +308,7 @@ async function deleteAgent(agent: AiAgentConfig) {
                 <div class="capability-grid"><label><span>工具调用</span><n-switch v-model:value="modelForm.supportsTools" /></label><label><span>图片输入</span><n-switch v-model:value="modelForm.supportsImages" /></label><label><span>并行工具调用</span><n-switch v-model:value="modelForm.supportsParallelToolCalls" :disabled="!modelForm.supportsTools" /></label><label><span>提示词缓存</span><n-switch v-model:value="modelForm.supportsPromptCaching" /></label><label><span>推理</span><n-switch v-model:value="modelForm.supportsReasoning" /></label></div>
               </n-form>
               <div class="provider-actions"><n-button type="primary" attr-type="submit">保存模型</n-button><n-button @click="closeModelEditor">取消</n-button></div>
-            </form>
-          </n-modal>
+          </form>
 
           <div class="provider-actions">
             <n-button type="primary" :loading="savingConfig" @click="saveConfig">保存配置</n-button>
@@ -399,6 +356,5 @@ async function deleteAgent(agent: AiAgentConfig) {
 .ai-tabs :deep(.n-tabs-tab__label) { display: grid; width: 100%; height: 100%; cursor: pointer; place-items: center; }
 .tab-section h3 { margin: 0 0 6px; color: var(--app-text); font-size: 15px; }.section-description, .privacy-notice { margin: 0 0 16px; color: var(--app-muted); font-size: 12px; line-height: 1.6; }.settings-card { border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-surface); overflow: hidden; }.settings-row { display: flex; align-items: center; justify-content: space-between; min-height: 82px; gap: 28px; padding: 14px 16px; border-bottom: 1px solid var(--app-border); }.settings-row:last-child { border-bottom: 0; }.row-description { min-width: 0; }.row-description strong { color: var(--app-text); font-size: 13px; }.row-description p { margin: 5px 0 0; color: var(--app-muted); font-size: 12px; line-height: 1.45; }.row-control { width: min(310px, 48%); flex: 0 0 auto; }.timeout-control { width: 132px; flex: 0 0 auto; }.settings-card :deep(.n-input), .settings-card :deep(.n-input-number), .settings-card :deep(.n-base-selection), .agent-editor :deep(.n-input) { --n-color: var(--app-base) !important; --n-color-focus: var(--app-base) !important; --n-border: 1px solid var(--app-border) !important; --n-border-focus: 1px solid var(--app-accent) !important; --n-text-color: var(--app-text) !important; --n-placeholder-color: var(--app-muted) !important; }.settings-card :deep(.n-input-wrapper), .settings-card :deep(.n-input-number-input), .settings-card :deep(.n-base-selection-label) { background: var(--app-base) !important; }.provider-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 16px; }.configured-status { color: #35b887; font-size: 12px; }.connection-test-result { margin: 10px 0 0; font-size: 12px; }.connection-test-result.success { color: #35b887; }.connection-test-result.authentication_failed, .connection-test-result.model_unavailable, .connection-test-result.rate_limited, .connection-test-result.service_unavailable, .connection-test-result.timeout, .connection-test-result.network_error { color: #d9973f; }.privacy-notice { margin-top: 14px; }.agent-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }.agent-heading .section-description { margin-bottom: 18px; }.agent-list { display: flex; flex-direction: column; gap: 8px; }.agent-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface); }.agent-card.selected { border-color: var(--app-accent); }.agent-card-main { display: flex; align-items: center; gap: 10px; }.agent-card-main svg { color: var(--app-accent); }.agent-card p { margin: 3px 0 0; color: var(--app-muted); font-size: 11px; }.agent-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }.agent-editor { margin-top: 16px; padding: 18px; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-surface); }.agent-editor h4 { margin: 0 0 14px; color: var(--app-text); }.agent-editor :deep(.n-form-item-label) { color: var(--app-muted) !important; }.coming-soon { display: flex; min-height: 180px; flex-direction: column; align-items: center; justify-content: center; padding: 20px; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-surface); color: var(--app-text); text-align: center; }.coming-soon svg { margin-bottom: 10px; color: var(--app-accent); }.coming-soon p { margin: 7px 0 0; color: var(--app-muted); font-size: 12px; }
 @media (max-width: 620px) { .ai-tabs :deep(.n-tabs-tab) { min-width: auto; padding: 7px 10px; }.settings-row, .model-card { align-items: stretch; flex-direction: column; gap: 12px; }.row-control { width: 100%; }.timeout-control { width: 100%; }.model-actions { justify-content: flex-start; }.model-form-grid, .capability-grid { grid-template-columns: 1fr; } }
-.model-section { margin-top: 20px; }.model-section h4 { margin: 0 0 6px; color: var(--app-text); font-size: 14px; }.model-list { display: flex; flex-direction: column; gap: 8px; }.model-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface); }.model-card.selected { border-color: var(--app-accent); }.model-card-main { display: flex; min-width: 0; align-items: center; gap: 10px; }.model-card-main svg { flex: 0 0 auto; color: var(--app-accent); }.model-card-main strong { color: var(--app-text); font-size: 13px; }.model-card-main p, .model-empty { margin: 3px 0 0; color: var(--app-muted); font-size: 11px; }.model-card-main code { color: inherit; }.model-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }.discovered-models-dialog, .model-editor { width: min(680px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; padding: 20px; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface); box-shadow: 0 12px 30px var(--app-shadow); }.discovered-models-dialog { width: min(520px, calc(100vw - 32px)); }.discovered-models-dialog h4, .model-editor h4 { margin: 0 0 16px; color: var(--app-text); font-size: 16px; }.discovered-models-dialog :deep(.n-base-selection), .model-editor :deep(.n-input), .model-editor :deep(.n-input-number), .model-editor :deep(.n-base-selection) { --n-color: var(--app-base) !important; --n-color-focus: var(--app-base) !important; --n-border: 1px solid var(--app-border) !important; --n-border-focus: 1px solid var(--app-accent) !important; --n-text-color: var(--app-text) !important; --n-placeholder-color: var(--app-muted) !important; }.discovered-models-dialog :deep(.n-base-selection-label), .model-editor :deep(.n-input-wrapper), .model-editor :deep(.n-input-number-input), .model-editor :deep(.n-base-selection-label) { background: var(--app-base) !important; }.model-editor :deep(.n-form-item-label) { color: var(--app-muted) !important; }.add-discovered-model { margin-top: 12px; }.pending-model-list { display: flex; flex-direction: column; gap: 6px; margin-top: 16px; }.pending-model-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 36px; padding: 0 8px 0 12px; border: 1px solid var(--app-border); border-radius: 6px; background: var(--app-base); color: var(--app-text); }.pending-model-item code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.model-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }.capability-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }.capability-grid label { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; color: var(--app-text); font-size: 12px; }
-.discovered-models-dialog :deep(.n-base-selection) { --n-color: var(--app-base) !important; --n-color-focus: var(--app-base) !important; --n-border: 1px solid var(--app-border) !important; --n-border-focus: 1px solid var(--app-accent) !important; --n-text-color: var(--app-text) !important; --n-placeholder-color: var(--app-muted) !important; }.discovered-models-dialog :deep(.n-base-selection-label) { background: var(--app-base) !important; }.model-selection-hint { margin: 10px 0 0; color: var(--app-muted); font-size: 12px; }.delete-confirm-text { overflow-wrap: anywhere; }
+.model-section { margin-top: 20px; }.model-section h4 { margin: 0 0 6px; color: var(--app-text); font-size: 14px; }.model-list { display: flex; flex-direction: column; gap: 8px; }.model-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface); }.model-card.selected { border-color: var(--app-accent); }.model-card-main { display: flex; min-width: 0; align-items: center; gap: 10px; }.model-card-main svg { flex: 0 0 auto; color: var(--app-accent); }.model-card-main strong { color: var(--app-text); font-size: 13px; }.model-card-main p, .model-empty { margin: 3px 0 0; color: var(--app-muted); font-size: 11px; }.model-card-main code { color: inherit; }.model-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }.model-editor { margin-top: 16px; padding: 18px; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface); }.model-editor h4 { margin: 0 0 16px; color: var(--app-text); font-size: 16px; }.model-editor :deep(.n-input), .model-editor :deep(.n-input-number), .model-editor :deep(.n-base-selection) { --n-color: var(--app-base) !important; --n-color-focus: var(--app-base) !important; --n-border: 1px solid var(--app-border) !important; --n-border-focus: 1px solid var(--app-accent) !important; --n-text-color: var(--app-text) !important; --n-placeholder-color: var(--app-muted) !important; }.model-editor :deep(.n-input-wrapper), .model-editor :deep(.n-input-number-input), .model-editor :deep(.n-base-selection-label) { background: var(--app-base) !important; }.model-editor :deep(.n-form-item-label) { color: var(--app-muted) !important; }.model-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }.capability-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }.capability-grid label { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; color: var(--app-text); font-size: 12px; }.delete-confirm-text { overflow-wrap: anywhere; }
 </style>

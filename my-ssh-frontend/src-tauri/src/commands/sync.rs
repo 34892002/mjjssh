@@ -52,17 +52,14 @@ pub async fn enable_gitee_snippet_sync(
 }
 
 #[tauri::command]
-pub async fn upload_sync_vault(
-    state: State<'_, AppState>,
-    token: String,
-) -> Result<SyncOperationResult, String> {
+pub async fn upload_sync_vault(state: State<'_, AppState>) -> Result<SyncOperationResult, String> {
     let vault_guard = state.vault.lock().await;
     let vault = vault_guard
         .as_ref()
         .ok_or_else(|| "Vault is not open".to_string())?;
     SyncService::new(vault, &state.app_dir)
         .map_err(|error| error.to_string())?
-        .upload(&token)
+        .upload()
         .await
         .map_err(|error| error.to_string())
 }
@@ -70,7 +67,6 @@ pub async fn upload_sync_vault(
 #[tauri::command]
 pub async fn check_remote_sync_status(
     state: State<'_, AppState>,
-    token: String,
 ) -> Result<RemoteSyncStatus, String> {
     let vault_guard = state.vault.lock().await;
     let vault = vault_guard
@@ -78,7 +74,7 @@ pub async fn check_remote_sync_status(
         .ok_or_else(|| "Vault is not open".to_string())?;
     SyncService::new(vault, &state.app_dir)
         .map_err(|error| error.to_string())?
-        .check_remote_status(&token)
+        .check_remote_status()
         .await
         .map_err(|error| error.to_string())
 }
@@ -101,7 +97,6 @@ pub async fn set_auto_sync(
 #[tauri::command]
 pub async fn update_local_sync_password(
     state: State<'_, AppState>,
-    token: String,
     password: String,
 ) -> Result<SyncStatus, String> {
     let vault_guard = state.vault.lock().await;
@@ -110,7 +105,7 @@ pub async fn update_local_sync_password(
         .ok_or_else(|| "Vault is not open".to_string())?;
     SyncService::new(vault, &state.app_dir)
         .map_err(|error| error.to_string())?
-        .update_local_password(&token, password)
+        .update_local_password(password)
         .await
         .map_err(|error| error.to_string())
 }
@@ -118,7 +113,6 @@ pub async fn update_local_sync_password(
 #[tauri::command]
 pub async fn change_sync_password(
     state: State<'_, AppState>,
-    token: String,
     current_password: String,
     new_password: String,
 ) -> Result<SyncOperationResult, String> {
@@ -128,7 +122,7 @@ pub async fn change_sync_password(
         .ok_or_else(|| "Vault is not open".to_string())?;
     SyncService::new(vault, &state.app_dir)
         .map_err(|error| error.to_string())?
-        .change_password(&token, current_password, new_password)
+        .change_password(current_password, new_password)
         .await
         .map_err(|error| error.to_string())
 }
@@ -136,7 +130,6 @@ pub async fn change_sync_password(
 #[tauri::command]
 pub async fn download_sync_vault(
     state: State<'_, AppState>,
-    token: String,
 ) -> Result<SyncOperationResult, String> {
     let vault_guard = state.vault.lock().await;
     let vault = vault_guard
@@ -144,7 +137,7 @@ pub async fn download_sync_vault(
         .ok_or_else(|| "Vault is not open".to_string())?;
     SyncService::new(vault, &state.app_dir)
         .map_err(|error| error.to_string())?
-        .download(&token)
+        .download()
         .await
         .map_err(|error| error.to_string())
 }
@@ -152,7 +145,6 @@ pub async fn download_sync_vault(
 #[tauri::command]
 pub async fn resolve_sync_conflict(
     state: State<'_, AppState>,
-    token: String,
     resolution: ConflictResolution,
 ) -> Result<SyncOperationResult, String> {
     let vault_guard = state.vault.lock().await;
@@ -161,8 +153,8 @@ pub async fn resolve_sync_conflict(
         .ok_or_else(|| "Vault is not open".to_string())?;
     let service = SyncService::new(vault, &state.app_dir).map_err(|error| error.to_string())?;
     match resolution {
-        ConflictResolution::KeepLocal => service.resolve_keep_local(&token).await,
-        ConflictResolution::AcceptRemote => service.resolve_accept_remote(&token).await,
+        ConflictResolution::KeepLocal => service.resolve_keep_local().await,
+        ConflictResolution::AcceptRemote => service.resolve_accept_remote().await,
     }
     .map_err(|error| error.to_string())
 }
@@ -187,17 +179,14 @@ pub async fn disable_sync(state: State<'_, AppState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn delete_remote_sync_vault(
-    state: State<'_, AppState>,
-    token: String,
-) -> Result<(), String> {
+pub async fn delete_remote_sync_vault(state: State<'_, AppState>) -> Result<(), String> {
     let vault_guard = state.vault.lock().await;
     let vault = vault_guard
         .as_ref()
         .ok_or_else(|| "Vault is not open".to_string())?;
     SyncService::new(vault, &state.app_dir)
         .map_err(|error| error.to_string())?
-        .delete_remote(&token)
+        .delete_remote()
         .await
         .map_err(|error| error.to_string())
 }

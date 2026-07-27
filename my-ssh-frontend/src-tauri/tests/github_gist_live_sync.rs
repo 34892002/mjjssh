@@ -66,15 +66,15 @@ async fn synchronizes_two_local_vaults_and_detects_conflicts() {
         assert_eq!(second.list_profiles()?.len(), 1);
 
         second.create_profile(&profile("second-host"))?;
-        second_service.upload(&token).await?;
-        first_service.download(&token).await?;
+        second_service.upload().await?;
+        first_service.download().await?;
         assert_eq!(first.list_profiles()?.len(), 2);
 
         first.create_profile(&profile("first-conflict"))?;
         second.create_profile(&profile("second-conflict"))?;
-        second_service.upload(&token).await?;
+        second_service.upload().await?;
         assert!(matches!(
-            first_service.download(&token).await,
+            first_service.download().await,
             Err(SyncServiceError::Conflict)
         ));
 

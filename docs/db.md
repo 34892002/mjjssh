@@ -1,15 +1,15 @@
 # MJJSSH Vault 存储设计
 
-> 本文描述当前 JSON Vault 架构。旧 SQLite、`local.key` 和字段级加密格式不提供迁移、导入或兼容路径；完整同步流程见 [cloud-sync.md](cloud-sync.md)。
+> 本文描述当前 JSON Vault 架构。业务 JSON 位于本地 AES-256-GCM 加密信封内，数据密钥与云同步凭据由系统凭据管理器保管；完整安全与同步设计见 [config-security-sync.md](config-security-sync.md)。
 
 ## 1. 存储策略
 
 Vault 的唯一业务数据格式为 JSON，存储位置：`<程序目录>/data/vault.json`。
 
-- 未启用云同步时，本地 Vault 为明文 JSON，首次启动和日常使用均不要求密码。
-- 不使用固定默认密码，不生成或使用 `local.key`，不依赖特定平台的系统密钥库。
-- 启用云同步后，上传至 GitHub Gist 或 Gitee 私有片段的副本使用同步密码整体加密；本地 `vault.json` 仍保持明文。
-- 本地明文 Vault 的安全边界是操作系统账户权限、程序目录权限和磁盘加密。产品界面和文档必须明确此取舍。
+- 本地 `vault.json` 和 `vault.json.bak` 均是 AES-256-GCM 加密信封；首次创建时生成随机 32 字节数据密钥。
+- 本地数据密钥保存于 Windows Credential Manager 或 macOS Keychain，服务名为 `com.mjjssh.app`；不创建可复制的 `local.key` 文件。
+- 启用云同步后，上传至 GitHub Gist 或 Gitee 私有片段的副本继续使用同步密码整体加密。同步 Token 和派生同步密钥只保存于系统凭据管理器，不写入 `sync.json`。
+- 操作系统凭据库可减少离线文件复制、备份泄露和其他用户读取的风险，但不能阻止以当前登录用户身份运行的恶意程序。
 
 本地与云端只有一个业务数据模型，不使用 SQLite 与 JSON 双写，也不使用 JSONL。
 
@@ -18,25 +18,21 @@ Vault 的唯一业务数据格式为 JSON，存储位置：`<程序目录>/data/
 ```json
 {
   "formatVersion": 1,
-  "vaultId": "b9b92c0e-0f4d-4b64-8f1a-53f7d4f56b9e",
-  "revision": 18,
-  "updatedAt": "2026-07-20T12:00:00Z",
-  "profiles": [],
-  "sshKeys": [],
-  "aiProviderConfig": null,
-  "aiAgents": [],
-  "aiExecutableGrants": [],
-  "scripts": []
+  "cipher": "aes-256-gcm",
+  "nonce": "base64...",
+  "ciphertext": "base64..."
 }
 ```
 
-- `formatVersion` 用于文件格式迁移。
-- `vaultId` 是创建 Vault 时生成且不变的 UUID。
+信封明文为当前 `formatVersion: 2` 的业务 JSON，包含 `vaultId`、`revision`、SSH 凭据、私钥和 AI API Key。nonce 为每次写入生成的随机 12 字节值，认证数据固定为本地格式标识。
+
+- 信封 `formatVersion` 为本地加密封装版本，当前为 `1`。
+- 信封内业务 JSON 的 `vaultId` 是创建 Vault 时生成且不变的 UUID。
 - `revision` 每次成功的本地写入递增；同步仅将其作为辅助信息，不能以设备时间决定覆盖顺序。
 - `updatedAt` 使用 RFC3339，仅用于展示和诊断。
-- 当前 `formatVersion` 为 `2`；v1 Vault 会在打开时迁移，新增空的 `scripts` 数组。
+- 新项目不提供明文 Vault、旧业务格式或旧 `sync.json` 的读取与迁移兼容；发现它们应报错而非降级读取。
 
-每次变更都先修改内存模型、执行完整性校验，再写入同目录临时文件并通过原子重命名替换 `vault.json`。替换前保留 `vault.json.bak`，以便从写入中断或文件损坏中恢复。
+每次变更都先修改内存模型、执行完整性校验，再写入同目录加密临时文件并通过原子重命名替换 `vault.json`。替换前保留加密的 `vault.json.bak`，以便从写入中断或文件损坏中恢复。
 
 ## 3. 业务数据模型
 
@@ -50,7 +46,7 @@ Vault 的唯一业务数据格式为 JSON，存储位置：`<程序目录>/data/
 | `port` | number | 是 | SSH 端口，默认 `22` |
 | `username` | string | 是 | 登录用户名 |
 | `authType` | string | 是 | `password` / `key` / `certificate` |
-| `credential` | string / null | 否 | 密码认证的密码；本地明文，仅在云端整体加密 |
+| `credential` | string / null | 否 | 密码认证的密码；包含在本地与云端整体加密的 Vault 中 |
 | `keyId` | string / null | 否 | 引用 `sshKeys[].id` |
 | `groupName` | string / null | 否 | 分组名称 |
 | `icon` | string / null | 否 | 图标标识 |
@@ -67,8 +63,8 @@ Vault 的唯一业务数据格式为 JSON，存储位置：`<程序目录>/data/
 | `id` | string | 是 | UUID |
 | `name` | string | 是 | 密钥名称 |
 | `keyType` | string | 是 | `key` / `certificate` |
-| `privateKey` | string | 是 | 私钥内容；本地明文，仅在云端整体加密 |
-| `certData` | string / null | 否 | SSH 用户证书内容；本地明文，仅在云端整体加密 |
+| `privateKey` | string | 是 | 私钥内容；包含在本地与云端整体加密的 Vault 中 |
+| `certData` | string / null | 否 | SSH 用户证书内容；包含在本地与云端整体加密的 Vault 中 |
 | `createdAt` | string | 是 | RFC3339 |
 | `updatedAt` | string | 是 | RFC3339 |
 
@@ -82,7 +78,7 @@ Vault 的唯一业务数据格式为 JSON，存储位置：`<程序目录>/data/
 - `aiAgents`：Agent 名称、提示词和默认 Agent 标记。
 - `aiExecutableGrants`：确认模式中用户授予的可执行程序权限。
 
-API Key 和 Agent 提示词在本地 JSON 中为明文；同步时和全部 Vault 数据一起加密。AI 操作审计记录、完整终端输出、完整 AI 响应以及应用日志不进入 Vault。
+API Key 和 Agent 提示词位于本地加密 Vault 内；同步时和全部 Vault 数据一起加密。AI 操作审计记录、完整终端输出、完整 AI 响应以及应用日志不进入 Vault。
 
 ## 4. 关联与校验
 
@@ -102,7 +98,7 @@ profiles[].keyId -> sshKeys[].id
 启用云同步后，应用读取本地完整 Vault JSON，使用用户输入的同步密码生成远端密文文件。同步密码是唯一用户密码：它不影响本地使用，不是 GitHub/Gitee 登录密码，也不会上传或持久化。
 
 ```text
-本地 vault.json（明文业务 JSON）
+本地 vault.json（AES-256-GCM 业务信封）
         |
         | 同步密码 + 随机 salt -> Argon2id
         v
@@ -140,8 +136,10 @@ AES-256-GCM 密钥
 
 错误密码与损坏文件在 UI 中统一显示为“同步密码错误或同步数据已损坏”，避免泄露验证细节。同步密码最少 8 个字符，允许空格和长密码短语且不设置上限；忘记后无法恢复旧云端数据。
 
-## 6. 旧文件处理
+## 6. 凭据与旧文件
 
-`<程序目录>/data/local.key` 与 `<程序目录>/data/vault.db` 属于已移除的 SQLite/字段级加密架构。当前程序不会读取、修改、迁移或导入这些文件。确认不再需要旧数据后，可由用户自行删除；删除前应自行备份，因为其中的数据不会自动转换到 `vault.json`。
+`sync.json` 只保存 provider、远端绑定、同步基线、设备 ID 与自动同步开关。应用只支持一个同步绑定，系统凭据库使用固定账户 `sync-v1:token` 与 `sync-v1:derived-key` 保存 Token 和派生同步密钥；同步密码仅在首次绑定、重新输入或轮换时存在于进程内，不会持久化。
 
-完整的同步流程、冲突策略、远端 API 边界和验收清单见 [cloud-sync.md](cloud-sync.md)。
+`<程序目录>/data/local.key`、明文 `vault.json`、`vault.db` 及旧含凭据的 `sync.json` 不受支持，当前程序不会读取、修改或迁移这些文件。
+
+完整的同步流程、冲突策略、远端 API 边界和验收清单见 [config-security-sync.md](config-security-sync.md)。

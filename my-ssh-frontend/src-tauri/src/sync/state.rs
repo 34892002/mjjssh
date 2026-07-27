@@ -2,10 +2,7 @@ use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
-
-use super::crypto::SYNC_KEY_LENGTH;
 
 const STATE_FILE_NAME: &str = "sync.json";
 
@@ -26,8 +23,6 @@ pub struct SyncState {
     pub last_synced_vault_revision: u64,
     pub last_synced_at: String,
     pub device_id: String,
-    pub token: String,
-    pub derived_sync_key: String,
     #[serde(default = "default_auto_sync")]
     pub auto_sync: bool,
 }
@@ -92,19 +87,10 @@ fn validate(state: &SyncState) -> Result<(), SyncStateError> {
     }
     if state.remote_id.trim().is_empty()
         || state.last_synced_content_hash.trim().is_empty()
-        || state.token.trim().is_empty()
         || uuid::Uuid::parse_str(&state.device_id).is_err()
     {
         return Err(SyncStateError::Invalid(
             "required metadata is invalid".into(),
-        ));
-    }
-    let derived_key = STANDARD
-        .decode(&state.derived_sync_key)
-        .map_err(|_| SyncStateError::Invalid("derived sync key is not Base64".into()))?;
-    if derived_key.len() != SYNC_KEY_LENGTH {
-        return Err(SyncStateError::Invalid(
-            "derived sync key must be 32 bytes".into(),
         ));
     }
     Ok(())
@@ -126,14 +112,12 @@ mod tests {
             last_synced_vault_revision: 1,
             last_synced_at: "2026-07-21T00:00:00Z".into(),
             device_id: uuid::Uuid::new_v4().to_string(),
-            token: "token".into(),
-            derived_sync_key: STANDARD.encode([0u8; SYNC_KEY_LENGTH]),
             auto_sync: true,
         }
     }
 
     #[test]
-    fn saves_and_loads_sync_credentials() {
+    fn saves_sync_metadata_without_credentials() {
         let directory =
             std::env::temp_dir().join(format!("mjjssh-sync-state-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&directory).expect("create temporary sync state directory");
@@ -146,26 +130,20 @@ mod tests {
             .expect("load sync state")
             .expect("saved sync state should exist");
 
-        assert_eq!(loaded.token, "token");
-        assert_eq!(
-            loaded.derived_sync_key,
-            STANDARD.encode([0u8; SYNC_KEY_LENGTH])
-        );
+        assert_eq!(loaded.remote_id, "remote");
         let persisted =
             fs::read_to_string(directory.join(STATE_FILE_NAME)).expect("read sync state");
-        assert!(!persisted.contains("syncPassword"));
+        assert!(!persisted.contains("token"));
+        assert!(!persisted.contains("derivedSyncKey"));
 
         fs::remove_dir_all(directory).expect("remove temporary sync state directory");
     }
 
     #[test]
-    fn rejects_invalid_derived_sync_key() {
+    fn rejects_invalid_device_id() {
         let mut state = sample_state();
-        state.derived_sync_key = "invalid".into();
+        state.device_id = "invalid".into();
 
-        assert!(matches!(validate(&state), Err(SyncStateError::Invalid(_))));
-
-        state.derived_sync_key = STANDARD.encode([0u8; SYNC_KEY_LENGTH - 1]);
         assert!(matches!(validate(&state), Err(SyncStateError::Invalid(_))));
     }
 }

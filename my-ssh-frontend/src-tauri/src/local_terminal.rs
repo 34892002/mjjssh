@@ -78,15 +78,21 @@ impl LocalTerminalManager {
             .try_clone_reader()
             .map_err(|error| format!("无法打开本地终端输出: {error}"))?;
 
-        let mut sessions = self.sessions.lock().map_err(|_| "本地终端状态不可用".to_owned())?;
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "本地终端状态不可用".to_owned())?;
         if sessions.contains_key(&session_id) {
             return Err("本地终端已存在".into());
         }
-        sessions.insert(session_id.clone(), LocalTerminalSession {
-            master: pair.master,
-            writer,
-            child,
-        });
+        sessions.insert(
+            session_id.clone(),
+            LocalTerminalSession {
+                master: pair.master,
+                writer,
+                child,
+            },
+        );
         drop(sessions);
 
         let data_event = format!("local-terminal-data:{session_id}");
@@ -114,7 +120,10 @@ impl LocalTerminalManager {
     }
 
     pub fn write(&self, session_id: &str, data: &[u8]) -> Result<(), String> {
-        let mut sessions = self.sessions.lock().map_err(|_| "本地终端状态不可用".to_owned())?;
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "本地终端状态不可用".to_owned())?;
         let session = sessions
             .get_mut(session_id)
             .ok_or_else(|| "本地终端不存在".to_owned())?;
@@ -126,7 +135,10 @@ impl LocalTerminalManager {
     }
 
     pub fn resize(&self, session_id: &str, cols: u16, rows: u16) -> Result<(), String> {
-        let sessions = self.sessions.lock().map_err(|_| "本地终端状态不可用".to_owned())?;
+        let sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "本地终端状态不可用".to_owned())?;
         let session = sessions
             .get(session_id)
             .ok_or_else(|| "本地终端不存在".to_owned())?;
@@ -142,11 +154,17 @@ impl LocalTerminalManager {
     }
 
     pub fn close(&self, session_id: &str) -> Result<(), String> {
-        let mut sessions = self.sessions.lock().map_err(|_| "本地终端状态不可用".to_owned())?;
+        let mut sessions = self
+            .sessions
+            .lock()
+            .map_err(|_| "本地终端状态不可用".to_owned())?;
         let mut session = sessions
             .remove(session_id)
             .ok_or_else(|| "本地终端不存在".to_owned())?;
-        session.child.kill().map_err(|error| format!("无法关闭本地终端: {error}"))
+        session
+            .child
+            .kill()
+            .map_err(|error| format!("无法关闭本地终端: {error}"))
     }
 }
 
@@ -161,5 +179,8 @@ fn shell_command(shell: &str) -> Result<CommandBuilder, String> {
 }
 
 fn git_bash_path() -> Option<&'static str> {
-    GIT_BASH_PATHS.iter().copied().find(|path| Path::new(path).is_file())
+    GIT_BASH_PATHS
+        .iter()
+        .copied()
+        .find(|path| Path::new(path).is_file())
 }

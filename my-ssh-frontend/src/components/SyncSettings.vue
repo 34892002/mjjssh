@@ -14,7 +14,6 @@ type SyncStatus = {
   state: string
   lastSyncedAt: string | null
   deviceId: string | null
-  token: string | null
   autoSync: boolean
   localVaultRevision: number | null
   lastSyncedVaultRevision: number | null
@@ -54,7 +53,7 @@ function applyStatus(nextStatus: SyncStatus) {
   if (nextStatus.provider === 'github_gist' || nextStatus.provider === 'gitee_snippet') {
     provider.value = nextStatus.provider
   }
-  if (nextStatus.token) token.value = nextStatus.token
+
 }
 
 async function loadStatus() {
@@ -102,7 +101,7 @@ async function enable() {
       token: token.value,
       syncPassword: syncPassword.value,
     }),
-    `已连接或创建 ${providerLabel.value} 同步库，并已在本机保存 token 和派生密钥。`,
+    `已连接或创建 ${providerLabel.value} 同步库，并已将本机凭据保存到系统凭据管理器。`,
     true,
   )
   if (succeeded) window.dispatchEvent(new Event('sync-configuration-changed'))
@@ -165,15 +164,14 @@ function closeLocalPasswordForm() {
 
 async function updateLocalSyncPassword() {
   passwordError.value = null
-  if (!token.value.trim() || !localSyncPassword.value) {
-    passwordError.value = '请输入访问 token 和当前云端同步密码。'
+  if (!localSyncPassword.value) {
+    passwordError.value = '请输入当前云端同步密码。'
     return
   }
 
   loading.value = true
   try {
     applyStatus(await invoke<SyncStatus>('update_local_sync_password', {
-      token: token.value,
       password: localSyncPassword.value,
     }))
     notice.value = '已更新本机同步凭据；云端和本地配置均未修改。'
@@ -199,7 +197,7 @@ async function updateAutoSync(autoSync: boolean) {
 
 async function changeSyncPassword() {
   passwordError.value = null
-  if (!token.value.trim() || !currentPassword.value || !newPassword.value) {
+  if (!currentPassword.value || !newPassword.value) {
     passwordError.value = '请输入当前密码和新密码。'
     return
   }
@@ -213,7 +211,6 @@ async function changeSyncPassword() {
   loading.value = true
   try {
     const result = await invoke<OperationResult>('change_sync_password', {
-      token: token.value,
       currentPassword: currentPassword.value,
       newPassword: newPassword.value,
     })
@@ -228,13 +225,9 @@ async function changeSyncPassword() {
 }
 
 async function resolveConflict(resolution: 'keep_local' | 'accept_remote') {
-  if (!token.value.trim()) {
-    error.value = '解决冲突需要访问 token。'
-    return
-  }
+
   await run(
     () => invoke<OperationResult>('resolve_sync_conflict', {
-      token: token.value,
       resolution,
     }),
     resolution === 'keep_local' ? '已保留本地配置并覆盖远端；冲突前的两份数据已备份。' : '已采用远端配置；冲突前的两份数据已备份。',
@@ -243,15 +236,12 @@ async function resolveConflict(resolution: 'keep_local' | 'accept_remote') {
 }
 
 async function deleteRemote() {
-  if (!token.value.trim()) {
-    error.value = '删除远端同步库需要访问 token。'
-    return
-  }
+
   error.value = null
   notice.value = null
   loading.value = true
   try {
-    await invoke('delete_remote_sync_vault', { token: token.value })
+    await invoke('delete_remote_sync_vault')
     await loadStatus()
     window.dispatchEvent(new Event('sync-configuration-changed'))
     notice.value = '已删除远端同步库及本机保存的同步凭据。'
@@ -315,7 +305,7 @@ onBeforeUnmount(() => {
     <template v-if="!isConfigured">
       <div class="sync-card">
         <div class="sync-card-title"><Cloud :size="19" />配置云同步</div>
-        <p>应用会按名称自动查找唯一的 MJJSSH 私有同步片段：找到后自动导入远端数据，找不到才创建。token 和由同步密码派生的 AES 密钥会保存在本机 <code>sync.json</code>，原始密码不会保存。</p>
+        <p>应用会按名称自动查找唯一的 MJJSSH 私有同步片段：找到后自动导入远端数据，找不到才创建。访问 token 与派生同步密钥会保存到系统凭据管理器，原始同步密码不会保存。</p>
         <label>同步提供方
           <select v-model="provider">
             <option value="github_gist">GitHub Gist</option>
@@ -323,7 +313,7 @@ onBeforeUnmount(() => {
           </select>
         </label>
 
-        <label>{{ providerLabel }} token<n-input v-model:value="token" type="password" show-password-on="click" placeholder="保存在本机 sync.json" /></label>
+        <label>{{ providerLabel }} token<n-input v-model:value="token" type="password" show-password-on="click" placeholder="仅保存到系统凭据管理器" /></label>
         <label>云同步加密密码<n-input v-model:value="syncPassword" type="password" show-password-on="click" placeholder="至少 8 个字符" /></label>
         <label>确认云同步加密密码<n-input v-model:value="confirmSyncPassword" type="password" show-password-on="click" placeholder="再次输入同步密码" /></label>
         <n-button type="primary" :loading="loading" @click="enable">连接并同步 {{ providerLabel }}</n-button>
@@ -334,7 +324,7 @@ onBeforeUnmount(() => {
       <div class="sync-card">
         <div class="sync-card-title"><Cloud :size="19" />{{ configuredProviderLabel }} 已配置</div>
         <p>同步文件：<code>{{ status?.remoteFileName }}</code></p>
-        <p>此 token 用于访问 {{ configuredProviderLabel }} 中的同步(加密)数据。</p>
+        <p>访问 token 和派生同步密钥仅保存在系统凭据管理器中，不会返回给界面或写入 <code>sync.json</code>。</p>
         <p v-if="status?.lastSyncedAt">上次成功同步：{{ new Date(status.lastSyncedAt).toLocaleString() }}</p>
         <div class="sync-option">
           <div>
@@ -349,7 +339,7 @@ onBeforeUnmount(() => {
             <p>自动处理单侧更新；本地和云端同时变化时保留两份数据并提示选择。</p>
           </div>
         </div>
-        <label>{{ configuredProviderLabel }} token<n-input v-model:value="token" type="password" show-password-on="click" placeholder="保存在本机 sync.json" /></label>
+
 
         <n-space>
           <n-popconfirm

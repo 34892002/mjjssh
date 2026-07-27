@@ -150,6 +150,8 @@ pub async fn refresh_profile_info(
         .known_hosts
         .lock()
         .await
+        .as_ref()
+        .map_err(Clone::clone)?
         .get(&profile.host, profile.port)
         .map(|trusted_key| crate::ssh::ExpectedHostKey {
             algorithm: trusted_key.algorithm.clone(),

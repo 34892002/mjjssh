@@ -6,6 +6,10 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Serialize;
 use zeroize::Zeroize;
 
+use crate::local_security::{
+    create_local_vault_key, delete_sync_secret, encrypt_vault as encrypt_local_vault,
+    get_sync_secret, set_sync_secret, LocalSecurityError,
+};
 use crate::vault::{Vault, VaultError, VaultSyncSnapshot};
 
 use super::gitee_snippet::{GiteeSnippetError, GiteeSnippetRemote};
@@ -65,6 +69,12 @@ pub enum SyncServiceError {
     Gitee(#[from] GiteeSnippetError),
     #[error("sync encryption error: {0}")]
     Crypto(#[from] SyncCryptoError),
+    #[error(
+        "cloud sync credentials are unavailable; reconnect cloud sync with a token and password"
+    )]
+    CredentialsUnavailable,
+    #[error("system credential storage is unavailable: {0}")]
+    CredentialStore(#[from] LocalSecurityError),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -77,7 +87,6 @@ pub struct SyncStatus {
     pub state: String,
     pub last_synced_at: Option<String>,
     pub device_id: Option<String>,
-    pub token: Option<String>,
     pub auto_sync: bool,
     pub local_vault_revision: Option<u64>,
     pub last_synced_vault_revision: Option<u64>,
@@ -172,6 +181,8 @@ impl<'a> SyncService<'a> {
     }
 
     pub fn disable(&self) -> Result<(), SyncServiceError> {
+        self.configured_state()?;
+        self.delete_credentials()?;
         self.state_store.clear()?;
         Ok(())
     }
@@ -183,17 +194,15 @@ impl<'a> SyncService<'a> {
         Ok(status_from_state(Some(state)))
     }
 
-    pub async fn check_remote_status(
-        &self,
-        token: &str,
-    ) -> Result<RemoteSyncStatus, SyncServiceError> {
+    pub async fn check_remote_status(&self) -> Result<RemoteSyncStatus, SyncServiceError> {
         let state = self.configured_state()?;
         let local = self.vault.sync_snapshot()?;
+        let token = self.saved_token()?;
         let remote = self
             .remote_for_state(&state)?
-            .get(token, &state.remote_id)
+            .get(&token, &state.remote_id)
             .await?;
-        let key = saved_key(&state)?;
+        let key = self.saved_key()?;
         let envelope = verify_remote_with_key(&remote, &key)?;
         let sync_state = remote_sync_state(
             local.revision != state.last_synced_vault_revision,
@@ -211,19 +220,18 @@ impl<'a> SyncService<'a> {
 
     pub async fn update_local_password(
         &self,
-        token: &str,
         password: String,
     ) -> Result<SyncStatus, SyncServiceError> {
-        let mut state = self.configured_state()?;
+        let state = self.configured_state()?;
+        let token = self.saved_token()?;
         let remote = self
             .remote_for_state(&state)?
-            .get(token, &state.remote_id)
+            .get(&token, &state.remote_id)
             .await?;
         let envelope = parse_envelope(&remote)?;
-        state.derived_sync_key = derive_key_for_envelope(&envelope, password)?;
-        let key = saved_key(&state)?;
-        decrypt_vault_with_key(&envelope, &key).map_err(map_crypto_error)?;
-        self.state_store.save(&state)?;
+        let key = derive_key_for_envelope(&envelope, password)?;
+        decrypt_vault_with_key(&envelope, &decode_saved_key(&key)?).map_err(map_crypto_error)?;
+        set_sync_secret("derived-key", &key)?;
         Ok(status_from_state(Some(state)))
     }
 
@@ -260,10 +268,9 @@ impl<'a> SyncService<'a> {
             &snapshot_metadata(&encrypted),
             &remote,
             device_id,
-            token.to_owned(),
-            derived_sync_key,
             true,
         );
+        self.save_credentials(token, &derived_sync_key)?;
         self.state_store.save(&state)?;
         Ok(status_from_state(Some(state)))
     }
@@ -301,20 +308,20 @@ impl<'a> SyncService<'a> {
             &snapshot_metadata(&envelope),
             remote,
             uuid::Uuid::new_v4().to_string(),
-            token.to_owned(),
-            derived_sync_key,
             true,
         );
+        self.save_credentials(token, &derived_sync_key)?;
         self.state_store.save(&state)?;
         Ok(status_from_state(Some(state)))
     }
 
-    pub async fn upload(&self, token: &str) -> Result<SyncOperationResult, SyncServiceError> {
+    pub async fn upload(&self) -> Result<SyncOperationResult, SyncServiceError> {
         let state = self.configured_state()?;
         let snapshot = self.vault.sync_snapshot()?;
+        let token = self.saved_token()?;
         let remote_client = self.remote_for_state(&state)?;
-        let current = remote_client.get(token, &state.remote_id).await?;
-        let key = saved_key(&state)?;
+        let current = remote_client.get(&token, &state.remote_id).await?;
+        let key = self.saved_key()?;
         let current_envelope = verify_remote_with_key(&current, &key)?;
         if current.content_hash != state.last_synced_content_hash {
             return Err(SyncServiceError::Conflict);
@@ -326,15 +333,13 @@ impl<'a> SyncService<'a> {
             .0;
         let encrypted = encrypt_snapshot_with_key(snapshot, &key, state.device_id.clone(), salt)?;
         let remote = remote_client
-            .update(token, &state.remote_id, &serialize_envelope(&encrypted)?)
+            .update(&token, &state.remote_id, &serialize_envelope(&encrypted)?)
             .await?;
         let state = state_from_remote(
             SyncProvider::parse(&state.provider)?,
             &snapshot_metadata(&encrypted),
             &remote,
             state.device_id,
-            token.to_owned(),
-            state.derived_sync_key,
             state.auto_sync,
         );
         self.state_store.save(&state)?;
@@ -346,18 +351,18 @@ impl<'a> SyncService<'a> {
 
     pub async fn change_password(
         &self,
-        token: &str,
         current_password: String,
         new_password: String,
     ) -> Result<SyncOperationResult, SyncServiceError> {
+        let token = self.saved_token()?;
         let state = self.configured_state()?;
         let snapshot = self.vault.sync_snapshot()?;
         if snapshot.revision != state.last_synced_vault_revision {
             return Err(SyncServiceError::Conflict);
         }
         let remote_client = self.remote_for_state(&state)?;
-        let current = remote_client.get(token, &state.remote_id).await?;
-        let saved_key = saved_key(&state)?;
+        let current = remote_client.get(&token, &state.remote_id).await?;
+        let saved_key = self.saved_key()?;
         let envelope = verify_remote_with_key(&current, &saved_key)?;
         if current.content_hash != state.last_synced_content_hash {
             return Err(SyncServiceError::Conflict);
@@ -370,17 +375,16 @@ impl<'a> SyncService<'a> {
         let encrypted = encrypt_snapshot(snapshot, new_password.clone(), state.device_id.clone())?;
         let derived_sync_key = derive_key_for_envelope(&encrypted, new_password)?;
         let remote = remote_client
-            .update(token, &state.remote_id, &serialize_envelope(&encrypted)?)
+            .update(&token, &state.remote_id, &serialize_envelope(&encrypted)?)
             .await?;
         let state = state_from_remote(
             SyncProvider::parse(&state.provider)?,
             &snapshot_metadata(&encrypted),
             &remote,
             state.device_id,
-            token.to_owned(),
-            derived_sync_key,
             state.auto_sync,
         );
+        set_sync_secret("derived-key", &derived_sync_key)?;
         self.state_store.save(&state)?;
         Ok(SyncOperationResult {
             status: "password_changed".into(),
@@ -388,13 +392,14 @@ impl<'a> SyncService<'a> {
         })
     }
 
-    pub async fn download(&self, token: &str) -> Result<SyncOperationResult, SyncServiceError> {
+    pub async fn download(&self) -> Result<SyncOperationResult, SyncServiceError> {
         let state = self.configured_state()?;
+        let token = self.saved_token()?;
         let remote = self
             .remote_for_state(&state)?
-            .get(token, &state.remote_id)
+            .get(&token, &state.remote_id)
             .await?;
-        let key = saved_key(&state)?;
+        let key = self.saved_key()?;
         let envelope = verify_remote_with_key(&remote, &key)?;
         if remote.content_hash == state.last_synced_content_hash {
             return Ok(SyncOperationResult {
@@ -412,8 +417,6 @@ impl<'a> SyncService<'a> {
             &snapshot_metadata(&envelope),
             &remote,
             state.device_id,
-            token.to_owned(),
-            state.derived_sync_key,
             state.auto_sync,
         );
         self.state_store.save(&state)?;
@@ -423,15 +426,13 @@ impl<'a> SyncService<'a> {
         })
     }
 
-    pub async fn resolve_keep_local(
-        &self,
-        token: &str,
-    ) -> Result<SyncOperationResult, SyncServiceError> {
+    pub async fn resolve_keep_local(&self) -> Result<SyncOperationResult, SyncServiceError> {
         let state = self.configured_state()?;
         let snapshot = self.vault.sync_snapshot()?;
+        let token = self.saved_token()?;
         let remote_client = self.remote_for_state(&state)?;
-        let current = remote_client.get(token, &state.remote_id).await?;
-        let key = saved_key(&state)?;
+        let current = remote_client.get(&token, &state.remote_id).await?;
+        let key = self.saved_key()?;
         let envelope = verify_remote_with_key(&current, &key)?;
         self.back_up_conflict(&snapshot.content, &current.content)?;
         let salt = envelope
@@ -441,15 +442,13 @@ impl<'a> SyncService<'a> {
             .0;
         let encrypted = encrypt_snapshot_with_key(snapshot, &key, state.device_id.clone(), salt)?;
         let remote = remote_client
-            .update(token, &state.remote_id, &serialize_envelope(&encrypted)?)
+            .update(&token, &state.remote_id, &serialize_envelope(&encrypted)?)
             .await?;
         let state = state_from_remote(
             SyncProvider::parse(&state.provider)?,
             &snapshot_metadata(&encrypted),
             &remote,
             state.device_id,
-            token.to_owned(),
-            state.derived_sync_key,
             state.auto_sync,
         );
         self.state_store.save(&state)?;
@@ -459,17 +458,15 @@ impl<'a> SyncService<'a> {
         })
     }
 
-    pub async fn resolve_accept_remote(
-        &self,
-        token: &str,
-    ) -> Result<SyncOperationResult, SyncServiceError> {
+    pub async fn resolve_accept_remote(&self) -> Result<SyncOperationResult, SyncServiceError> {
         let state = self.configured_state()?;
         let snapshot = self.vault.sync_snapshot()?;
+        let token = self.saved_token()?;
         let remote = self
             .remote_for_state(&state)?
-            .get(token, &state.remote_id)
+            .get(&token, &state.remote_id)
             .await?;
-        let key = saved_key(&state)?;
+        let key = self.saved_key()?;
         let envelope = verify_remote_with_key(&remote, &key)?;
         let content = decrypt_vault_with_key(&envelope, &key).map_err(map_crypto_error)?;
         self.back_up_conflict(&snapshot.content, &remote.content)?;
@@ -479,8 +476,6 @@ impl<'a> SyncService<'a> {
             &snapshot_metadata(&envelope),
             &remote,
             state.device_id,
-            token.to_owned(),
-            state.derived_sync_key,
             state.auto_sync,
         );
         self.state_store.save(&state)?;
@@ -490,11 +485,13 @@ impl<'a> SyncService<'a> {
         })
     }
 
-    pub async fn delete_remote(&self, token: &str) -> Result<(), SyncServiceError> {
+    pub async fn delete_remote(&self) -> Result<(), SyncServiceError> {
         let state = self.configured_state()?;
+        let token = self.saved_token()?;
         self.remote_for_state(&state)?
-            .delete(token, &state.remote_id)
+            .delete(&token, &state.remote_id)
             .await?;
+        self.delete_credentials()?;
         self.state_store.clear()?;
         Ok(())
     }
@@ -512,9 +509,13 @@ impl<'a> SyncService<'a> {
             chrono::Utc::now().format("%Y%m%dT%H%M%SZ"),
             uuid::Uuid::new_v4()
         );
+        let key = create_local_vault_key()?;
+        let envelope = encrypt_local_vault(local_vault, &key)?;
+        let local_backup = serde_json::to_vec_pretty(&envelope)
+            .map_err(|error| SyncStateError::Storage(error.to_string()))?;
         write_backup(
-            &backup_directory.join(format!("{prefix}-local-vault.json")),
-            local_vault,
+            &backup_directory.join(format!("{prefix}-local-vault.encrypted.json")),
+            &local_backup,
         )?;
         write_backup(
             &backup_directory.join(format!("{prefix}-remote-envelope.json")),
@@ -526,6 +527,28 @@ impl<'a> SyncService<'a> {
         self.state_store
             .load()?
             .ok_or(SyncServiceError::NotConfigured)
+    }
+
+    fn saved_token(&self) -> Result<String, SyncServiceError> {
+        get_sync_secret("token")?.ok_or(SyncServiceError::CredentialsUnavailable)
+    }
+
+    fn saved_key(&self) -> Result<[u8; super::SYNC_KEY_LENGTH], SyncServiceError> {
+        let value =
+            get_sync_secret("derived-key")?.ok_or(SyncServiceError::CredentialsUnavailable)?;
+        decode_saved_key(&value)
+    }
+
+    fn save_credentials(&self, token: &str, derived_key: &str) -> Result<(), SyncServiceError> {
+        set_sync_secret("token", token)?;
+        set_sync_secret("derived-key", derived_key)?;
+        Ok(())
+    }
+
+    fn delete_credentials(&self) -> Result<(), SyncServiceError> {
+        delete_sync_secret("token")?;
+        delete_sync_secret("derived-key")?;
+        Ok(())
     }
 
     fn remote_for_state(&self, state: &SyncState) -> Result<Remote, SyncServiceError> {
@@ -626,13 +649,13 @@ fn verify_remote_with_key(
     Ok(envelope)
 }
 
-fn saved_key(state: &SyncState) -> Result<[u8; super::SYNC_KEY_LENGTH], SyncServiceError> {
+fn decode_saved_key(value: &str) -> Result<[u8; super::SYNC_KEY_LENGTH], SyncServiceError> {
     let bytes = STANDARD
-        .decode(&state.derived_sync_key)
-        .map_err(|_| SyncServiceError::InvalidRemoteData)?;
+        .decode(value)
+        .map_err(|_| SyncServiceError::CredentialsUnavailable)?;
     bytes
         .try_into()
-        .map_err(|_| SyncServiceError::InvalidRemoteData)
+        .map_err(|_| SyncServiceError::CredentialsUnavailable)
 }
 
 fn serialize_envelope(envelope: &EncryptedVault) -> Result<String, SyncServiceError> {
@@ -657,8 +680,6 @@ fn state_from_remote(
     snapshot: &VaultSyncSnapshot,
     remote: &RemoteDocument,
     device_id: String,
-    token: String,
-    derived_sync_key: String,
     auto_sync: bool,
 ) -> SyncState {
     SyncState {
@@ -668,8 +689,6 @@ fn state_from_remote(
         last_synced_vault_revision: snapshot.revision,
         last_synced_at: chrono::Utc::now().to_rfc3339(),
         device_id,
-        token,
-        derived_sync_key,
         auto_sync,
     }
 }
@@ -684,7 +703,6 @@ fn status_from_state(state: Option<SyncState>) -> SyncStatus {
             state: "idle".into(),
             last_synced_at: Some(state.last_synced_at),
             device_id: Some(state.device_id),
-            token: Some(state.token),
             auto_sync: state.auto_sync,
             local_vault_revision: None,
             last_synced_vault_revision: Some(state.last_synced_vault_revision),
@@ -697,7 +715,6 @@ fn status_from_state(state: Option<SyncState>) -> SyncStatus {
             state: "disabled".into(),
             last_synced_at: None,
             device_id: None,
-            token: None,
             auto_sync: false,
             local_vault_revision: None,
             last_synced_vault_revision: None,
@@ -769,13 +786,18 @@ mod tests {
             .collect::<Vec<_>>();
         let local_backup = entries
             .iter()
-            .find(|path| path.to_string_lossy().ends_with("-local-vault.json"))
+            .find(|path| {
+                path.to_string_lossy()
+                    .ends_with("-local-vault.encrypted.json")
+            })
             .unwrap();
         let remote_backup = entries
             .iter()
             .find(|path| path.to_string_lossy().ends_with("-remote-envelope.json"))
             .unwrap();
-        assert_eq!(fs::read(local_backup).unwrap(), b"{\"local\":true}");
+        let local_backup = fs::read_to_string(local_backup).unwrap();
+        assert!(!local_backup.contains("\"local\":true"));
+        assert!(local_backup.contains("\"ciphertext\""));
         assert_eq!(fs::read(remote_backup).unwrap(), b"{\"ciphertext\":true}");
 
         fs::remove_dir_all(app_dir).unwrap();
