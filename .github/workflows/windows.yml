@@ -91,6 +91,7 @@ jobs:
           tagName: ${{ github.ref_name }}
           releaseName: MJJSSH ${{ github.ref_name }}
           releaseBody: Desktop installers for ${{ github.ref_name }}.
+          releaseAssetNamePattern: MJJSSH_[version]_win_[arch][_setup][ext]
           releaseDraft: false
           prerelease: false
 
@@ -141,6 +142,7 @@ jobs:
         with:
           projectPath: my-ssh-frontend
           tagName: ${{ github.ref_name }}
+          releaseAssetNamePattern: MJJSSH_[version]_macos_[arch][ext]
           releaseDraft: false
           prerelease: false
           args: --target ${{ matrix.target }}
