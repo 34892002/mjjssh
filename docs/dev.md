@@ -105,6 +105,8 @@ type:
 - 自定义组件不得为结构性颜色硬编码单一主题值。背景、卡片、边框、文字、弱化文字、悬停与主色分别使用 `--app-base`、`--app-surface`、`--app-border`、`--app-text`、`--app-muted`、`--app-hover`、`--app-accent` CSS 变量。
 - 状态语义色（例如成功、警告、错误）可以使用固定颜色，但必须在亮色和暗色背景下保持可读；不要通过内联 `style` 固定普通文字或组件颜色。
 - 新增或修改自定义页面、弹窗、侧栏与面板时，必须分别检查亮色和暗色主题下的背景、边框、正文、占位文字、图标及 hover/focus 状态。
+- Teleport 组件可继承 `NConfigProvider` 主题，但不能继承 DOM 祖先的 `--app-*` 变量；需要时用 `useThemeVars()` 显式映射，并保留默认 `to`。
+- 嵌套模态使用官方 `v-model:show` 与 `preset` 结构，保留默认焦点管理；宽度等根节点样式通过 `NModal` 的 `style` 设置，避免 scoped CSS 在 Teleport 后失效。
 
 ### 交互确认规范
 
