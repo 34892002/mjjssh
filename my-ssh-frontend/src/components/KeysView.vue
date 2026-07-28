@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { Copy, KeyRound, Plus, WandSparkles } from '@lucide/vue'
 import EntityCard from './EntityCard.vue'
 import {
@@ -41,10 +41,10 @@ const form = ref<CreateKeyRequest>({
 })
 const formError = ref('')
 
-const keyTypeOptions = [
-  { label: 'SSH 私钥', value: 'key' },
-  { label: 'SSH 证书', value: 'certificate' },
-]
+const keyTypeOptions = computed(() => [
+  { label: t('keys.privateKey'), value: 'key' },
+  { label: t('keys.certificate'), value: 'certificate' },
+])
 
 onMounted(() => {
   void vaultStore.loadKeys()
@@ -110,19 +110,19 @@ async function handleSubmit() {
   formError.value = ''
 
   if (!form.value.name) {
-    formError.value = '请填写名称'
+    formError.value = t('keys.nameRequired')
     return
   }
 
   // 新建时必须填私钥
   if (!editingKey.value && !form.value.private_key) {
-    formError.value = '请填写私钥内容'
+    formError.value = t('keys.privateKeyRequired')
     return
   }
 
   // 证书类型必须填证书内容
   if (form.value.key_type === 'certificate' && !editingKey.value && !form.value.cert_data) {
-    formError.value = '证书类型需要填写证书内容'
+    formError.value = t('keys.certificateContentRequired')
     return
   }
 
@@ -137,7 +137,7 @@ async function handleSubmit() {
   // 如果是编辑且没填私钥，需要从后端读取原值
   // 简化处理：编辑时必须重新填私钥
   if (editingKey.value && !form.value.private_key) {
-    formError.value = '编辑时需要重新填写私钥内容'
+    formError.value = t('keys.privateKeyRequiredForEdit')
     return
   }
 
@@ -147,7 +147,7 @@ async function handleSubmit() {
     if (result) {
       showForm.value = false
     } else {
-      formError.value = vaultStore.error || '更新失败'
+      formError.value = vaultStore.error || t('keys.updateFailed')
     }
   } else {
     // 新建
@@ -155,7 +155,7 @@ async function handleSubmit() {
     if (result) {
       showForm.value = false
     } else {
-      formError.value = vaultStore.error || '创建失败'
+      formError.value = vaultStore.error || t('keys.createFailed')
     }
   }
 }
@@ -168,7 +168,7 @@ async function handleDelete(id: string) {
 <template>
   <div class="keys-view">
     <div class="keys-header">
-      <h2>密钥管理</h2>
+      <h2>{{ t('keys.title') }}</h2>
       <n-space>
         <n-button @click="openGenerate">
           <template #icon><WandSparkles :size="15" /></template>
@@ -176,14 +176,14 @@ async function handleDelete(id: string) {
         </n-button>
         <n-button type="primary" @click="openCreate">
           <template #icon><Plus :size="15" /></template>
-          新增密钥
+          {{ t('keys.add') }}
         </n-button>
       </n-space>
     </div>
 
-    <n-empty v-if="vaultStore.sshKeys.length === 0" description="暂无密钥" style="padding: 60px 0">
+    <n-empty v-if="vaultStore.sshKeys.length === 0" :description="t('keys.empty')" style="padding: 60px 0">
       <template #extra>
-        <n-button type="primary" @click="openCreate">创建第一个密钥</n-button>
+        <n-button type="primary" @click="openCreate">{{ t('keys.createFirst') }}</n-button>
       </template>
     </n-empty>
 
@@ -194,11 +194,11 @@ async function handleDelete(id: string) {
         :icon="KeyRound"
         :color="key.key_type === 'key' ? '#f59e0b' : '#22c55e'"
         :title="key.name"
-        :subtitle="key.algorithm || '未识别算法'"
-        :metadata="key.key_type === 'key' ? 'SSH 私钥' : 'SSH 证书'"
+        :subtitle="key.algorithm || t('keys.unknownAlgorithm')"
+        :metadata="key.key_type === 'key' ? t('keys.privateKey') : t('keys.certificate')"
       >
         <template #actions>
-          <n-button size="tiny" quaternary title="编辑密钥" aria-label="编辑密钥" @click="openEdit(key)">
+          <n-button size="tiny" quaternary :title="t('keys.edit')" :aria-label="t('keys.edit')" @click="openEdit(key)">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
               <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
@@ -206,14 +206,14 @@ async function handleDelete(id: string) {
           </n-button>
           <n-popconfirm @positive-click="handleDelete(key.id)">
             <template #trigger>
-              <n-button size="tiny" quaternary type="error" title="删除密钥" aria-label="删除密钥">
+              <n-button size="tiny" quaternary type="error" :title="t('keys.delete')" :aria-label="t('keys.delete')">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                   <polyline points="3 6 5 6 21 6"/>
                   <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2 2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
                 </svg>
               </n-button>
             </template>
-            确定删除 "{{ key.name }}"？
+            {{ t('keys.deleteConfirm', { name: key.name }) }}
           </n-popconfirm>
         </template>
       </EntityCard>
@@ -263,34 +263,34 @@ async function handleDelete(id: string) {
     </n-modal>
 
     <!-- Add/edit key modal -->
-    <n-modal v-model:show="showForm" :title="editingKey ? '编辑密钥' : '新增密钥'" preset="card" style="width: 520px">
+    <n-modal v-model:show="showForm" :title="editingKey ? t('keys.editTitle') : t('keys.addTitle')" preset="card" style="width: 520px">
       <n-alert v-if="formError" type="error" style="margin-bottom: 16px">
         {{ formError }}
       </n-alert>
 
       <n-form label-placement="left" label-width="80">
-        <n-form-item label="名称" required>
-          <n-input v-model:value="form.name" placeholder="我的密钥" />
+        <n-form-item :label="t('keys.name')" required>
+          <n-input v-model:value="form.name" :placeholder="t('keys.namePlaceholder')" />
         </n-form-item>
-        <n-form-item label="类型">
+        <n-form-item :label="t('keys.type')">
           <n-select v-model:value="form.key_type" :options="keyTypeOptions" :disabled="!!editingKey" />
         </n-form-item>
-        <n-form-item v-if="editingKey" label="算法">
-          <n-input :value="editingKey.algorithm || '未识别算法'" readonly />
+        <n-form-item v-if="editingKey" :label="t('keys.algorithm')">
+          <n-input :value="editingKey.algorithm || t('keys.unknownAlgorithm')" readonly />
         </n-form-item>
-        <n-form-item label="私钥内容" :required="!editingKey">
+        <n-form-item :label="t('keys.privateKeyContent')" :required="!editingKey">
           <n-input
             v-model:value="form.private_key"
             type="textarea"
-            :placeholder="editingKey ? '留空则保持原密钥不变' : '粘贴 OpenSSH 私钥内容 (-----BEGIN ... PRIVATE KEY-----)'"
+            :placeholder="editingKey ? t('keys.privateKeyUnchangedPlaceholder') : t('keys.privateKeyPlaceholder')"
             :rows="8"
           />
         </n-form-item>
-        <n-form-item v-if="form.key_type === 'certificate'" label="证书内容" :required="!editingKey">
+        <n-form-item v-if="form.key_type === 'certificate'" :label="t('keys.certificateContent')" :required="!editingKey">
           <n-input
             v-model:value="form.cert_data"
             type="textarea"
-            :placeholder="editingKey ? '留空则保持原证书不变' : '粘贴 OpenSSH 用户证书（ssh-ed25519-cert-v01@openssh.com ...）'"
+            :placeholder="editingKey ? t('keys.certificateUnchangedPlaceholder') : t('keys.certificatePlaceholder')"
             :rows="6"
           />
         </n-form-item>
@@ -298,9 +298,9 @@ async function handleDelete(id: string) {
 
       <template #footer>
         <n-space justify="end">
-          <n-button @click="showForm = false">取消</n-button>
+          <n-button @click="showForm = false">{{ t('form.cancel') }}</n-button>
           <n-button type="primary" :loading="vaultStore.loading" @click="handleSubmit">
-            {{ editingKey ? '保存' : '创建' }}
+            {{ editingKey ? t('keys.save') : t('keys.create') }}
           </n-button>
         </n-space>
       </template>

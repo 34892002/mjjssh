@@ -1,7 +1,9 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
 import { X } from '@lucide/vue'
+import { useLocale } from '../composables/useLocale'
 
+const { t } = useLocale()
 const props = defineProps<{ show: boolean; name: string; mode: number }>()
 const emit = defineEmits<{ close: []; apply: [mode: number] }>()
 const bits = ref<boolean[]>([])
@@ -22,11 +24,11 @@ watch(() => [props.show, props.mode], () => { if (props.show) bits.value = bitsF
 
 <template>
   <div v-if="show" class="permission-backdrop" @click.self="emit('close')">
-    <section class="permission-dialog" role="dialog" aria-modal="true" aria-label="编辑权限">
-      <header class="permission-title"><div><strong>编辑权限</strong><span>{{ name }}</span></div><button title="关闭" @click="emit('close')"><X :size="17" /></button></header>
-      <div v-for="(label, row) in ['所有者', '群组', '其他']" :key="label" class="permission-row"><span>{{ label }}</span><label v-for="(action, column) in ['R', 'W', 'X']" :key="action"><input v-model="bits[row * 3 + column]" type="checkbox"><span>{{ action }}</span></label></div>
-      <div class="permission-summary"><span>八进制: {{ mode.toString(8) }}</span><span>符号: {{ symbol }}</span></div>
-      <footer class="permission-actions"><button @click="emit('close')">取消</button><button class="primary" @click="emit('apply', mode)">应用</button></footer>
+    <section class="permission-dialog" role="dialog" aria-modal="true" :aria-label="t('permissions.edit')">
+      <header class="permission-title"><div><strong>{{ t('permissions.edit') }}</strong><span>{{ name }}</span></div><button :title="t('permissions.close')" @click="emit('close')"><X :size="17" /></button></header>
+      <div v-for="(label, row) in [t('permissions.owner'), t('permissions.group'), t('permissions.others')]" :key="label" class="permission-row"><span>{{ label }}</span><label v-for="(action, column) in ['R', 'W', 'X']" :key="action"><input v-model="bits[row * 3 + column]" type="checkbox"><span>{{ action }}</span></label></div>
+      <div class="permission-summary"><span>{{ t('permissions.octal') }}: {{ mode.toString(8) }}</span><span>{{ t('permissions.symbolic') }}: {{ symbol }}</span></div>
+      <footer class="permission-actions"><button @click="emit('close')">{{ t('permissions.cancel') }}</button><button class="primary" @click="emit('apply', mode)">{{ t('permissions.apply') }}</button></footer>
     </section>
   </div>
 </template>

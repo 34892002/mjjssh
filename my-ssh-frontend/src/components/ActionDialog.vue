@@ -1,8 +1,12 @@
 <script setup lang="ts">
 import { nextTick, ref, watch } from 'vue'
 import { AlertTriangle, X } from '@lucide/vue'
+import { useLocale } from '../composables/useLocale'
 
 type DialogKind = 'input' | 'confirm'
+
+const { t } = useLocale()
+
 
 const props = withDefaults(defineProps<{
   show: boolean
@@ -17,7 +21,7 @@ const props = withDefaults(defineProps<{
   message: '',
   initialValue: '',
   placeholder: '',
-  confirmText: '确认',
+  confirmText: '',
   danger: false,
 })
 const emit = defineEmits<{ close: []; confirm: [value: string] }>()
@@ -43,13 +47,13 @@ function confirm() {
     <section class="action-dialog" role="dialog" aria-modal="true" :aria-label="title" @keydown.esc="emit('close')">
       <header class="action-title">
         <div class="action-heading"><AlertTriangle v-if="danger" :size="19" class="danger-icon" /><strong>{{ title }}</strong></div>
-        <button title="关闭" @click="emit('close')"><X :size="17" /></button>
+        <button :title="t('actionDialog.close')" @click="emit('close')"><X :size="17" /></button>
       </header>
       <p v-if="message" class="action-message">{{ message }}</p>
       <input v-if="kind === 'input'" ref="input" v-model="value" class="action-input" :placeholder="placeholder" @keydown.enter="confirm">
       <footer class="action-actions">
-        <button @click="emit('close')">取消</button>
-        <button :class="{ danger }" @click="confirm">{{ confirmText }}</button>
+        <button @click="emit('close')">{{ t('actionDialog.cancel') }}</button>
+        <button :class="{ danger }" @click="confirm">{{ confirmText || t('actionDialog.confirm') }}</button>
       </footer>
     </section>
   </div>

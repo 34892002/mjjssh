@@ -2,7 +2,9 @@
 import { computed, ref } from 'vue'
 import { Check, Download, FolderOpen, LoaderCircle, Trash2, Upload, XCircle } from '@lucide/vue'
 import { useTransferStore } from '../stores/transfer'
+import { useLocale } from '../composables/useLocale'
 
+const { t } = useLocale()
 const props = withDefaults(defineProps<{ sessionId: string; standalone?: boolean }>(), { standalone: false })
 const transferStore = useTransferStore()
 const editingDirectory = ref(false)
@@ -33,16 +35,16 @@ function saveDirectory() {
 <template>
   <section class="transfer-panel" :class="{ standalone: props.standalone }">
     <header class="transfer-header">
-      <strong>传输</strong>
-      <button title="清除已完成任务" @click="transferStore.clearCompleted(sessionId)"><Trash2 :size="14" />清除</button>
+      <strong>{{ t('transfer.title') }}</strong>
+      <button :title="t('transfer.clearCompleted')" @click="transferStore.clearCompleted(sessionId)"><Trash2 :size="14" />{{ t('transfer.clear') }}</button>
     </header>
     <div class="download-directory">
       <FolderOpen :size="14" />
       <template v-if="editingDirectory">
         <input v-model="directoryInput" @keydown.enter="saveDirectory" @keydown.esc="editingDirectory = false">
-        <button @click="saveDirectory">确定</button>
+        <button @click="saveDirectory">{{ t('transfer.confirm') }}</button>
       </template>
-      <button v-else class="directory-value" :title="transferStore.downloadDirectory" @click="startEditDirectory">下载至 {{ transferStore.downloadDirectory }}</button>
+      <button v-else class="directory-value" :title="transferStore.downloadDirectory" @click="startEditDirectory">{{ t('transfer.downloadTo', { directory: transferStore.downloadDirectory }) }}</button>
     </div>
     <div v-if="tasks.length" class="transfer-list">
       <article v-for="task in tasks" :key="task.id" class="transfer-task">
@@ -53,7 +55,7 @@ function saveDirectory() {
             <template v-if="task.status === 'transferring'">{{ formatBytes(task.transferredBytes) }} / {{ formatBytes(task.totalBytes) }}</template>
             <template v-else-if="task.status === 'completed'">{{ formatBytes(task.totalBytes) }}</template>
             <template v-else-if="task.status === 'failed'">{{ task.error }}</template>
-            <template v-else>等待中</template>
+            <template v-else>{{ t('transfer.waiting') }}</template>
           </div>
           <div v-if="task.status === 'transferring'" class="progress"><span :style="{ width: `${task.totalBytes ? task.transferredBytes / task.totalBytes * 100 : 0}%` }" /></div>
         </div>
@@ -62,7 +64,7 @@ function saveDirectory() {
         <XCircle v-else-if="task.status === 'failed'" :size="15" class="failed" />
       </article>
     </div>
-    <div v-else class="empty">暂无传输任务</div>
+    <div v-else class="empty">{{ t('transfer.empty') }}</div>
   </section>
 </template>
 

@@ -2,6 +2,7 @@
 import { ref, watch, type Component } from 'vue'
 import { Fingerprint, KeyRound, Plug } from '@lucide/vue'
 import { NButton } from 'naive-ui'
+import { useLocale } from '../composables/useLocale'
 
 type ConnectionStatus = 'connecting' | 'verifying' | 'authenticating' | 'success' | 'error' | 'host-key-confirm' | 'host-key-changed'
 type StepState = 'pending' | 'active' | 'done' | 'error'
@@ -31,32 +32,32 @@ const emit = defineEmits<{
   (e: 'close'): void
 }>()
 
+const { t } = useLocale()
 const steps = ref<{ label: string; state: StepState }[]>([])
 
-
 function fingerprintLabel() {
-  return props.hostKey ? `${props.hostKey.algorithm}  ${props.hostKey.fingerprint}` : '正在验证主机指纹...'
+  return props.hostKey ? `${props.hostKey.algorithm}  ${props.hostKey.fingerprint}` : t('connection.verifyingFingerprint')
 }
 
 watch(() => props.status, (status) => {
-  const secureChannel = { label: `已建立到 ${props.host}:${props.port} 的 SSH 安全通道`, state: 'done' as StepState }
+  const secureChannel = { label: t('connection.secureChannelEstablished', { host: props.host, port: props.port }), state: 'done' as StepState }
   if (status === 'connecting') {
     steps.value = [
-      { label: '初始化安全通道...', state: 'done' },
-      { label: `正在连接 ${props.host}:${props.port}...`, state: 'active' },
+      { label: t('connection.initializingSecureChannel'), state: 'done' },
+      { label: t('connection.connecting', { host: props.host, port: props.port }), state: 'active' },
     ]
   } else if (status === 'verifying') {
     steps.value = [secureChannel, { label: fingerprintLabel(), state: 'active' }]
   } else if (status === 'host-key-confirm') {
-    steps.value = [secureChannel, { label: '等待确认主机指纹', state: 'active' }]
+    steps.value = [secureChannel, { label: t('connection.awaitingFingerprintConfirmation'), state: 'active' }]
   } else if (status === 'host-key-changed') {
-    steps.value = [secureChannel, { label: '主机指纹已变化，连接已阻止', state: 'error' }]
+    steps.value = [secureChannel, { label: t('connection.hostKeyChanged'), state: 'error' }]
   } else if (status === 'authenticating') {
-    steps.value = [secureChannel, { label: fingerprintLabel(), state: 'done' }, { label: 'SSH 认证中...', state: 'active' }]
+    steps.value = [secureChannel, { label: fingerprintLabel(), state: 'done' }, { label: t('connection.authenticating'), state: 'active' }]
   } else if (status === 'success') {
-    steps.value = [secureChannel, { label: fingerprintLabel(), state: 'done' }, { label: 'SSH 认证完成', state: 'done' }]
+    steps.value = [secureChannel, { label: fingerprintLabel(), state: 'done' }, { label: t('connection.authenticated'), state: 'done' }]
   } else {
-    steps.value = [{ label: props.error || '连接失败', state: 'error' }]
+    steps.value = [{ label: props.error || t('connection.failed'), state: 'error' }]
   }
 }, { immediate: true })
 
@@ -75,7 +76,7 @@ watch(() => props.status, (status) => {
         </div>
       </div>
 
-      <div class="connection-rail" :class="status" aria-label="连接进度">
+      <div class="connection-rail" :class="status" :aria-label="t('connection.progress')">
         <div class="rail-segment connection-segment" />
         <div class="rail-segment verification-segment" />
         <div class="rail-node connection-node"><Plug :size="15" /></div>
@@ -91,20 +92,20 @@ watch(() => props.status, (status) => {
       </div>
 
       <div v-if="status === 'host-key-confirm'" class="host-key-confirmation">
-        <p>这是首次连接到此主机。请通过受信任渠道核对指纹后再继续。</p>
+        <p>{{ t('connection.firstConnectionWarning') }}</p>
         <code>{{ hostKey?.fingerprint }}</code>
       </div>
       <div v-else-if="status === 'host-key-changed'" class="host-key-warning">
-        <p>保存的指纹与服务器返回的指纹不同。这可能表示服务器重装，也可能表示连接正遭受拦截。</p>
-        <code>已保存：{{ hostKey?.expectedAlgorithm }} {{ hostKey?.expectedFingerprint }}</code>
-        <code>当前：{{ hostKey?.algorithm }} {{ hostKey?.fingerprint }}</code>
+        <p>{{ t('connection.hostKeyChangedWarning') }}</p>
+        <code>{{ t('connection.savedFingerprint') }}: {{ hostKey?.expectedAlgorithm }} {{ hostKey?.expectedFingerprint }}</code>
+        <code>{{ t('connection.currentFingerprint') }}: {{ hostKey?.algorithm }} {{ hostKey?.fingerprint }}</code>
       </div>
 
       <div class="conn-actions">
-        <n-button v-if="status === 'host-key-confirm'" size="small" quaternary @click="emit('close')">取消</n-button>
-        <n-button v-if="status === 'host-key-confirm'" size="small" type="primary" @click="emit('trust-host-key')">确认并信任</n-button>
-        <n-button v-if="status === 'error' || status === 'host-key-changed'" size="small" quaternary @click="emit('close')">关闭会话</n-button>
-        <n-button v-if="status === 'error'" size="small" type="primary" @click="emit('retry')">重新开始</n-button>
+        <n-button v-if="status === 'host-key-confirm'" size="small" quaternary @click="emit('close')">{{ t('connection.cancel') }}</n-button>
+        <n-button v-if="status === 'host-key-confirm'" size="small" type="primary" @click="emit('trust-host-key')">{{ t('connection.confirmAndTrust') }}</n-button>
+        <n-button v-if="status === 'error' || status === 'host-key-changed'" size="small" quaternary @click="emit('close')">{{ t('connection.closeSession') }}</n-button>
+        <n-button v-if="status === 'error'" size="small" type="primary" @click="emit('retry')">{{ t('connection.restart') }}</n-button>
       </div>
     </section>
   </div>

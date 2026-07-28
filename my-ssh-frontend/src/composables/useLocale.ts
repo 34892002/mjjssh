@@ -31,9 +31,13 @@ const language = ref<AppLanguage>(detectInitialLanguage())
 
 document.documentElement.lang = language.value
 
+export function translate(key: MessageKey, params: TranslationParams = {}) {
+  return interpolate(messages[language.value][key], params)
+}
+
 export function useLocale() {
   function t(key: MessageKey, params: TranslationParams = {}) {
-    return interpolate(messages[language.value][key], params)
+    return translate(key, params)
   }
 
   const languageLabel = computed(() => language.value === 'zh-CN' ? t('language.zh') : t('language.en'))

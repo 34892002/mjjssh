@@ -156,7 +156,7 @@ const scriptButtonRef = ref<HTMLButtonElement | null>(null)
 const transferNoticeVisible = ref(false)
 let transferNoticeTimer: ReturnType<typeof setTimeout> | null = null
 
-const syncProviderLabel = computed(() => syncStatus.value?.provider === 'gitee_snippet' ? 'Gitee 私有代码片段' : 'GitHub Gist')
+const syncProviderLabel = computed(() => syncStatus.value?.provider === 'gitee_snippet' ? t('sync.giteePrivateSnippet') : 'GitHub Gist')
 const syncVersionState = computed(() => {
   const state = remoteSyncStatus.value?.state
   if (!state) return t('sync.notCheckedRemote')
@@ -182,11 +182,11 @@ const remoteSyncAction = computed(() => {
 function formatQuickSyncError(reason: unknown): string {
   const message = String(reason)
   const normalized = message.toLowerCase()
-  if (normalized.includes('cloud sync conflict') || normalized.includes('rejected the update because the remote changed')) return '同步冲突：本地和云端都发生了变化，请在同步设置中选择保留哪一份数据。'
-  if (normalized.includes('authentication failed')) return '云同步 token 无效、已过期或没有访问权限。'
-  if (normalized.includes('rate limit was reached')) return '云同步服务请求过于频繁，请稍后重试。'
-  if (normalized.includes('gist was not found') || normalized.includes('snippet was not found')) return '找不到云端同步数据，可能已被删除。'
-  if (normalized.includes('sync password is incorrect or sync data is corrupted')) return '无法解密云端数据。同步密码可能被其他设备修改，或云端数据损坏。'
+  if (normalized.includes('cloud sync conflict') || normalized.includes('rejected the update because the remote changed')) return t('sync.quickConflictError')
+  if (normalized.includes('authentication failed')) return t('sync.authenticationFailed')
+  if (normalized.includes('rate limit was reached')) return t('sync.rateLimited')
+  if (normalized.includes('gist was not found') || normalized.includes('snippet was not found')) return t('sync.remoteNotFound')
+  if (normalized.includes('sync password is incorrect or sync data is corrupted')) return t('sync.decryptionFailed')
   return message
 }
 
@@ -249,7 +249,7 @@ async function syncNow(automatic = false) {
     await checkRemoteSyncStatus()
   } catch (reason) {
     syncError.value = formatQuickSyncError(reason)
-    if (automatic) autoSyncState.value = syncError.value.includes('同步冲突') ? 'conflict' : 'error'
+    if (automatic) autoSyncState.value = syncError.value === t('sync.quickConflictError') ? 'conflict' : 'error'
   } finally {
     syncLoading.value = false
   }
@@ -483,7 +483,7 @@ type LocalShellInfo = { id: LocalShell; label: string }
 const localShells = ref<LocalShellInfo[]>([])
 const localTerminalOptions = computed<DropdownOption[]>(() => localShells.value.map((shell) => ({
   key: shell.id,
-  label: `本地终端 · ${shell.label}`,
+  label: t('terminal.localLabel', { label: shell.label }),
 })))
 
 async function startLocalTerminal(key: string | number) {
@@ -750,7 +750,7 @@ async function handleConnect(
       return
     }
 
-    const connectionError = result.error || '连接失败'
+    const connectionError = result.error || t('connection.failed')
     const hostKeyError = parseHostKeyError(connectionError)
     if (hostKeyError) {
       updateConnectionState(sessionId, {
@@ -975,7 +975,7 @@ function openPermissions(file: { name: string; mode: number }, path: string) {
 }
 
 function requestSftpInput(options: { title: string; initialValue?: string; placeholder?: string; onConfirm: (value: string) => void }) {
-  actionDialogRequest.value = { kind: 'input', confirmText: '确认', ...options }
+  actionDialogRequest.value = { kind: 'input', confirmText: t('actionDialog.confirm'), ...options }
 }
 
 function requestSftpConfirmation(options: { title: string; message: string; confirmText: string; danger?: boolean; onConfirm: () => void }) {
@@ -1256,17 +1256,17 @@ function openSyncSettings() {
             </span>
           </div>
           <div class="toolbar-right">
-            <button v-if="!isLocalTerminal" class="toolbar-btn" :class="{ active: currentAiOpen }" title="AI 对话" @click="openAiChat"><Sparkles :size="16" /></button>
-            <button ref="scriptButtonRef" class="toolbar-btn" :class="{ active: scriptPanelOpen }" title="脚本" aria-label="脚本" @click="openScripts"><FileCode2 :size="16" /></button>
+            <button v-if="!isLocalTerminal" class="toolbar-btn" :class="{ active: currentAiOpen }" :title="t('toolbar.aiChat')" @click="openAiChat"><Sparkles :size="16" /></button>
+            <button ref="scriptButtonRef" class="toolbar-btn" :class="{ active: scriptPanelOpen }" :title="t('toolbar.scripts')" :aria-label="t('toolbar.scripts')" @click="openScripts"><FileCode2 :size="16" /></button>
             <div v-if="!isLocalTerminal" class="transfer-control">
-              <button ref="transferButtonRef" class="toolbar-btn transfer-button" :class="{ active: transferPanelOpen, unread: hasUnreadTransfers }" title="传输任务" @click="openTransfers"><Download :size="16" /><span v-if="hasUnreadTransfers" class="transfer-badge" /></button>
+              <button ref="transferButtonRef" class="toolbar-btn transfer-button" :class="{ active: transferPanelOpen, unread: hasUnreadTransfers }" :title="t('toolbar.transferTasks')" @click="openTransfers"><Download :size="16" /><span v-if="hasUnreadTransfers" class="transfer-badge" /></button>
               <div v-if="transferNoticeVisible && transferStore.tasks[0]" class="transfer-notice" role="status" @pointerdown.stop>
-                <strong>任务已添加</strong>
-                <span>{{ transferStore.tasks[0].direction === 'upload' ? '上传' : '下载' }}：{{ transferStore.tasks[0].name }}</span>
-                <button @click="openTransfers">查看传输</button>
+                <strong>{{ t('transfer.taskAdded') }}</strong>
+                <span>{{ transferStore.tasks[0].direction === 'upload' ? t('transfer.upload') : t('transfer.download') }}: {{ transferStore.tasks[0].name }}</span>
+                <button @click="openTransfers">{{ t('transfer.viewTransfers') }}</button>
               </div>
             </div>
-            <button v-if="!isLocalTerminal" class="toolbar-btn" :class="{ active: currentSftpOpen }" title="SFTP 文件管理" @click="openSftp">
+            <button v-if="!isLocalTerminal" class="toolbar-btn" :class="{ active: currentSftpOpen }" :title="t('toolbar.sftpFileManager')" @click="openSftp">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7">
                 <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
               </svg>
@@ -1383,10 +1383,10 @@ function openSyncSettings() {
                   <div class="host-create-actions">
                     <n-button type="primary" @click="openCreateForm">
                       <template #icon><ServerCog :size="15" /></template>
-                      添加主机
+                      {{ t('hosts.add') }}
                     </n-button>
                     <n-dropdown trigger="click" :options="localTerminalOptions" @select="startLocalTerminal">
-                      <n-button type="primary" class="local-terminal-trigger" title="新建本地终端" aria-label="新建本地终端">
+                      <n-button type="primary" class="local-terminal-trigger" :title="t('terminal.newLocal')" :aria-label="t('terminal.newLocal')">
                         <template #icon><Plus :size="16" /></template>
                       </n-button>
                     </n-dropdown>

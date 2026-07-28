@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { Cloud, Download, Upload } from '@lucide/vue'
 import { NAlert, NButton, NInput, NPopconfirm, NSpace, NSwitch, useMessage } from 'naive-ui'
 import { useVaultStore } from '../stores/vault'
+import { useLocale } from '../composables/useLocale'
 
 type SyncProvider = 'github_gist' | 'gitee_snippet'
 type SyncStatus = {
@@ -29,6 +30,7 @@ type SyncDiscovery = {
 }
 
 const vaultStore = useVaultStore()
+const { t } = useLocale()
 const message = useMessage()
 const status = ref<SyncStatus | null>(null)
 const provider = ref<SyncProvider>('github_gist')
@@ -48,8 +50,8 @@ const conflictMessage = ref<string | null>(null)
 
 const isConfigured = computed(() => status.value?.configured === true)
 const hasConflict = computed(() => conflictMessage.value !== null)
-const providerLabel = computed(() => provider.value === 'github_gist' ? 'GitHub Gist' : 'Gitee 私有代码片段')
-const configuredProviderLabel = computed(() => status.value?.provider === 'gitee_snippet' ? 'Gitee 私有代码片段' : 'GitHub Gist')
+const providerLabel = computed(() => provider.value === 'github_gist' ? 'GitHub Gist' : t('sync.giteePrivateSnippet'))
+const configuredProviderLabel = computed(() => status.value?.provider === 'gitee_snippet' ? t('sync.giteePrivateSnippet') : 'GitHub Gist')
 
 
 
@@ -84,7 +86,7 @@ async function run(
     return true
   } catch (reason) {
     const formatted = formatSyncError(reason)
-    if (formatted.includes('同步冲突')) {
+    if (formatted.includes(t('sync.conflictPrefix'))) {
       conflictMessage.value = formatted
       message.warning(formatted, { keepAliveOnHover: true })
     } else {
@@ -104,7 +106,7 @@ function resetDiscovery() {
 
 async function discoverRemote() {
   if (!token.value.trim()) {
-    message.warning(`请输入 ${providerLabel.value} token。`)
+    message.warning(t('sync.tokenRequired', { provider: providerLabel.value }))
     return
   }
 
@@ -124,11 +126,11 @@ async function discoverRemote() {
 
 async function enable() {
   if (!syncPassword.value) {
-    message.warning(discovery.value?.remoteExists ? '请输入云端同步密码。' : '请输入至少 8 个字符的同步密码。')
+    message.warning(discovery.value?.remoteExists ? t('sync.remotePasswordRequired') : t('sync.minimumPasswordRequired'))
     return
   }
   if (!discovery.value?.remoteExists && syncPassword.value !== confirmSyncPassword.value) {
-    message.warning('两次输入的同步密码不一致。')
+    message.warning(t('sync.passwordMismatch'))
     return
   }
 
@@ -139,8 +141,8 @@ async function enable() {
       syncPassword: syncPassword.value,
     }),
     discovery.value?.remoteExists
-      ? `已验证云端同步密码并导入 ${providerLabel.value} 同步库。`
-      : `已创建 ${providerLabel.value} 同步库，并已将本机凭据保存到系统凭据管理器。`,
+      ? t('sync.remotePasswordVerifiedAndImported', { provider: providerLabel.value })
+      : t('sync.syncVaultCreated', { provider: providerLabel.value }),
     true,
   )
   if (succeeded) {
@@ -162,19 +164,19 @@ function formatSyncError(reason: unknown): string {
   const message = String(reason)
   const normalized = message.toLowerCase()
   if (normalized.includes('cloud sync conflict') || normalized.includes('rejected the update because the remote changed')) {
-    return '同步冲突：本地或云端数据自上次同步后已发生变化。'
+    return t('sync.conflictError')
   }
   if (normalized.includes('authentication failed')) {
-    return '云同步 token 无效、已过期或没有访问权限。'
+    return t('sync.authenticationFailed')
   }
   if (normalized.includes('rate limit was reached')) {
-    return '云同步服务请求过于频繁，请稍后重试。'
+    return t('sync.rateLimited')
   }
   if (normalized.includes('gist was not found') || normalized.includes('snippet was not found')) {
-    return '找不到云端同步数据，可能已被删除。'
+    return t('sync.remoteNotFound')
   }
   if (normalized.includes('sync password is incorrect or sync data is corrupted')) {
-    return '无法解密云端数据。同步密码可能被其他设备修改，或云端数据损坏。'
+    return t('sync.decryptionFailed')
   }
   return message
 }
@@ -208,7 +210,7 @@ function closeLocalPasswordForm() {
 async function updateLocalSyncPassword() {
   passwordError.value = null
   if (!localSyncPassword.value) {
-    passwordError.value = '请输入当前云端同步密码。'
+    passwordError.value = t('sync.currentRemotePasswordRequired')
     return
   }
 
@@ -217,7 +219,7 @@ async function updateLocalSyncPassword() {
     applyStatus(await invoke<SyncStatus>('update_local_sync_password', {
       password: localSyncPassword.value,
     }))
-    message.success('已更新本机同步凭据；云端和本地配置均未修改。')
+    message.success(t('sync.localCredentialsUpdated'))
     closeLocalPasswordForm()
   } catch (reason) {
     passwordError.value = formatSyncError(reason)
@@ -241,11 +243,11 @@ async function updateAutoSync(autoSync: boolean) {
 async function changeSyncPassword() {
   passwordError.value = null
   if (!currentPassword.value || !newPassword.value) {
-    passwordError.value = '请输入当前密码和新密码。'
+    passwordError.value = t('sync.currentAndNewPasswordRequired')
     return
   }
   if (newPassword.value !== confirmNewPassword.value) {
-    passwordError.value = '两次输入的新同步密码不一致。'
+    passwordError.value = t('sync.newPasswordMismatch')
     return
   }
 
@@ -256,7 +258,7 @@ async function changeSyncPassword() {
       newPassword: newPassword.value,
     })
     applyStatus(result.sync)
-    message.success('已更新同步密码。所有同步设备请使用新密码。')
+    message.success(t('sync.passwordUpdated'))
     closePasswordForm()
   } catch (reason) {
     passwordError.value = formatSyncError(reason)
@@ -271,7 +273,7 @@ async function resolveConflict(resolution: 'keep_local' | 'accept_remote') {
     () => invoke<OperationResult>('resolve_sync_conflict', {
       resolution,
     }),
-    resolution === 'keep_local' ? '已保留本地配置并覆盖远端；冲突前的两份数据已备份。' : '已采用远端配置；冲突前的两份数据已备份。',
+    resolution === 'keep_local' ? t('sync.keptLocalAndBackedUp') : t('sync.acceptedRemoteAndBackedUp'),
     resolution === 'accept_remote',
   )
 }
@@ -282,7 +284,7 @@ async function deleteRemote() {
     await invoke('delete_remote_sync_vault')
     await loadStatus()
     window.dispatchEvent(new Event('sync-configuration-changed'))
-    message.success('已删除远端同步库及本机保存的同步凭据。')
+    message.success(t('sync.remoteVaultDeleted'))
   } catch (reason) {
     message.error(formatSyncError(reason))
   } finally {
@@ -296,7 +298,7 @@ async function disable() {
     await invoke('disable_sync')
     await loadStatus()
     window.dispatchEvent(new Event('sync-configuration-changed'))
-    message.success('已解除本机同步绑定；远端 Gist 未删除。')
+    message.success(t('sync.syncDisabled'))
   } catch (reason) {
     message.error(formatSyncError(reason))
   } finally {
@@ -322,46 +324,46 @@ onBeforeUnmount(() => {
 
 <template>
   <section class="sync-settings">
-    <h3>云同步</h3>
+    <h3>{{ t('sync.title') }}</h3>
     <n-alert type="info" :show-icon="false">
-      同步密码仅用于端到端加密云端副本，不影响本地 SSH 凭证。密码不会上传，且无法找回。
+      {{ t('sync.passwordNotice') }}
     </n-alert>
 
     <div v-if="hasConflict && isConfigured" class="sync-card conflict-card">
-      <div class="sync-card-title">同步冲突</div>
-      <p>本地和远端自上次同步后都发生了变化。选择覆盖前会备份本地 Vault 与下载的远端加密文件到应用数据目录的 <code>sync-conflicts</code>。</p>
+      <div class="sync-card-title">{{ t('sync.conflict') }}</div>
+      <p>{{ t('sync.conflictDescription') }} <code>sync-conflicts</code>.</p>
       <n-space>
-        <n-button type="warning" :loading="loading" @click="resolveConflict('keep_local')">保留本地并覆盖远端</n-button>
-        <n-button :loading="loading" @click="resolveConflict('accept_remote')">采用远端并覆盖本地</n-button>
-        <n-button tertiary :disabled="loading" @click="conflictMessage = null">取消</n-button>
+        <n-button type="warning" :loading="loading" @click="resolveConflict('keep_local')">{{ t('sync.keepLocalOverwriteRemote') }}</n-button>
+        <n-button :loading="loading" @click="resolveConflict('accept_remote')">{{ t('sync.acceptRemoteOverwriteLocal') }}</n-button>
+        <n-button tertiary :disabled="loading" @click="conflictMessage = null">{{ t('sync.cancel') }}</n-button>
       </n-space>
     </div>
 
     <template v-if="!isConfigured">
       <div class="sync-card">
-        <div class="sync-card-title"><Cloud :size="19" />配置云同步</div>
-        <p>访问 token 仅用于检查云端同步库，探测成功前不会保存到系统凭据管理器。</p>
+        <div class="sync-card-title"><Cloud :size="19" />{{ t('sync.configure') }}</div>
+        <p>{{ t('sync.tokenNotice') }}</p>
         <div class="setup-step">
-          <strong>1. 连接云端</strong>
-          <label>同步提供方
+          <strong>{{ t('sync.connectRemoteStep') }}</strong>
+          <label>{{ t('sync.provider') }}
             <select v-model="provider" :disabled="loading || discovery !== null" @change="resetDiscovery">
               <option value="github_gist">GitHub Gist</option>
-              <option value="gitee_snippet">Gitee 私有代码片段</option>
+              <option value="gitee_snippet">{{ t('sync.giteePrivateSnippet') }}</option>
             </select>
           </label>
-          <label>{{ providerLabel }} token<n-input v-model:value="token" type="password" show-password-on="click" :disabled="loading || discovery !== null" placeholder="仅在完成配置后保存到系统凭据管理器" /></label>
-          <n-button v-if="!discovery" type="primary" :loading="loading" @click="discoverRemote">下一步</n-button>
+          <label>{{ t('sync.tokenLabel', { provider: providerLabel }) }}<n-input v-model:value="token" type="password" show-password-on="click" :disabled="loading || discovery !== null" :placeholder="t('sync.tokenPlaceholder')" /></label>
+          <n-button v-if="!discovery" type="primary" :loading="loading" @click="discoverRemote">{{ t('sync.next') }}</n-button>
         </div>
 
         <div v-if="discovery" class="setup-step">
-          <strong>2. {{ discovery.remoteExists ? '验证云端同步密码' : '设置云端同步密码' }}</strong>
-          <p v-if="discovery.remoteExists">已找到唯一的 MJJSSH 云端同步库。输入其同步密码后将验证并导入云端配置。</p>
-          <p v-else>未找到云端同步库。设置密码后将创建一个新的加密同步库。</p>
-          <label>{{ discovery.remoteExists ? '云端同步密码' : '新云同步密码' }}<n-input v-model:value="syncPassword" type="password" show-password-on="click" :disabled="loading" placeholder="至少 8 个字符" /></label>
-          <label v-if="!discovery.remoteExists">确认云同步密码<n-input v-model:value="confirmSyncPassword" type="password" show-password-on="click" :disabled="loading" placeholder="再次输入同步密码" /></label>
+          <strong>{{ discovery.remoteExists ? t('sync.verifyRemotePasswordStep') : t('sync.setRemotePasswordStep') }}</strong>
+          <p v-if="discovery.remoteExists">{{ t('sync.remoteVaultFound') }}</p>
+          <p v-else>{{ t('sync.remoteVaultNotFound') }}</p>
+          <label>{{ discovery.remoteExists ? t('sync.remotePassword') : t('sync.newRemotePassword') }}<n-input v-model:value="syncPassword" type="password" show-password-on="click" :disabled="loading" :placeholder="t('sync.minimumPasswordPlaceholder')" /></label>
+          <label v-if="!discovery.remoteExists">{{ t('sync.confirmRemotePassword') }}<n-input v-model:value="confirmSyncPassword" type="password" show-password-on="click" :disabled="loading" :placeholder="t('sync.confirmPasswordPlaceholder')" /></label>
           <n-space>
-            <n-button :disabled="loading" @click="resetDiscovery">上一步</n-button>
-            <n-button type="primary" :loading="loading" @click="enable">{{ discovery.remoteExists ? '验证并导入' : '设置密码并创建' }}</n-button>
+            <n-button :disabled="loading" @click="resetDiscovery">{{ t('sync.previous') }}</n-button>
+            <n-button type="primary" :loading="loading" @click="enable">{{ discovery.remoteExists ? t('sync.verifyAndImport') : t('sync.setPasswordAndCreate') }}</n-button>
           </n-space>
         </div>
       </div>
@@ -369,21 +371,21 @@ onBeforeUnmount(() => {
 
     <template v-else>
       <div class="sync-card">
-        <div class="sync-card-title"><Cloud :size="19" />{{ configuredProviderLabel }} 已配置</div>
-        <p>同步文件：<code>{{ status?.remoteFileName }}</code></p>
-        <p>访问 token 和派生同步密钥仅保存在系统凭据管理器中，不会返回给界面或写入 <code>sync.json</code>。</p>
-        <p v-if="status?.lastSyncedAt">上次成功同步：{{ new Date(status.lastSyncedAt).toLocaleString() }}</p>
+        <div class="sync-card-title"><Cloud :size="19" />{{ t('sync.providerConfigured', { provider: configuredProviderLabel }) }}</div>
+        <p>{{ t('sync.syncFile') }}: <code>{{ status?.remoteFileName }}</code></p>
+        <p>{{ t('sync.credentialsNotice') }} <code>sync.json</code>.</p>
+        <p v-if="status?.lastSyncedAt">{{ t('sync.lastSuccessfulSync') }}: {{ new Date(status.lastSyncedAt).toLocaleString() }}</p>
         <div class="sync-option">
           <div>
-            <strong>自动同步</strong>
-            <p>本地配置变更后等待 60 秒；连续修改会重新计时。</p>
+            <strong>{{ t('sync.autoSync') }}</strong>
+            <p>{{ t('sync.autoSyncDescription') }}</p>
           </div>
           <n-switch :value="status?.autoSync ?? true" :disabled="loading" @update:value="updateAutoSync" />
         </div>
         <div class="sync-option">
           <div>
-            <strong>安全同步（推荐）</strong>
-            <p>自动处理单侧更新；本地和云端同时变化时保留两份数据并提示选择。</p>
+            <strong>{{ t('sync.safeSyncRecommended') }}</strong>
+            <p>{{ t('sync.safeSyncDescription') }}</p>
           </div>
         </div>
 
@@ -391,91 +393,91 @@ onBeforeUnmount(() => {
         <n-space>
           <n-popconfirm
             :disabled="loading"
-            positive-text="确认覆盖云端"
-            negative-text="取消"
+            :positive-text="t('sync.confirmOverwriteRemote')"
+            :negative-text="t('sync.cancel')"
             @positive-click="overwriteWithLocal"
           >
             <template #trigger>
-              <n-button type="primary" :loading="loading"><Upload :size="16" />本地覆盖云端</n-button>
+              <n-button type="primary" :loading="loading"><Upload :size="16" />{{ t('sync.localOverwriteRemote') }}</n-button>
             </template>
-            将用本地配置覆盖云端同步数据。<br>
-            覆盖前会自动备份本地和云端数据。
+            {{ t('sync.localOverwriteWarning') }}<br>
+            {{ t('sync.backupBeforeOverwrite') }}
           </n-popconfirm>
           <n-popconfirm
             :disabled="loading"
-            positive-text="确认覆盖本地"
-            negative-text="取消"
+            :positive-text="t('sync.confirmOverwriteLocal')"
+            :negative-text="t('sync.cancel')"
             @positive-click="overwriteWithRemote"
           >
             <template #trigger>
-              <n-button :loading="loading"><Download :size="16" />云端覆盖本地</n-button>
+              <n-button :loading="loading"><Download :size="16" />{{ t('sync.remoteOverwriteLocal') }}</n-button>
             </template>
-            将用云端配置覆盖本地数据。<br>
-            覆盖前会自动备份本地和云端数据。
+            {{ t('sync.remoteOverwriteWarning') }}<br>
+            {{ t('sync.backupBeforeOverwrite') }}
           </n-popconfirm>
-          <n-button tertiary :disabled="loading" @click="openLocalPasswordForm">更新本机同步密码</n-button>
+          <n-button tertiary :disabled="loading" @click="openLocalPasswordForm">{{ t('sync.updateLocalPassword') }}</n-button>
         </n-space>
       </div>
       <div v-if="localPasswordFormVisible" class="sync-card password-form">
-        <div class="sync-card-title">更新本机同步密码</div>
-        <p>用于其他设备修改了云端同步密码后的重新连接。此操作只验证云端密码并更新本机凭据，不会上传、下载或修改任何配置。</p>
+        <div class="sync-card-title">{{ t('sync.updateLocalPassword') }}</div>
+        <p>{{ t('sync.updateLocalPasswordDescription') }}</p>
         <n-alert v-if="passwordError" type="error" :show-icon="false">{{ passwordError }}</n-alert>
-        <label>当前云端同步密码<n-input v-model:value="localSyncPassword" type="password" show-password-on="click" placeholder="输入其他设备设置的新密码" /></label>
+        <label>{{ t('sync.currentRemotePassword') }}<n-input v-model:value="localSyncPassword" type="password" show-password-on="click" :placeholder="t('sync.remotePasswordFromOtherDevicePlaceholder')" /></label>
         <n-space>
-          <n-button :disabled="loading" @click="closeLocalPasswordForm">取消</n-button>
-          <n-button type="primary" :loading="loading" @click="updateLocalSyncPassword">仅更新本机</n-button>
+          <n-button :disabled="loading" @click="closeLocalPasswordForm">{{ t('sync.cancel') }}</n-button>
+          <n-button type="primary" :loading="loading" @click="updateLocalSyncPassword">{{ t('sync.updateLocalOnly') }}</n-button>
         </n-space>
       </div>
       <div class="sync-card danger-zone">
-        <div class="sync-card-title">危险区域</div>
-        <p>这些操作会重新加密云端数据、解除本机同步绑定或永久删除云端数据，请谨慎操作。</p>
+        <div class="sync-card-title">{{ t('sync.dangerZone') }}</div>
+        <p>{{ t('sync.dangerZoneDescription') }}</p>
         <n-space>
-        <n-button tertiary type="warning" :disabled="loading" @click="openPasswordForm">修改云端同步密码</n-button>
+        <n-button tertiary type="warning" :disabled="loading" @click="openPasswordForm">{{ t('sync.changeRemotePassword') }}</n-button>
           <n-popconfirm
             :disabled="loading"
-            positive-text="确认关闭"
-            negative-text="取消"
+            :positive-text="t('sync.confirmDisable')"
+            :negative-text="t('sync.cancel')"
             @positive-click="disable"
           >
             <template #trigger>
-              <n-button tertiary type="warning" :disabled="loading">关闭云端同步</n-button>
+              <n-button tertiary type="warning" :disabled="loading">{{ t('sync.disable') }}</n-button>
             </template>
-            将解除本机与云端同步的绑定。<br>
-            不会删除云端同步数据。
+            {{ t('sync.disableWarning') }}<br>
+            {{ t('sync.disableNotice') }}
           </n-popconfirm>
           <n-popconfirm
             :disabled="loading"
-            positive-text="确认删除"
-            negative-text="取消"
+            :positive-text="t('sync.confirmDelete')"
+            :negative-text="t('sync.cancel')"
             @positive-click="deleteRemote"
           >
             <template #trigger>
-              <n-button tertiary type="error" :disabled="loading">删除云端数据</n-button>
+              <n-button tertiary type="error" :disabled="loading">{{ t('sync.deleteRemoteData') }}</n-button>
             </template>
-            确定永久删除远端加密同步数据吗？<br>
-            此操作不可恢复。
+            {{ t('sync.deleteRemoteDataWarning') }}<br>
+            {{ t('sync.irreversible') }}
           </n-popconfirm>
         </n-space>
         <div v-if="passwordFormVisible" class="password-form">
-          <div class="sync-card-title">修改云端同步密码</div>
-          <p>此操作会使用本机配置重新加密并覆盖云端数据。请仅在确认本机配置是最新版本时使用。</p>
+          <div class="sync-card-title">{{ t('sync.changeRemotePassword') }}</div>
+          <p>{{ t('sync.changePasswordDescription') }}</p>
           <n-alert v-if="passwordError" type="error" :show-icon="false">{{ passwordError }}</n-alert>
-          <label>当前同步密码<n-input v-model:value="currentPassword" type="password" show-password-on="click" placeholder="输入当前同步密码" /></label>
-          <label>新同步密码<n-input v-model:value="newPassword" type="password" show-password-on="click" placeholder="至少 8 个字符" /></label>
-          <label>确认新同步密码<n-input v-model:value="confirmNewPassword" type="password" show-password-on="click" placeholder="再次输入新同步密码" /></label>
+          <label>{{ t('sync.currentPassword') }}<n-input v-model:value="currentPassword" type="password" show-password-on="click" :placeholder="t('sync.currentPasswordPlaceholder')" /></label>
+          <label>{{ t('sync.newPassword') }}<n-input v-model:value="newPassword" type="password" show-password-on="click" :placeholder="t('sync.minimumPasswordPlaceholder')" /></label>
+          <label>{{ t('sync.confirmNewPassword') }}<n-input v-model:value="confirmNewPassword" type="password" show-password-on="click" :placeholder="t('sync.confirmNewPasswordPlaceholder')" /></label>
           <n-space class="password-actions">
-            <n-button :disabled="loading" @click="closePasswordForm">取消</n-button>
+            <n-button :disabled="loading" @click="closePasswordForm">{{ t('sync.cancel') }}</n-button>
             <n-popconfirm
               :disabled="loading"
-              positive-text="确认更新并同步"
-              negative-text="取消"
+              :positive-text="t('sync.confirmUpdateAndSync')"
+              :negative-text="t('sync.cancel')"
               @positive-click="changeSyncPassword"
             >
               <template #trigger>
-                <n-button type="primary" :loading="loading">更新并同步</n-button>
+                <n-button type="primary" :loading="loading">{{ t('sync.updateAndSync') }}</n-button>
               </template>
-              将使用新密码生成新的加密同步配置，并覆盖云端现有同步数据。<br>
-              所有其他设备之后都需要使用新密码才能继续同步。
+              {{ t('sync.updateAndSyncWarning') }}<br>
+              {{ t('sync.otherDevicesRequireNewPassword') }}
             </n-popconfirm>
           </n-space>
         </div>

@@ -21,8 +21,10 @@ import { Plus, RefreshCw, Sparkles } from '@lucide/vue'
 import FloatingPanel from './FloatingPanel.vue'
 import { useAiStore } from '../stores/ai'
 import type { AiAgentConfig, AiConnectionTestResult, AiModelConfig } from '../types/ai'
+import { useLocale } from '../composables/useLocale'
 
 const aiStore = useAiStore()
+const { t } = useLocale()
 const message = useMessage()
 const themeVars = useThemeVars()
 const modalThemeStyle = computed(() => ({
@@ -118,23 +120,23 @@ function insertDiscoveredModels() {
     .filter((id) => !existingIds.has(id))
     .map((id) => ({ ...createModel(), id, name: id }))
   if (!addedModels.length) {
-    message.warning('请选择至少一个未启用的模型')
+    message.warning(t('ai.selectAtLeastOneModel'))
     return
   }
   configForm.value.models.push(...addedModels)
   if (!configForm.value.activeModelId) selectModel(addedModels[0].id)
-  message.success(`已插入 ${addedModels.length} 个模型`)
+  message.success(t('ai.modelsInserted', { count: addedModels.length }))
   closeModelPicker()
 }
 
 async function discoverModels() {
   if (discoveringModels.value) return
   if (!configForm.value.baseUrl.trim()) {
-    message.warning('请输入 API 地址')
+    message.warning(t('ai.apiUrlRequired'))
     return
   }
   if (!configForm.value.apiKey.trim() && !configured.value) {
-    message.warning('请输入 API Key')
+    message.warning(t('ai.apiKeyRequired'))
     return
   }
 
@@ -147,7 +149,7 @@ async function discoverModels() {
     })
     const uniqueModels = [...new Set(models)]
     if (!uniqueModels.length) {
-      message.warning('该 API 未返回可用模型')
+      message.warning(t('ai.noModelsReturned'))
       return
     }
     discoveredModelIds.value = uniqueModels.sort()
@@ -189,7 +191,7 @@ function saveModel() {
     item.name === model.name && item.id !== editingModel.value?.id,
   )
   if (duplicate) {
-    message.error('模型 ID 和显示名称不能重复')
+    message.error(t('ai.duplicateModel'))
     return
   }
 
@@ -204,7 +206,7 @@ function saveModel() {
 
 function removeModel(model: AiModelConfig) {
   if (model.id === configForm.value.activeModelId) {
-    message.warning('请先设置其他默认模型')
+    message.warning(t('ai.selectAnotherDefaultModel'))
     return
   }
   const index = configForm.value.models.findIndex((item) => item.id === model.id)
@@ -218,12 +220,12 @@ onMounted(async () => {
 
 async function saveConfig() {
   if (!configured.value && !configForm.value.apiKey.trim()) {
-    message.warning('首次保存配置时请输入 API Key')
+    message.warning(t('ai.apiKeyRequiredForInitialSave'))
     return
   }
 
   if (!activeModel.value) {
-    message.warning('请添加并选择一个模型')
+    message.warning(t('ai.addAndSelectModel'))
     return
   }
 
@@ -233,7 +235,7 @@ async function saveConfig() {
   try {
     await aiStore.saveConfig(configForm.value)
     syncConfigForm()
-    message.success('配置已保存')
+    message.success(t('ai.configSaved'))
   } catch {
     // The store error watcher displays the request failure.
   } finally {
@@ -277,7 +279,7 @@ async function saveAgent() {
   try {
     await aiStore.saveAgent({ id: editingAgent.value?.id, ...agentForm.value })
     closeAgentEditor()
-    message.success('Agent 已保存')
+    message.success(t('ai.agentSaved'))
   } catch {
     // The store error watcher displays the request failure.
   } finally {
@@ -289,7 +291,7 @@ async function deleteAgent(agent: AiAgentConfig) {
   try {
     await aiStore.deleteAgent(agent.id)
     if (editingAgent.value?.id === agent.id) closeAgentEditor()
-    message.success('Agent 已删除')
+    message.success(t('ai.agentDeleted'))
   } catch {
     // The store error watcher displays the request failure.
   }
@@ -299,102 +301,102 @@ async function deleteAgent(agent: AiAgentConfig) {
 <template>
   <section class="ai-settings">
     <n-tabs v-model:value="activeTab" type="line" class="ai-tabs" animated>
-      <n-tab-pane name="provider" tab="提供商">
+      <n-tab-pane name="provider" :tab="t('ai.providerTab')">
         <section class="tab-section">
-          <h3>AI 提供商</h3>
-          <p class="section-description">配置用于 AI 对话的 OpenAI-compatible 服务。</p>
+          <h3>{{ t('ai.providerTitle') }}</h3>
+          <p class="section-description">{{ t('ai.providerDescription') }}</p>
 
           <div class="settings-card">
             <div class="settings-row">
-              <div class="row-description"><strong>提供商</strong><p>当前支持标准 OpenAI-compatible API。</p></div>
+              <div class="row-description"><strong>{{ t('ai.provider') }}</strong><p>{{ t('ai.providerHelp') }}</p></div>
               <n-select :value="'openai_compatible'" :options="providerOptions" disabled class="row-control" />
             </div>
             <div class="settings-row">
-              <div class="row-description"><strong>API 密钥</strong><p>用于访问服务的密钥，保存后不会再次显示。</p></div>
-              <n-input v-model:value="configForm.apiKey" type="password" show-password-on="click" autocomplete="off" :placeholder="configured ? '输入 API Key 以更新配置' : '输入 API Key…'" class="row-control" />
+              <div class="row-description"><strong>{{ t('ai.apiKey') }}</strong><p>{{ t('ai.apiKeyHelp') }}</p></div>
+              <n-input v-model:value="configForm.apiKey" type="password" show-password-on="click" autocomplete="off" :placeholder="configured ? t('ai.apiKeyUpdatePlaceholder') : t('ai.apiKeyPlaceholder')" class="row-control" />
             </div>
             <div class="settings-row">
-              <div class="row-description"><strong>API 地址</strong><p>自定义 API 端点，保持使用 `/v1` 前缀。</p></div>
+              <div class="row-description"><strong>{{ t('ai.apiUrl') }}</strong><p>{{ t('ai.apiUrlHelp') }}</p></div>
               <n-input v-model:value="configForm.baseUrl" placeholder="https://api.openai.com/v1" class="row-control" />
             </div>
 
             <div class="settings-row">
-              <div class="row-description"><strong>请求超时</strong><p>单次 AI 请求的最长等待时间（10–300 秒）。</p></div>
-              <n-input-number v-model:value="configForm.timeoutSeconds" :min="10" :max="300" :precision="0" class="timeout-control"><template #suffix>秒</template></n-input-number>
+              <div class="row-description"><strong>{{ t('ai.requestTimeout') }}</strong><p>{{ t('ai.requestTimeoutHelp') }}</p></div>
+              <n-input-number v-model:value="configForm.timeoutSeconds" :min="10" :max="300" :precision="0" class="timeout-control"><template #suffix>{{ t('ai.seconds') }}</template></n-input-number>
             </div>
           </div>
 
           <section class="model-section">
             <div class="agent-heading">
-              <div><h4>模型列表</h4><p class="section-description">为同一提供商管理可用模型及其 API 能力。</p></div>
+              <div><h4>{{ t('ai.modelList') }}</h4><p class="section-description">{{ t('ai.modelListDescription') }}</p></div>
               <n-button-group size="small">
-                <n-button :loading="discoveringModels" @click="discoverModels"><template #icon><RefreshCw :size="15" /></template>获取模型列表</n-button>
-                <n-button title="添加自定义模型" aria-label="添加自定义模型" @click="openNewModel"><template #icon><Plus :size="16" /></template></n-button>
+                <n-button :loading="discoveringModels" @click="discoverModels"><template #icon><RefreshCw :size="15" /></template>{{ t('ai.discoverModels') }}</n-button>
+                <n-button :title="t('ai.addCustomModel')" :aria-label="t('ai.addCustomModel')" @click="openNewModel"><template #icon><Plus :size="16" /></template></n-button>
               </n-button-group>
             </div>
             <div v-if="configForm.models.length" class="model-list">
               <article v-for="model in configForm.models" :key="model.id" class="model-card" :class="{ selected: model.id === configForm.activeModelId }">
                 <div class="model-card-main"><Sparkles :size="16" /><div><strong>{{ model.name }}</strong><p><code>{{ model.id }}</code> · {{ model.protocol === 'responses' ? 'Responses API' : 'Chat Completions' }}</p></div></div>
-                <div class="model-actions"><n-button size="tiny" :disabled="model.id === configForm.activeModelId" @click="selectModel(model.id)">{{ model.id === configForm.activeModelId ? '默认' : '设为默认' }}</n-button><n-button size="tiny" @click="openEditModel(model)">编辑</n-button><n-popconfirm v-if="model.id !== configForm.activeModelId" placement="left" positive-text="删除" negative-text="取消" :style="{ maxWidth: '280px' }" @positive-click="removeModel(model)"><template #trigger><n-button size="tiny" type="error">删除</n-button></template><span class="delete-confirm-text">确定删除模型 “{{ model.name }}”？</span></n-popconfirm></div>
+                <div class="model-actions"><n-button size="tiny" :disabled="model.id === configForm.activeModelId" @click="selectModel(model.id)">{{ model.id === configForm.activeModelId ? t('ai.default') : t('ai.setDefault') }}</n-button><n-button size="tiny" @click="openEditModel(model)">{{ t('ai.edit') }}</n-button><n-popconfirm v-if="model.id !== configForm.activeModelId" placement="left" :positive-text="t('ai.delete')" :negative-text="t('ai.cancel')" :style="{ maxWidth: '280px' }" @positive-click="removeModel(model)"><template #trigger><n-button size="tiny" type="error">{{ t('ai.delete') }}</n-button></template><span class="delete-confirm-text">{{ t('ai.deleteModelConfirm', { name: model.name }) }}</span></n-popconfirm></div>
               </article>
             </div>
-            <p v-else class="model-empty">尚未添加模型。</p>
+            <p v-else class="model-empty">{{ t('ai.noModels') }}</p>
           </section>
 
-          <FloatingPanel :show="showModelPicker" title="选择要插入的模型" @close="closeModelPicker">
-            <div class="model-picker-summary">{{ availableDiscoveredModels.length }} 个可选模型</div>
-            <n-input v-model:value="modelSearch" clearable placeholder="搜索模型 ID" />
+          <FloatingPanel :show="showModelPicker" :title="t('ai.selectModelsToInsert')" @close="closeModelPicker">
+            <div class="model-picker-summary">{{ t('ai.availableModels', { count: availableDiscoveredModels.length }) }}</div>
+            <n-input v-model:value="modelSearch" clearable :placeholder="t('ai.searchModelId')" />
             <n-checkbox-group v-model:value="selectedDiscoveredModelIds" class="model-picker-list">
               <n-checkbox v-for="modelId in availableDiscoveredModels" :key="modelId" :value="modelId">{{ modelId }}</n-checkbox>
-              <p v-if="!availableDiscoveredModels.length" class="model-empty">没有符合条件的模型。</p>
+              <p v-if="!availableDiscoveredModels.length" class="model-empty">{{ t('ai.noMatchingModels') }}</p>
             </n-checkbox-group>
-            <div class="model-picker-actions"><span>已选择 {{ selectedDiscoveredModelIds.length }} 项</span><n-button @click="closeModelPicker">取消</n-button><n-button type="primary" @click="insertDiscoveredModels">插入模型</n-button></div>
+            <div class="model-picker-actions"><span>{{ t('ai.selectedModels', { count: selectedDiscoveredModelIds.length }) }}</span><n-button @click="closeModelPicker">{{ t('ai.cancel') }}</n-button><n-button type="primary" @click="insertDiscoveredModels">{{ t('ai.insertModels') }}</n-button></div>
           </FloatingPanel>
 
-          <FloatingPanel :show="showModelEditor" :title="editingModel ? '编辑模型' : '添加模型'" width="720px" @close="closeModelEditor">
+          <FloatingPanel :show="showModelEditor" :title="editingModel ? t('ai.editModel') : t('ai.addModel')" width="720px" @close="closeModelEditor">
             <form class="model-editor" @submit.prevent="saveModel">
               <n-form label-placement="top" size="small">
-                <div class="model-form-grid"><n-form-item label="模型 ID"><n-input v-model:value="modelForm.id" maxlength="160" placeholder="例如 gpt-4.1-mini" required /></n-form-item><n-form-item label="显示名称"><n-input v-model:value="modelForm.name" maxlength="80" placeholder="例如 GPT-4.1 Mini" required /></n-form-item></div>
-                <div class="model-form-grid"><n-form-item label="最大上下文 Token"><n-input-number v-model:value="modelForm.maxContextTokens" :min="1" :precision="0" /></n-form-item><n-form-item label="最大输出 Token"><n-input-number v-model:value="modelForm.maxOutputTokens" :min="1" :precision="0" /></n-form-item></div>
-                <div class="model-form-grid"><n-form-item label="请求协议"><n-select v-model:value="modelForm.protocol" :options="[{ label: 'Chat Completions', value: 'chat_completions' }, { label: 'Responses API', value: 'responses' }]" /></n-form-item><n-form-item label="推理强度"><n-input v-model:value="modelForm.reasoningEffort" placeholder="例如 medium" :disabled="!modelForm.supportsReasoning" /></n-form-item></div>
-                <n-form-item label="提示词缓存 Key"><n-input v-model:value="modelForm.promptCacheKey" placeholder="可选" :disabled="!modelForm.supportsPromptCaching" /></n-form-item>
-                <div class="capability-grid"><label><span>工具调用</span><n-switch v-model:value="modelForm.supportsTools" /></label><label><span>图片输入</span><n-switch v-model:value="modelForm.supportsImages" /></label><label><span>并行工具调用</span><n-switch v-model:value="modelForm.supportsParallelToolCalls" :disabled="!modelForm.supportsTools" /></label><label><span>提示词缓存</span><n-switch v-model:value="modelForm.supportsPromptCaching" /></label><label><span>推理</span><n-switch v-model:value="modelForm.supportsReasoning" /></label></div>
+                <div class="model-form-grid"><n-form-item :label="t('ai.modelId')"><n-input v-model:value="modelForm.id" maxlength="160" :placeholder="t('ai.modelIdPlaceholder')" required /></n-form-item><n-form-item :label="t('ai.displayName')"><n-input v-model:value="modelForm.name" maxlength="80" :placeholder="t('ai.displayNamePlaceholder')" required /></n-form-item></div>
+                <div class="model-form-grid"><n-form-item :label="t('ai.maxContextTokens')"><n-input-number v-model:value="modelForm.maxContextTokens" :min="1" :precision="0" /></n-form-item><n-form-item :label="t('ai.maxOutputTokens')"><n-input-number v-model:value="modelForm.maxOutputTokens" :min="1" :precision="0" /></n-form-item></div>
+                <div class="model-form-grid"><n-form-item :label="t('ai.requestProtocol')"><n-select v-model:value="modelForm.protocol" :options="[{ label: 'Chat Completions', value: 'chat_completions' }, { label: 'Responses API', value: 'responses' }]" /></n-form-item><n-form-item :label="t('ai.reasoningEffort')"><n-input v-model:value="modelForm.reasoningEffort" :placeholder="t('ai.reasoningEffortPlaceholder')" :disabled="!modelForm.supportsReasoning" /></n-form-item></div>
+                <n-form-item :label="t('ai.promptCacheKey')"><n-input v-model:value="modelForm.promptCacheKey" :placeholder="t('ai.optional')" :disabled="!modelForm.supportsPromptCaching" /></n-form-item>
+                <div class="capability-grid"><label><span>{{ t('ai.toolCalling') }}</span><n-switch v-model:value="modelForm.supportsTools" /></label><label><span>{{ t('ai.imageInput') }}</span><n-switch v-model:value="modelForm.supportsImages" /></label><label><span>{{ t('ai.parallelToolCalls') }}</span><n-switch v-model:value="modelForm.supportsParallelToolCalls" :disabled="!modelForm.supportsTools" /></label><label><span>{{ t('ai.promptCaching') }}</span><n-switch v-model:value="modelForm.supportsPromptCaching" /></label><label><span>{{ t('ai.reasoning') }}</span><n-switch v-model:value="modelForm.supportsReasoning" /></label></div>
               </n-form>
-              <div class="provider-actions"><n-button type="primary" attr-type="submit">保存模型</n-button><n-button @click="closeModelEditor">取消</n-button></div>
+              <div class="provider-actions"><n-button type="primary" attr-type="submit">{{ t('ai.saveModel') }}</n-button><n-button @click="closeModelEditor">{{ t('ai.cancel') }}</n-button></div>
             </form>
           </FloatingPanel>
 
           <div class="provider-actions">
-            <n-button type="primary" :loading="savingConfig" @click="saveConfig">保存配置</n-button>
-            <n-button :disabled="!configured" :loading="testingConnection" @click="testConnection">测试连接</n-button>
+            <n-button type="primary" :loading="savingConfig" @click="saveConfig">{{ t('ai.saveConfig') }}</n-button>
+            <n-button :disabled="!configured" :loading="testingConnection" @click="testConnection">{{ t('ai.testConnection') }}</n-button>
           </div>
           <p v-if="connectionTest" class="connection-test-result" :class="connectionTest.status">{{ connectionTest.message }}</p>
-          <p class="privacy-notice">你的消息和主动选择的上下文将发送到所配置的第三方 AI 服务。</p>
+          <p class="privacy-notice">{{ t('ai.privacyNotice') }}</p>
         </section>
       </n-tab-pane>
 
       <n-tab-pane name="agent" tab="Agent">
         <section class="tab-section">
           <div class="agent-heading">
-            <div><h3>Agent 配置</h3><p class="section-description">Agent 仅影响回答角色与沟通方式，不增加 SSH 执行权限。</p></div>
-            <n-button size="small" @click="openNewAgent"><template #icon><Plus :size="15" /></template>新建 Agent</n-button>
+            <div><h3>{{ t('ai.agentConfiguration') }}</h3><p class="section-description">{{ t('ai.agentDescription') }}</p></div>
+            <n-button size="small" @click="openNewAgent"><template #icon><Plus :size="15" /></template>{{ t('ai.newAgent') }}</n-button>
           </div>
           <div class="agent-list">
             <article v-for="agent in aiStore.agents" :key="agent.id" class="agent-card" :class="{ selected: agent.id === aiStore.selectedAgentId }">
-              <div class="agent-card-main"><Sparkles :size="16" /><div><strong>{{ agent.name }}</strong><p>{{ agent.isDefault ? '默认 Agent' : '自定义 Agent' }}</p></div></div>
-              <div class="agent-actions"><n-button size="tiny" @click="aiStore.selectAgent(agent.id)">使用</n-button><n-button size="tiny" @click="openEditAgent(agent)">编辑</n-button><n-popconfirm v-if="!agent.isDefault" positive-text="删除" negative-text="取消" @positive-click="deleteAgent(agent)"><template #trigger><n-button size="tiny" type="error">删除</n-button></template>确定删除 Agent “{{ agent.name }}”？</n-popconfirm></div>
+              <div class="agent-card-main"><Sparkles :size="16" /><div><strong>{{ agent.name }}</strong><p>{{ agent.isDefault ? t('ai.defaultAgent') : t('ai.customAgent') }}</p></div></div>
+              <div class="agent-actions"><n-button size="tiny" @click="aiStore.selectAgent(agent.id)">{{ t('ai.use') }}</n-button><n-button size="tiny" @click="openEditAgent(agent)">{{ t('ai.edit') }}</n-button><n-popconfirm v-if="!agent.isDefault" :positive-text="t('ai.delete')" :negative-text="t('ai.cancel')" @positive-click="deleteAgent(agent)"><template #trigger><n-button size="tiny" type="error">{{ t('ai.delete') }}</n-button></template>{{ t('ai.deleteAgentConfirm', { name: agent.name }) }}</n-popconfirm></div>
             </article>
           </div>
           <form v-if="showAgentEditor" class="agent-editor" @submit.prevent="saveAgent">
-            <h4>{{ editingAgent ? '编辑 Agent' : '新建 Agent' }}</h4>
-            <n-form label-placement="top" size="small"><n-form-item label="名称"><n-input v-model:value="agentForm.name" maxlength="80" required /></n-form-item><n-form-item label="提示词"><n-input v-model:value="agentForm.prompt" type="textarea" :autosize="{ minRows: 5, maxRows: 10 }" maxlength="16384" required /></n-form-item></n-form>
-            <div class="provider-actions"><n-button type="primary" attr-type="submit" :loading="savingAgent">保存 Agent</n-button><n-button @click="closeAgentEditor">取消</n-button></div>
+            <h4>{{ editingAgent ? t('ai.editAgent') : t('ai.newAgent') }}</h4>
+            <n-form label-placement="top" size="small"><n-form-item :label="t('ai.name')"><n-input v-model:value="agentForm.name" maxlength="80" required /></n-form-item><n-form-item :label="t('ai.prompt')"><n-input v-model:value="agentForm.prompt" type="textarea" :autosize="{ minRows: 5, maxRows: 10 }" maxlength="16384" required /></n-form-item></n-form>
+            <div class="provider-actions"><n-button type="primary" attr-type="submit" :loading="savingAgent">{{ t('ai.saveAgent') }}</n-button><n-button @click="closeAgentEditor">{{ t('ai.cancel') }}</n-button></div>
           </form>
         </section>
       </n-tab-pane>
 
-      <n-tab-pane name="tools" tab="工具接入"><section class="coming-soon"><Sparkles :size="22" /><strong>工具接入即将推出</strong><p>SSH 工具调用将在确认执行审批流程完成后开放。</p></section></n-tab-pane>
-      <n-tab-pane name="web-search" tab="网络搜索"><section class="coming-soon"><strong>网络搜索即将推出</strong><p>启用后，AI 可根据你的明确授权检索公开网络信息。</p></section></n-tab-pane>
+      <n-tab-pane name="tools" :tab="t('ai.toolsTab')"><section class="coming-soon"><Sparkles :size="22" /><strong>{{ t('ai.toolsComingSoon') }}</strong><p>{{ t('ai.toolsComingSoonDescription') }}</p></section></n-tab-pane>
+      <n-tab-pane name="web-search" :tab="t('ai.webSearchTab')"><section class="coming-soon"><strong>{{ t('ai.webSearchComingSoon') }}</strong><p>{{ t('ai.webSearchComingSoonDescription') }}</p></section></n-tab-pane>
 
     </n-tabs>
   </section>

@@ -1,6 +1,9 @@
 <script setup lang="ts">
 import { X } from '@lucide/vue'
 import { NButton } from 'naive-ui'
+import { useLocale } from '../composables/useLocale'
+
+const { t } = useLocale()
 
 withDefaults(defineProps<{
   show: boolean
@@ -26,7 +29,7 @@ const emit = defineEmits<{ close: [] }>()
     >
       <header class="floating-panel-header">
         <h4>{{ title }}</h4>
-        <n-button quaternary circle size="small" title="关闭" aria-label="关闭" @click="emit('close')">
+        <n-button quaternary circle size="small" :title="t('floatingPanel.close')" :aria-label="t('floatingPanel.close')" @click="emit('close')">
           <template #icon><X :size="17" /></template>
         </n-button>
       </header>

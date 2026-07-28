@@ -1,14 +1,14 @@
 <script setup lang="ts">
 import { computed, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { readText } from '@tauri-apps/plugin-clipboard-manager'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { NDropdown, NNumberAnimation, type DropdownOption } from 'naive-ui'
-import { AlertCircle, ArrowUp, CheckCircle2, ChevronDown, Command, Download, History, LoaderCircle, Plus, Sparkles, X, XCircle } from '@lucide/vue'
+import { AlertCircle, ArrowUp, CheckCircle2, ChevronDown, Command, Download, History, LoaderCircle, Plus, Sparkles, Square, X, XCircle } from '@lucide/vue'
 import { useAiStore, type AiActionRecord } from '../stores/ai'
 import { useSessionStore } from '../stores/session'
+import { useLocale } from '../composables/useLocale'
 import type { AiActionResult, AiExecutableDecision, AiExecutableGrant, AiExecutionMode, AiImageInput, AiPendingAction, AiStreamEvent, AiTaskStarted, AiTerminalSelection, StartAiTaskInput } from '../types/ai'
 
 const props = defineProps<{ sessionId: string }>()
@@ -16,8 +16,10 @@ const emit = defineEmits<{ close: []; openAiSettings: [] }>()
 
 const aiStore = useAiStore()
 const sessionStore = useSessionStore()
+const { language, t } = useLocale()
 const draft = ref('')
 const pendingImages = ref<AiImageInput[]>([])
+const attachmentInput = ref<HTMLInputElement | null>(null)
 const pendingTerminalSelection = ref<AiTerminalSelection | null>(null)
 const previewImage = ref<AiImageInput | null>(null)
 const messages = computed({
@@ -26,61 +28,68 @@ const messages = computed({
 })
 const executionMode = ref<AiExecutionMode>('read_only')
 const showExecutionModeMenu = ref(false)
-const executionModeDetails: Record<AiExecutionMode, { label: string; description: string; tone: string; riskLabel: string }> = {
+const executionModeDetails = computed<Record<AiExecutionMode, { label: string; description: string; tone: string; riskLabel: string }>>(() => ({
   read_only: {
-    label: '问答模式',
-    description: '问答对话，不具备执行命令权限',
+    label: t('ai.executionMode.readOnly.label'),
+    description: t('ai.executionMode.readOnly.description'),
     tone: '#5bd8aa',
-    riskLabel: '安全',
+    riskLabel: t('ai.executionMode.readOnly.riskLabel'),
   },
   approval_required: {
-    label: '确认模式',
-    description: '执行命令需要用户授权',
+    label: t('ai.executionMode.approvalRequired.label'),
+    description: t('ai.executionMode.approvalRequired.description'),
     tone: '#8fb2ee',
-    riskLabel: '可控',
+    riskLabel: t('ai.executionMode.approvalRequired.riskLabel'),
   },
   autonomous: {
-    label: '自动模式',
-    description: '获得全权授权，自主执行命令',
+    label: t('ai.executionMode.autonomous.label'),
+    description: t('ai.executionMode.autonomous.description'),
     tone: '#e4b85d',
-    riskLabel: '风险',
+    riskLabel: t('ai.executionMode.autonomous.riskLabel'),
   },
-}
+}))
 const executionModeOptions = computed<DropdownOption[]>(() =>
-  (Object.entries(executionModeDetails) as [AiExecutionMode, typeof executionModeDetails[AiExecutionMode]][])
+  (Object.entries(executionModeDetails.value) as [AiExecutionMode, typeof executionModeDetails.value[AiExecutionMode]][])
     .map(([key, mode]) => ({
       key,
-      type: 'render',
-      render: () => h('button', {
-        type: 'button',
-        class: ['execution-mode-option', { selected: executionMode.value === key }],
-        onClick: () => selectExecutionMode(key),
-      }, [
-        h('span', { class: 'execution-mode-option-copy' }, [
-          h('span', { class: 'execution-mode-option-heading' }, [
-            h('span', { class: 'execution-mode-option-title' }, mode.label),
-            h('span', { class: 'execution-mode-option-risk', style: { color: mode.tone } }, mode.riskLabel),
-          ]),
-          h('span', { class: 'execution-mode-option-description' }, mode.description),
-        ]),
-      ]),
+      label: mode.label,
+      props: { class: 'ai-dropdown-option' },
     })),
 )
-const currentExecutionMode = computed(() => executionModeDetails[executionMode.value])
+
+function renderExecutionModeLabel(option: DropdownOption) {
+  const key = option.key as AiExecutionMode
+  const mode = executionModeDetails.value[key]
+  if (!mode) return option.label as string
+
+  return h('div', {
+    class: 'ai-dropdown-option-content execution-mode-option',
+  }, [
+    h('span', { class: 'execution-mode-option-copy' }, [
+      h('span', { class: 'execution-mode-option-title' }, mode.label),
+      h('span', { class: 'execution-mode-option-description' }, mode.description),
+      h('span', { class: 'execution-mode-option-risk', style: { color: mode.tone } }, mode.riskLabel),
+    ]),
+  ])
+}
+const currentExecutionMode = computed(() => executionModeDetails.value[executionMode.value])
 const modelOptions = computed<DropdownOption[]>(() =>
   (aiStore.config.models ?? []).map((model) => ({
     key: model.id,
-    type: 'render',
-    render: () => h('button', {
-      type: 'button',
-      class: ['model-option', { selected: activeModel.value?.id === model.id }],
-      onClick: () => selectModel(model.id),
-    }, [
-      h('span', { class: 'model-option-name' }, model.name),
-      h('span', { class: 'model-option-meta' }, model.protocol === 'responses' ? 'Responses API' : 'Chat Completions'),
-    ]),
+    label: model.name,
+    props: { class: 'ai-dropdown-option' },
   })),
 )
+
+function renderModelLabel(option: DropdownOption) {
+  const model = aiStore.config.models?.find((item) => item.id === option.key)
+  if (!model) return option.label as string
+
+  return h('div', { class: 'ai-dropdown-option-content' }, [
+    h('span', { class: 'ai-dropdown-option-title' }, model.name),
+    h('span', { class: 'ai-dropdown-option-description' }, model.protocol === 'responses' ? 'Responses API' : 'Chat Completions'),
+  ])
+}
 const requestId = ref<string | null>(null)
 const taskError = ref<string | null>(null)
 const pendingActionPlan = ref<string | null>(null)
@@ -112,7 +121,7 @@ const showModelMenu = ref(false)
 const conversationHistory = computed(() => aiStore.getConversationHistory(props.sessionId))
 const selectedAgent = computed(() => aiStore.agents.find((agent) => agent.id === aiStore.selectedAgentId) ?? null)
 const activeModel = computed(() => aiStore.config.models?.find((model) => model.id === aiStore.config.activeModelId) ?? null)
-const activeModelLabel = computed(() => activeModel.value?.name ?? aiStore.config.model ?? '未配置模型')
+const activeModelLabel = computed(() => activeModel.value?.name ?? aiStore.config.model ?? t('ai.modelNotConfigured'))
 const canSend = computed(() => Boolean(draft.value.trim() || pendingImages.value.length || pendingTerminalSelection.value) && aiStore.config.configured && selectedAgent.value && activeModel.value)
 const isWaitingForResponse = computed(() =>
   Boolean(requestId.value) && messages.value.at(-1)?.role !== 'assistant',
@@ -125,7 +134,8 @@ const taskResponseMessage = computed(() => messages.value.find(
 ) ?? null)
 const taskErrorMessage = computed(() => taskError.value)
 
-async function selectModel(modelId: string) {
+async function selectModel(key: string | number) {
+  const modelId = String(key)
   const model = aiStore.config.models?.find((item) => item.id === modelId)
   if (!model || model.id === aiStore.config.activeModelId || aiStore.loading) {
     showModelMenu.value = false
@@ -148,11 +158,13 @@ async function selectModel(modelId: string) {
   }
 }
 const autoRetryStatus = computed(() => {
-  const status = taskStatus.value
-  const marker = '可点击停止取消'
-  if (!status?.includes('正在自动重试') || !status.includes(marker)) return null
-  const [before] = status.split(marker)
-  return { before, after: '取消' }
+  const attempt = taskStatus.value?.match(/\b(\d+)\/3\b/)?.[1]
+  return attempt ? t('ai.autoRetrying', { attempt, total: 3 }) : null
+})
+const displayedTaskStatus = computed(() => {
+  if (autoRetryStatus.value) return autoRetryStatus.value
+  if (actionBubble.value?.status === 'executing') return t('ai.commandSentAwaitingSshExit')
+  return taskStatus.value ? t('ai.taskInProgress') : t('ai.analyzing')
 })
 const completedActionsByMessage = computed(() => {
   const actions = new Map<string, ActionBubble[]>()
@@ -172,7 +184,7 @@ function renderMarkdown(content: string) {
 }
 
 function selectExecutionMode(key: string | number) {
-  if (key in executionModeDetails) {
+  if (key in executionModeDetails.value) {
     executionMode.value = key as AiExecutionMode
     showExecutionModeMenu.value = false
   }
@@ -199,7 +211,7 @@ onMounted(async () => {
   await Promise.all([aiStore.loadConfigStatus(), aiStore.loadAgents()])
   unlistenSshDisconnected = await listen<string>(`ssh-disconnected:${props.sessionId}`, () => {
     if (requestId.value) {
-      taskError.value = 'SSH 连接已断开，AI 任务已停止。'
+      taskError.value = t('ai.sshDisconnected')
       requestId.value = null
       decidingAction.value = false
       unlistenTask?.()
@@ -211,15 +223,15 @@ onMounted(async () => {
 
 function actionStatusLabel(status: ActionBubble['status']) {
   return {
-    awaiting_authorization: '等待授权',
-    awaiting_risk_confirmation: '等待风险确认',
-    executing: '等待 SSH 完成确认',
-    completed: '执行完成',
-    failed: '命令返回非零状态',
-    unconfirmed: '未确认命令完成',
-    terminal_blocked: 'SSH 终端不可用',
-    recovery_failed: '终端恢复未确认',
-    rejected: '已拒绝',
+    awaiting_authorization: t('ai.actionStatus.awaitingAuthorization'),
+    awaiting_risk_confirmation: t('ai.actionStatus.awaitingRiskConfirmation'),
+    executing: t('ai.actionStatus.executing'),
+    completed: t('ai.actionStatus.completed'),
+    failed: t('ai.actionStatus.failed'),
+    unconfirmed: t('ai.actionStatus.unconfirmed'),
+    terminal_blocked: t('ai.actionStatus.terminalBlocked'),
+    recovery_failed: t('ai.actionStatus.recoveryFailed'),
+    rejected: t('ai.actionStatus.rejected'),
   }[status]
 }
 
@@ -230,7 +242,15 @@ function actionElapsedSeconds(bubble: ActionBubble) {
 
 function actionElapsed(bubble: ActionBubble) {
   const seconds = actionElapsedSeconds(bubble)
-  return seconds < 1 ? '< 1 秒' : `${seconds.toFixed(1)} 秒`
+  return seconds < 1
+    ? t('ai.elapsedLessThanOneSecond')
+    : t('ai.elapsedSeconds', { seconds: seconds.toFixed(1) })
+}
+
+function riskLevelLabel(riskLevel: ActionBubble['action']['riskLevel']) {
+  return riskLevel === 'autonomous'
+    ? t('ai.riskLevel.autonomous')
+    : t('ai.riskLevel.standard', { level: riskLevel })
 }
 
 function isCompletedActionStatus(status: ActionBubble['status']) {
@@ -247,12 +267,12 @@ function actionEvidenceMessage(history: ActionBubble[]) {
   if (!completedActions.length) return null
 
   return [
-    '本次会话中已执行操作的系统记录如下。请基于这些记录回答用户，不要声称未记录的命令或结果。',
+    t('ai.actionEvidence.introduction'),
     ...completedActions.map((action, index) => [
-      `${index + 1}. 状态：${actionStatusLabel(action.status)}`,
-      `命令：${truncateEvidence(action.action.command, 240)}`,
-      `目的：${truncateEvidence(action.action.purpose, 160)}`,
-      `结果：${truncateEvidence(action.result?.summary ?? '未返回结果摘要', 500)}`,
+      t('ai.actionEvidence.status', { index: index + 1, status: actionStatusLabel(action.status) }),
+      t('ai.actionEvidence.command', { command: truncateEvidence(action.action.command, 240) }),
+      t('ai.actionEvidence.purpose', { purpose: truncateEvidence(action.action.purpose, 160) }),
+      t('ai.actionEvidence.result', { result: truncateEvidence(action.result?.summary ?? t('ai.actionEvidence.noResultSummary'), 500) }),
     ].join('\n')),
   ].join('\n\n')
 }
@@ -268,10 +288,10 @@ async function sendMessage() {
   const terminalSelection = pendingTerminalSelection.value
   if ((!content && !pendingImages.value.length && !terminalSelection) || !aiStore.config.configured || !selectedAgent.value || requestId.value) return
   if (pendingImages.value.length && !activeModel.value?.supportsImages) {
-    taskError.value = '当前模型未启用图片输入，请在模型配置中开启后重试'
+    taskError.value = t('ai.imageInputNotEnabled')
     return
   }
-  await startTask(content || '请分析以下终端选区。', executionMode.value, pendingImages.value, terminalSelection ? [terminalSelection] : [])
+  await startTask(content || t('ai.analyzeTerminalSelection'), executionMode.value, pendingImages.value, terminalSelection ? [terminalSelection] : [])
   draft.value = ''
   pendingImages.value = []
   pendingTerminalSelection.value = null
@@ -281,7 +301,7 @@ async function retryAiRequest() {
   if (!taskError.value || requestId.value) return
   const executionHasStarted = taskHasStartedActions.value
   const content = executionHasStarted
-    ? '请基于本次会话中已有的 SSH 操作记录继续分析并回答，不要执行任何 SSH 命令。'
+    ? t('ai.retryWithExecutionHistory')
     : taskContent.value
   const mode = executionHasStarted ? 'read_only' : taskExecutionMode.value
   await startTask(content, mode)
@@ -319,7 +339,7 @@ async function startTask(
   taskUserMessageId.value = userMessage.id
   taskExecutionMode.value = mode
   taskContent.value = content
-  taskStatus.value = 'AI 正在规划检查步骤'
+  taskStatus.value = t('ai.planningChecks')
 
   const nextRequestId = crypto.randomUUID()
   requestId.value = nextRequestId
@@ -371,7 +391,7 @@ async function startTask(
         result: {
           actionId: payload.action.actionId,
           status: 'awaiting_risk_confirmation' as const,
-          summary: '尚未执行。确认仅对此命令和当前 SSH 会话有效。',
+          summary: t('ai.riskConfirmationPending'),
         },
       }
       actionHistory.value = [...actionHistory.value, bubble]
@@ -387,7 +407,7 @@ async function startTask(
           status: 'executing',
           createdAt: Date.now(),
           startedAt: Date.now(),
-          phase: taskStatus.value ?? '命令已发送，等待 SSH 返回退出状态',
+          phase: displayedTaskStatus.value,
         }
         actionHistory.value.push(bubble)
         pendingActionPlan.value = null
@@ -395,7 +415,7 @@ async function startTask(
         bubble.plan ??= pendingActionPlan.value ?? undefined
         bubble.status = 'executing'
         bubble.startedAt = Date.now()
-        bubble.phase = taskStatus.value ?? '命令已发送，等待 SSH 返回退出状态'
+        bubble.phase = displayedTaskStatus.value
       }
       actionBubble.value = bubble
       pendingAction.value = null
@@ -414,10 +434,10 @@ async function startTask(
       }
     }
     if (payload.eventType === 'policy_rejected') {
-      taskError.value = payload.content ?? '命令未通过安全策略，未执行'
+      taskError.value = payload.content ?? t('ai.commandRejectedByPolicy')
     }
     if (payload.eventType === 'error') {
-      taskError.value = payload.content ?? 'AI 请求失败'
+      taskError.value = payload.content ?? t('ai.requestFailed')
     }
     if (payload.eventType === 'completed' || payload.eventType === 'cancelled' || payload.eventType === 'error' || payload.eventType === 'policy_rejected') {
       requestId.value = null
@@ -509,7 +529,7 @@ async function confirmRiskAction(bubble: ActionBubble) {
   decidingAction.value = true
   bubble.status = 'executing'
   bubble.startedAt = Date.now()
-  bubble.phase = '命令已发送，等待 SSH 返回退出状态'
+  bubble.phase = t('ai.commandSentAwaitingSshExit')
   try {
     const result = await invoke<AiActionResult>('confirm_ai_risk_action', {
       input: {
@@ -553,11 +573,11 @@ function selectConversation(conversationId: string) {
 }
 
 function conversationPreview(messages: Array<{ content: string }>) {
-  return messages[0]?.content.replace(/\s+/g, ' ').slice(0, 36) ?? '新对话'
+  return messages[0]?.content.replace(/\s+/g, ' ').slice(0, 36) ?? t('ai.newConversation')
 }
 
 function formatConversationTime(createdAt: number) {
-  return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit' }).format(createdAt)
+  return new Intl.DateTimeFormat(language.value, { hour: '2-digit', minute: '2-digit' }).format(createdAt)
 }
 
 function appendToDraft(text: string) {
@@ -569,24 +589,56 @@ function appendToDraft(text: string) {
 
 async function handlePaste(event: ClipboardEvent) {
   event.preventDefault()
-  const image = Array.from(event.clipboardData?.files ?? []).find((file) => file.type.startsWith('image/'))
-  if (image) {
-    if (!activeModel.value?.supportsImages) {
-      taskError.value = '当前模型未启用图片输入，请在模型配置中开启后重试'
-      return
-    }
-    if (image.size > 6 * 1024 * 1024) {
-      taskError.value = '图片不能超过 6 MiB'
-      return
-    }
-    const dataUrl = await readImageDataUrl(image)
-    pendingImages.value = [...pendingImages.value, { dataUrl, name: image.name || 'image.png' }].slice(0, 4)
-    taskError.value = null
+  const images = Array.from(event.clipboardData?.files ?? []).filter((file) => file.type.startsWith('image/'))
+  if (images.length) {
+    await addImageAttachments(images)
     return
   }
 
   const text = event.clipboardData?.getData('text/plain')
   if (text) addPastedText(text)
+}
+
+function openAttachmentPicker() {
+  if (!activeModel.value?.supportsImages) {
+    taskError.value = t('ai.imageInputNotEnabled')
+    return
+  }
+  attachmentInput.value?.click()
+}
+
+async function handleAttachmentSelection(event: Event) {
+  const input = event.target as HTMLInputElement
+  const images = Array.from(input.files ?? [])
+  input.value = ''
+  await addImageAttachments(images)
+}
+
+async function addImageAttachments(images: File[]) {
+  if (!images.length) return
+  if (!activeModel.value?.supportsImages) {
+    taskError.value = t('ai.imageInputNotEnabled')
+    return
+  }
+
+  const availableSlots = 4 - pendingImages.value.length
+  if (availableSlots <= 0) return
+
+  const validImages = images
+    .filter((image) => image.type.startsWith('image/'))
+    .filter((image) => image.size <= 6 * 1024 * 1024)
+    .slice(0, availableSlots)
+  if (!validImages.length) {
+    taskError.value = t('ai.imageTooLarge', { maxSize: 6 })
+    return
+  }
+
+  const attachments = await Promise.all(validImages.map(async (image) => ({
+    dataUrl: await readImageDataUrl(image),
+    name: image.name || t('ai.defaultImageName'),
+  })))
+  pendingImages.value = [...pendingImages.value, ...attachments]
+  taskError.value = null
 }
 
 function addPastedText(text: string) {
@@ -620,13 +672,7 @@ function openImagePreview(image: AiImageInput) {
   previewImage.value = image
 }
 
-async function pasteClipboardIntoDraft() {
-  try {
-    addPastedText(await readText())
-  } catch (error) {
-    taskError.value = `读取剪贴板失败：${String(error)}`
-  }
-}
+
 
 onBeforeUnmount(() => {
   if (requestId.value) void cancelTask()
@@ -640,30 +686,30 @@ onBeforeUnmount(() => {
   <section class="ai-chat-panel">
     <header class="ai-header">
       <div class="agent-menu-wrap">
-        <button class="agent-selector" title="选择 AI 助手" @click="showAgentMenu = !showAgentMenu">
+        <button class="agent-selector" :title="t('ai.selectAssistant')" @click="showAgentMenu = !showAgentMenu">
           <Sparkles :size="15" />
-          <strong>{{ selectedAgent?.name ?? '选择 Agent' }}</strong>
+          <strong>{{ selectedAgent?.name ?? t('ai.selectAgent') }}</strong>
           <ChevronDown :size="14" />
         </button>
         <div v-if="showAgentMenu" class="agent-menu">
           <button v-for="agent in aiStore.agents" :key="agent.id" :class="{ selected: agent.id === selectedAgent?.id }" @click="selectAgent(agent.id)">
-            <span>{{ agent.name }}</span><small v-if="agent.isDefault">默认</small>
+            <span>{{ agent.name }}</span><small v-if="agent.isDefault">{{ t('ai.defaultAgent') }}</small>
           </button>
 
         </div>
       </div>
       <div class="header-actions">
-        <button title="导出会话"><Download :size="15" /></button>
-        <button title="会话历史" @click="showHistory = !showHistory"><History :size="15" /></button>
-        <button title="新建对话" :disabled="Boolean(requestId)" @click="startNewConversation"><Plus :size="17" /></button>
-        <button class="close-button" title="关闭 AI 对话" @click="emit('close')"><X :size="16" /></button>
+        <button :title="t('ai.exportConversation')"><Download :size="15" /></button>
+        <button :title="t('ai.conversationHistory')" @click="showHistory = !showHistory"><History :size="15" /></button>
+        <button :title="t('ai.newConversation')" :disabled="Boolean(requestId)" @click="startNewConversation"><Plus :size="17" /></button>
+        <button class="close-button" :title="t('ai.closeChat')" @click="emit('close')"><X :size="16" /></button>
       </div>
     </header>
 
     <div ref="bodyRef" class="ai-body" @scroll="handleBodyScroll">
       <section v-if="showHistory" class="conversation-history">
-        <div class="section-heading"><span>历史对话</span><button @click="showHistory = false">关闭</button></div>
-        <p v-if="!conversationHistory.length" class="history-empty">暂无历史对话</p>
+        <div class="section-heading"><span>{{ t('ai.conversationHistory') }}</span><button @click="showHistory = false">{{ t('ai.close') }}</button></div>
+        <p v-if="!conversationHistory.length" class="history-empty">{{ t('ai.noConversationHistory') }}</p>
         <button
           v-for="conversation in conversationHistory"
           :key="conversation.id"
@@ -677,15 +723,15 @@ onBeforeUnmount(() => {
       </section>
 
       <div v-else-if="!messages.length" class="ai-empty-state">
-        <template v-if="aiStore.loading"><p>正在读取 AI 配置…</p></template>
-        <p v-if="!aiStore.config.configured">请前往“设置 → AI”配置服务后再开始对话。</p>
-        <p v-else>AI 会基于你提供的 SSH 上下文分析问题，并给出需要你确认和执行的诊断建议。</p>
+        <template v-if="aiStore.loading"><p>{{ t('ai.loadingConfiguration') }}</p></template>
+        <p v-if="!aiStore.config.configured">{{ t('ai.configurationRequired') }}</p>
+        <p v-else>{{ t('ai.emptyStateDescription') }}</p>
       </div>
       <div v-else class="ai-messages">
         <template v-for="message in timelineMessages" :key="message.id">
           <article class="message" :class="message.role">
             <div v-if="message.role === 'assistant'" class="message-content" v-html="renderMarkdown(message.content)" />
-            <div v-else class="message-content"><div v-if="message.content">{{ message.content }}</div><div v-if="message.terminalSelections?.length" class="message-terminal-selections"><span v-for="selection in message.terminalSelections" :key="selection.text" class="terminal-selection-chip">终端选区 · {{ selection.lineCount }} 行</span></div><div v-if="message.images?.length" class="message-images"><img v-for="image in message.images" :key="image.dataUrl" :src="image.dataUrl" :alt="image.name" /></div></div>
+            <div v-else class="message-content"><div v-if="message.content">{{ message.content }}</div><div v-if="message.terminalSelections?.length" class="message-terminal-selections"><span v-for="selection in message.terminalSelections" :key="selection.text" class="terminal-selection-chip">{{ t('ai.terminalSelection', { lineCount: selection.lineCount }) }}</span></div><div v-if="message.images?.length" class="message-images"><img v-for="image in message.images" :key="image.dataUrl" :src="image.dataUrl" :alt="image.name" /></div></div>
           </article>
           <section v-for="bubble in completedActionsByMessage.get(message.id) ?? []" :key="bubble.action.actionId" class="ai-action-card" :class="[bubble.status, { collapsed: bubble.collapsed }]">
           <button
@@ -693,7 +739,7 @@ onBeforeUnmount(() => {
             type="button"
             class="completed-action-row"
             :class="bubble.status"
-            :title="`展开执行详情：${bubble.action.command}`"
+            :title="t('ai.expandExecutionDetails', { command: bubble.action.command })"
             @click="toggleActionDetails(bubble)"
           >
             <ChevronDown :size="15" class="collapsed" />
@@ -701,7 +747,7 @@ onBeforeUnmount(() => {
             <AlertCircle v-else-if="bubble.status === 'unconfirmed' || bubble.status === 'terminal_blocked' || bubble.status === 'recovery_failed'" :size="15" />
             <XCircle v-else :size="15" />
             <code>{{ bubble.action.command }}</code>
-            <span>执行记录 · {{ actionElapsed(bubble) }} · {{ bubble.action.riskLevel === 'autonomous' ? '自主执行' : `${bubble.action.riskLevel} 风险` }}</span>
+            <span>{{ t('ai.executionRecord', { elapsed: actionElapsed(bubble), riskLevel: riskLevelLabel(bubble.action.riskLevel) }) }}</span>
           </button>
           <Transition name="action-details">
             <div v-if="!bubble.collapsed" class="action-details">
@@ -717,17 +763,16 @@ onBeforeUnmount(() => {
               <div class="action-card-meta">
                 <span>
                   <template v-if="bubble.status === 'executing'">
-                    <NNumberAnimation :from="Math.max(0, actionElapsedSeconds(bubble) - 0.1)" :to="actionElapsedSeconds(bubble)" :precision="1" :duration="90" /> 秒
+                    <NNumberAnimation :from="Math.max(0, actionElapsedSeconds(bubble) - 0.1)" :to="actionElapsedSeconds(bubble)" :precision="1" :duration="90" /> {{ t('ai.secondsAbbreviation') }}
                   </template>
-                  <template v-else>执行记录 · {{ actionElapsed(bubble) }}</template>
-                  · {{ bubble.action.riskLevel === 'autonomous' ? '自主执行' : `${bubble.action.riskLevel} 风险` }}
+                  <template v-else>{{ t('ai.executionRecord', { elapsed: actionElapsed(bubble), riskLevel: riskLevelLabel(bubble.action.riskLevel) }) }}</template>
                 </span>
                 <button
                   v-if="isCompletedActionStatus(bubble.status)"
                   type="button"
                   class="action-collapse-button"
-                  title="收起执行详情"
-                  aria-label="收起执行详情"
+                  :title="t('ai.collapseExecutionDetails')"
+                  :aria-label="t('ai.collapseExecutionDetails')"
                   @click="toggleActionDetails(bubble)"
                 >
                   <ChevronDown :size="15" />
@@ -739,11 +784,11 @@ onBeforeUnmount(() => {
               <code>{{ bubble.action.command }}</code>
             </div>
             <dl>
-            <div><dt>目的</dt><dd>{{ bubble.action.purpose }}</dd></div>
-            <div><dt>影响</dt><dd>{{ bubble.action.expectedImpact }}</dd></div>
-              <div><dt>回滚</dt><dd>{{ bubble.action.rollbackHint }}</dd></div>
+            <div><dt>{{ t('ai.actionPurpose') }}</dt><dd>{{ bubble.action.purpose }}</dd></div>
+            <div><dt>{{ t('ai.actionImpact') }}</dt><dd>{{ bubble.action.expectedImpact }}</dd></div>
+              <div><dt>{{ t('ai.actionRollback') }}</dt><dd>{{ bubble.action.rollbackHint }}</dd></div>
             </dl>
-            <p v-if="bubble.status === 'awaiting_risk_confirmation'" class="action-result">尚未执行。确认仅对此命令和当前 SSH 会话有效。</p>
+            <p v-if="bubble.status === 'awaiting_risk_confirmation'" class="action-result">{{ t('ai.riskConfirmationPending') }}</p>
             <p v-else-if="bubble.result" class="action-result">{{ bubble.result.summary }}</p>
               </div>
             </div>
@@ -752,40 +797,40 @@ onBeforeUnmount(() => {
             <div class="executable-authorizations">
               <div v-for="executable in bubble.action.missingExecutables" :key="executable" class="executable-authorization">
                 <code>{{ executable }}</code>
-                <div class="grant-options" role="group" :aria-label="`${executable} 授权范围`">
-                  <button type="button" :class="{ selected: executableDecisions[executable] === 'once' }" :disabled="decidingAction" @click="setExecutableDecision(executable, 'once')">仅此一次</button>
-                  <button type="button" :class="{ selected: executableDecisions[executable] === 'server' }" :disabled="decidingAction" @click="setExecutableDecision(executable, 'server')">此服务器</button>
-                  <button type="button" :class="{ selected: executableDecisions[executable] === 'global' }" :disabled="decidingAction" @click="setExecutableDecision(executable, 'global')">所有服务器</button>
-                  <button type="button" class="reject" :class="{ selected: executableDecisions[executable] === 'reject' }" :disabled="decidingAction" @click="setExecutableDecision(executable, 'reject')">拒绝</button>
+                <div class="grant-options" role="group" :aria-label="t('ai.authorizationScope', { executable })">
+                  <button type="button" :class="{ selected: executableDecisions[executable] === 'once' }" :disabled="decidingAction" @click="setExecutableDecision(executable, 'once')">{{ t('ai.grant.once') }}</button>
+                  <button type="button" :class="{ selected: executableDecisions[executable] === 'server' }" :disabled="decidingAction" @click="setExecutableDecision(executable, 'server')">{{ t('ai.grant.server') }}</button>
+                  <button type="button" :class="{ selected: executableDecisions[executable] === 'global' }" :disabled="decidingAction" @click="setExecutableDecision(executable, 'global')">{{ t('ai.grant.global') }}</button>
+                  <button type="button" class="reject" :class="{ selected: executableDecisions[executable] === 'reject' }" :disabled="decidingAction" @click="setExecutableDecision(executable, 'reject')">{{ t('ai.grant.reject') }}</button>
                 </div>
               </div>
             </div>
             <div class="action-card-buttons authorization-actions">
               <label class="bulk-grant-select">
-                <span>统一授权</span>
+                <span>{{ t('ai.bulkAuthorization') }}</span>
                 <select :disabled="decidingAction" @change="setAllExecutableDecisions(($event.target as HTMLSelectElement).value as AiExecutableGrant)">
-                  <option value="" selected disabled>选择范围</option>
-                  <option value="once">仅此一次</option>
-                  <option value="server">此服务器</option>
-                  <option value="global">所有服务器</option>
-                  <option value="reject">全部拒绝</option>
+                  <option value="" selected disabled>{{ t('ai.selectAuthorizationScope') }}</option>
+                  <option value="once">{{ t('ai.grant.once') }}</option>
+                  <option value="server">{{ t('ai.grant.server') }}</option>
+                  <option value="global">{{ t('ai.grant.global') }}</option>
+                  <option value="reject">{{ t('ai.grant.rejectAll') }}</option>
                 </select>
               </label>
-              <button type="button" class="approve" :disabled="decidingAction || !hasCompleteExecutableDecisions" @click="decidePendingAction">提交授权并执行</button>
+              <button type="button" class="approve" :disabled="decidingAction || !hasCompleteExecutableDecisions" @click="decidePendingAction">{{ t('ai.submitAuthorizationAndExecute') }}</button>
             </div>
           </template>
           <div v-else-if="bubble.status === 'awaiting_risk_confirmation'" class="action-card-buttons">
-            <button type="button" class="approve" :disabled="decidingAction" @click="confirmRiskAction(bubble)">同意执行</button>
+            <button type="button" class="approve" :disabled="decidingAction" @click="confirmRiskAction(bubble)">{{ t('ai.approveExecution') }}</button>
           </div>
           <div v-else-if="bubble.status === 'executing'" class="action-progress">
-            <span>{{ bubble.phase ?? '命令已发送，等待 SSH 返回退出状态' }}</span>
+            <span>{{ bubble.phase ?? t('ai.commandSentAwaitingSshExit') }}</span>
           </div>
           </section>
         </template>
         <article v-if="taskResponseMessage" :key="taskResponseMessage.id" class="message assistant">
           <div class="message-content" v-html="renderMarkdown(taskResponseMessage.content)" />
         </article>
-        <div v-if="isWaitingForResponse && !pendingAction && actionBubble?.status !== 'executing'" class="thinking-indicator" :aria-label="taskStatus ?? 'AI 正在分析'">
+        <div v-if="isWaitingForResponse && !pendingAction && actionBubble?.status !== 'executing'" class="thinking-indicator" :aria-label="displayedTaskStatus">
           <svg class="thinking-squares" viewBox="0 0 15 15" shape-rendering="crispEdges" aria-hidden="true">
             <rect x="0" y="0" width="3" height="3">
               <animate attributeName="x" values="0;5;10;10;10;5;0;0;0" dur=".48s" repeatCount="indefinite" calcMode="discrete" />
@@ -804,21 +849,21 @@ onBeforeUnmount(() => {
               <animate attributeName="y" values="0;0;0;5;10;10;10;5;0" dur=".48s" begin="-.18s" repeatCount="indefinite" calcMode="discrete" />
             </rect>
           </svg>
-          <span v-if="autoRetryStatus" class="thinking-label">{{ autoRetryStatus.before }}<button type="button" class="task-inline-action" @click="cancelTask">停止</button>{{ autoRetryStatus.after }}</span>
-          <span v-else class="thinking-label">{{ taskStatus ?? 'AI 正在分析' }}</span>
+          <span v-if="autoRetryStatus" class="thinking-label">{{ autoRetryStatus }}<button type="button" class="task-inline-action" @click="cancelTask">{{ t('ai.stop') }}</button></span>
+          <span v-else class="thinking-label">{{ displayedTaskStatus }}</span>
         </div>
         <section v-if="taskErrorMessage" class="task-error-card">
           <div>
             <AlertCircle :size="16" />
-            <strong>AI 请求失败</strong>
+            <strong>{{ t('ai.requestFailed') }}</strong>
           </div>
-          <p>系统已自动重试 3 次。{{ taskHasStartedActions ? '将基于已有执行记录继续分析，不会重复执行 SSH 命令。' : '' }}<button type="button" class="task-inline-action" @click="retryAiRequest">重试 AI 请求</button></p>
+          <p>{{ t('ai.retriedThreeTimes') }}{{ taskHasStartedActions ? t('ai.retryUsesExecutionHistory') : '' }}<button type="button" class="task-inline-action" @click="retryAiRequest">{{ t('ai.retryRequest') }}</button></p>
           <p>{{ taskErrorMessage }}</p>
         </section>
       </div>
 
       <section v-if="!showHistory && !messages.length && conversationHistory.length" class="recent-section">
-        <div class="section-heading"><span>最近</span><button @click="showHistory = true">查看全部</button></div>
+        <div class="section-heading"><span>{{ t('ai.recentConversations') }}</span><button @click="showHistory = true">{{ t('ai.viewAll') }}</button></div>
         <button
           v-for="conversation in conversationHistory.slice(0, 2)"
           :key="conversation.id"
@@ -835,25 +880,26 @@ onBeforeUnmount(() => {
       <div class="composer-input-wrap">
         <div v-if="pendingImages.length || pendingTerminalSelection" class="image-attachments">
           <div v-if="pendingTerminalSelection" class="terminal-selection-attachment">
-            <span>终端选区 · {{ pendingTerminalSelection.lineCount }} 行</span>
-            <button type="button" class="remove-image-button" title="移除终端选区" aria-label="移除终端选区" @click="removePendingTerminalSelection"><X :size="10" /></button>
+            <span>{{ t('ai.terminalSelection', { lineCount: pendingTerminalSelection.lineCount }) }}</span>
+            <button type="button" class="remove-image-button" :title="t('ai.removeTerminalSelection')" :aria-label="t('ai.removeTerminalSelection')" @click="removePendingTerminalSelection"><X :size="10" /></button>
           </div>
           <div v-for="(image, index) in pendingImages" :key="image.dataUrl" class="image-attachment">
-            <button type="button" class="image-thumbnail" :title="`预览 ${image.name}`" @click="openImagePreview(image)"><img :src="image.dataUrl" :alt="image.name" /></button>
-            <button type="button" class="remove-image-button" title="移除图片" aria-label="移除图片" @click="removePendingImage(index)"><X :size="10" /></button>
+            <button type="button" class="image-thumbnail" :title="t('ai.previewImage', { name: image.name })" @click="openImagePreview(image)"><img :src="image.dataUrl" :alt="image.name" /></button>
+            <button type="button" class="remove-image-button" :title="t('ai.removeImage')" :aria-label="t('ai.removeImage')" @click="removePendingImage(index)"><X :size="10" /></button>
           </div>
         </div>
-        <textarea v-model="draft" :placeholder="`向 ${selectedAgent?.name ?? 'Agent'} 发送消息`" rows="3" @keydown.enter.exact.prevent="sendMessage" @paste="handlePaste" />
+        <textarea v-model="draft" :placeholder="t('ai.messagePlaceholder', { agent: selectedAgent?.name ?? t('ai.agentFallback') })" rows="3" @keydown.enter.exact.prevent="sendMessage" @paste="handlePaste" />
       </div>
       <footer class="composer-footer">
+        <input ref="attachmentInput" class="attachment-input" type="file" accept="image/*" multiple @change="handleAttachmentSelection" />
         <div class="composer-options">
-          <button type="button" title="从剪贴板添加上下文" @click="pasteClipboardIntoDraft"><Plus :size="16" /></button>
+          <button type="button" :title="t('ai.addAttachment')" :aria-label="t('ai.addAttachment')" @click="openAttachmentPicker"><Plus :size="16" /></button>
           <button
             v-if="!activeModel"
             type="button"
             class="model-selector"
-            title="配置 AI 模型"
-            aria-label="配置 AI 模型"
+            :title="t('ai.configureModel')"
+            :aria-label="t('ai.configureModel')"
             @click="emit('openAiSettings')"
           >
             <span class="model-dot">AI</span><span>{{ activeModelLabel }}</span>
@@ -863,10 +909,14 @@ onBeforeUnmount(() => {
             v-model:show="showModelMenu"
             trigger="click"
             placement="top-start"
+            :width="280"
+            :value="activeModel?.id"
             :options="modelOptions"
+            :render-label="renderModelLabel"
             :disabled="(aiStore.config.models?.length ?? 0) < 2 || Boolean(requestId)"
+            @select="selectModel"
           >
-            <button type="button" class="model-selector" :title="activeModelLabel" aria-label="选择 AI 模型">
+            <button type="button" class="model-selector" :title="activeModelLabel" :aria-label="t('ai.selectModel')">
               <span class="model-dot">AI</span><span>{{ activeModelLabel }}</span><ChevronDown v-if="(aiStore.config.models?.length ?? 0) > 1" :size="12" />
             </button>
           </n-dropdown>
@@ -874,13 +924,17 @@ onBeforeUnmount(() => {
             v-model:show="showExecutionModeMenu"
             trigger="click"
             placement="top-start"
+            :width="280"
+            :value="executionMode"
             :options="executionModeOptions"
+            :render-label="renderExecutionModeLabel"
+            @select="selectExecutionMode"
           >
             <button
               type="button"
               class="execution-mode"
-              title="AI 执行模式"
-              aria-label="AI 执行模式"
+              :title="t('ai.executionModeLabel')"
+              :aria-label="t('ai.executionModeLabel')"
               :style="{ '--execution-mode-tone': currentExecutionMode.tone }"
             >
               <Command :size="13" />
@@ -889,15 +943,15 @@ onBeforeUnmount(() => {
             </button>
           </n-dropdown>
         </div>
-        <button v-if="requestId" class="send-button stop-task-button" type="button" title="停止 AI 任务" aria-label="停止 AI 任务" @click="cancelTask"><X :size="17" /></button>
-        <button v-else class="send-button" :disabled="!canSend" title="发送"><ArrowUp :size="17" /></button>
+        <button v-if="requestId" class="send-button stop-task-button" type="button" :title="t('ai.stopTask')" :aria-label="t('ai.stopTask')" @click="cancelTask"><Square :size="11" :stroke-width="3" fill="currentColor" /></button>
+        <button v-else class="send-button" :disabled="!canSend" :title="t('ai.send')"><ArrowUp :size="17" /></button>
       </footer>
     </form>
 
-    <div v-if="previewImage" class="image-preview-backdrop" role="dialog" aria-modal="true" :aria-label="`预览 ${previewImage.name}`" @click.self="previewImage = null">
+    <div v-if="previewImage" class="image-preview-backdrop" role="dialog" aria-modal="true" :aria-label="t('ai.previewImage', { name: previewImage.name })" @click.self="previewImage = null">
       <div class="image-preview-dialog">
         <img :src="previewImage.dataUrl" :alt="previewImage.name" />
-        <button type="button" title="关闭预览" aria-label="关闭预览" @click="previewImage = null"><X :size="18" /></button>
+        <button type="button" :title="t('ai.closePreview')" :aria-label="t('ai.closePreview')" @click="previewImage = null"><X :size="18" /></button>
       </div>
     </div>
   </section>
@@ -1016,8 +1070,8 @@ onBeforeUnmount(() => {
 .task-inline-action { margin: 0; padding: 0; border: 0; background: transparent; color: #8db8ff; cursor: pointer; font: inherit; text-decoration: underline; text-underline-offset: 2px; }
 .task-inline-action:hover { color: #b9d7ff; }
 	.task-inline-action:focus-visible { outline: 1px solid #8db8ff; outline-offset: 2px; }
-	.stop-task-button { background: #663d4a; color: #ffd4dc; }
-	.stop-task-button:hover { background: #a94a5c !important; color: #fff !important; }
+	.stop-task-button { background: #d8323f !important; color: #fff !important; }
+	.stop-task-button:hover { background: #ef4652 !important; color: #fff !important; }
 
 .ai-chat-panel { background: var(--app-panel); color: var(--app-text); }
 .ai-header { border-bottom-color: var(--app-border); }
@@ -1064,94 +1118,89 @@ onBeforeUnmount(() => {
 .image-preview-dialog img { max-width: 100%; max-height: calc(100vh - 68px); object-fit: contain; }
 .image-preview-dialog button { position: absolute; top: 16px; right: 16px; display: grid; place-items: center; width: 28px; height: 28px; padding: 0; border: 1px solid var(--app-border); border-radius: 4px; background: var(--app-panel); color: var(--app-text); cursor: pointer; }
 .image-preview-dialog button:hover { background: var(--app-hover); }
+.attachment-input { display: none; }
 </style>
 
 <style>
-.model-option {
-  display: flex;
-  width: calc(100% - 8px);
-  min-width: 190px;
-  flex-direction: column;
-  gap: 2px;
-  margin: 0 4px;
-  padding: 7px 8px;
-  border: 0;
+.ai-dropdown-option.n-dropdown-option-body {
+  min-height: 42px;
+  margin: 1px 4px;
+  padding: 5px 8px;
   border-radius: 4px;
-  background: transparent;
+}
+
+
+
+.ai-dropdown-option-content {
+  display: grid;
+  min-width: 0;
+  gap: 1px;
+}
+
+.ai-dropdown-option-title {
+  overflow: hidden;
   color: var(--n-text-color);
-  cursor: pointer;
-  font: inherit;
-  text-align: left;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.model-option:hover, .model-option.selected {
-  background: var(--n-option-color-pending);
-}
-
-.model-option-name {
-  color: var(--n-text-color);
-  font-size: 11px;
-  line-height: 1.35;
-}
-
-.model-option-meta {
+.ai-dropdown-option-description {
+  overflow: hidden;
   color: var(--n-text-color-3);
-  font-size: 9px;
-  line-height: 1.35;
-}
-
-.execution-mode-option {
-  display: block;
-  width: calc(100% - 8px);
-  min-width: 178px;
-  margin: 0 4px;
-  padding: 6px 8px;
-  border: 0;
-  border-radius: 4px;
-  background: transparent;
-  color: inherit;
-  cursor: pointer;
-  font: inherit;
-  text-align: left;
-}
-
-.execution-mode-option:hover {
-  background: var(--n-option-color-pending);
-}
-
-.execution-mode-option.selected .execution-mode-option-title {
-  color: var(--n-text-color);
+  font-size: 10px;
+  line-height: 14px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .execution-mode-option-copy {
   display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: 16px 14px;
   min-width: 0;
-}
-
-.execution-mode-option-heading {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  column-gap: 12px;
+  row-gap: 1px;
 }
 
 .execution-mode-option-title {
-  color: var(--n-text-color);
-  font-size: 11px;
-  line-height: 1.35;
+  grid-column: 1;
+  grid-row: 1;
+}
+
+.execution-mode-option-description {
+  grid-column: 1;
+  grid-row: 2;
 }
 
 .execution-mode-option-risk {
-  flex: 0 0 auto;
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  align-self: end;
+}
+
+.execution-mode-option-title {
+  overflow: hidden;
+  color: var(--n-text-color);
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 16px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.execution-mode-option-risk {
   font-size: 10px;
-  line-height: 1.35;
+  line-height: 14px;
 }
 
 .execution-mode-option-description {
   overflow: hidden;
   color: var(--n-text-color-3);
-  font-size: 9px;
-  line-height: 1.35;
+  font-size: 10px;
+  line-height: 14px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

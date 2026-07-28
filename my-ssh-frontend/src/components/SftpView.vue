@@ -5,11 +5,13 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import { Archive, ChevronLeft, Copy, Download, File, Folder, FolderPlus, FolderTree, Pencil, RefreshCw, Shield, Trash2, Upload, X } from '@lucide/vue'
 import { useTransferStore } from '../stores/transfer'
+import { useLocale } from '../composables/useLocale'
 
 type FileInfo = { name: string; is_dir: boolean; size: number; modified: string; mode: number }
 type SortKey = 'name' | 'modified' | 'size'
 
 const props = defineProps<{ sessionId: string; dark: boolean }>()
+const { t } = useLocale()
 const transferStore = useTransferStore()
 const emit = defineEmits<{
   editPermissions: [file: FileInfo, path: string]
@@ -79,9 +81,9 @@ async function uploadFiles(paths: string[]) {
     const preview = conflicts.slice(0, 3).map((name) => `“${name}”`).join('、')
     const remaining = conflicts.length - 3
     emit('requestConfirm', {
-      title: '覆盖远程文件',
-      message: `${preview}${remaining > 0 ? ` 等 ${conflicts.length} 个文件` : ''}已存在于当前目录，继续上传将覆盖原文件。`,
-      confirmText: '覆盖并上传',
+      title: t('sftp.overwriteRemoteFiles'),
+      message: t('sftp.uploadOverwriteWarning', { files: `${preview}${remaining > 0 ? t('sftp.additionalFiles', { count: conflicts.length }) : ''}` }),
+      confirmText: t('sftp.overwriteAndUpload'),
       danger: true,
       onConfirm: () => enqueueUpload(paths, true),
     })
@@ -120,36 +122,36 @@ function closeMenu() { menu.value = null }
 function handleDocumentPointerDown() { closeMenu() }
 function createDirectory() {
   emit('requestInput', {
-    title: '新建文件夹',
-    placeholder: '输入文件夹名称',
+    title: t('sftp.newFolder'),
+    placeholder: t('sftp.folderNamePlaceholder'),
     onConfirm: async (name) => {
-      try { await invoke('sftp_create_directory', { sessionId: props.sessionId, path: joinPath(currentPath.value, name) }); await listFiles() } catch (e) { error.value = `新建失败: ${String(e)}` }
+      try { await invoke('sftp_create_directory', { sessionId: props.sessionId, path: joinPath(currentPath.value, name) }); await listFiles() } catch (e) { error.value = t('sftp.createFailed', { error: String(e) }) }
     },
   })
 }
 function renameFile(file: FileInfo) {
   emit('requestInput', {
-    title: '重命名',
+    title: t('sftp.rename'),
     initialValue: file.name,
-    placeholder: '输入新名称',
+    placeholder: t('sftp.newNamePlaceholder'),
     onConfirm: async (name) => {
       if (name === file.name) return
       try {
         await invoke('sftp_rename', { sessionId: props.sessionId, oldPath: joinPath(currentPath.value, file.name), newPath: joinPath(currentPath.value, name) })
         await listFiles()
-      } catch (e) { error.value = `重命名失败: ${String(e)}` }
+      } catch (e) { error.value = t('sftp.renameFailed', { error: String(e) }) }
     },
   })
 }
 function deleteFile(file: FileInfo) {
-  const kind = file.is_dir ? '文件夹' : '文件'
+  const kind = file.is_dir ? t('sftp.folder') : t('sftp.file')
   emit('requestConfirm', {
-    title: `删除${kind}`,
-    message: `确定删除${kind}“${file.name}”吗？`,
-    confirmText: '删除',
+    title: t('sftp.deleteItem', { kind }),
+    message: t('sftp.deleteConfirm', { kind, name: file.name }),
+    confirmText: t('sftp.delete'),
     danger: true,
     onConfirm: async () => {
-      try { await invoke('sftp_delete', { sessionId: props.sessionId, path: joinPath(currentPath.value, file.name), isDir: file.is_dir }); await listFiles() } catch (e) { error.value = `删除失败: ${String(e)}` }
+      try { await invoke('sftp_delete', { sessionId: props.sessionId, path: joinPath(currentPath.value, file.name), isDir: file.is_dir }); await listFiles() } catch (e) { error.value = t('sftp.deleteFailed', { error: String(e) }) }
     },
   })
 }
@@ -174,9 +176,9 @@ async function downloadFile(file: FileInfo) {
     )
     if (localFileExists) {
       emit('requestConfirm', {
-        title: '覆盖本地文件',
-        message: `“${file.name}”已存在于下载目录，继续下载将覆盖原文件。`,
-        confirmText: '覆盖并下载',
+        title: t('sftp.overwriteLocalFile'),
+        message: t('sftp.downloadOverwriteWarning', { name: file.name }),
+        confirmText: t('sftp.overwriteAndDownload'),
         danger: true,
         onConfirm: () => enqueueDownload(true),
       })
@@ -184,15 +186,15 @@ async function downloadFile(file: FileInfo) {
       enqueueDownload()
     }
   } catch (e) {
-    error.value = `下载失败: ${String(e)}`
+    error.value = t('sftp.downloadFailed', { error: String(e) })
   }
 }
 async function compressFile(file: FileInfo) {
-  try { await invoke('sftp_compress_tar_gz', { sessionId: props.sessionId, path: joinPath(currentPath.value, file.name) }); await listFiles() } catch (e) { error.value = `压缩失败: ${String(e)}` }
+  try { await invoke('sftp_compress_tar_gz', { sessionId: props.sessionId, path: joinPath(currentPath.value, file.name) }); await listFiles() } catch (e) { error.value = t('sftp.compressFailed', { error: String(e) }) }
   closeMenu()
 }
 async function extractFile(file: FileInfo) {
-  try { await invoke('sftp_extract_tar_gz', { sessionId: props.sessionId, path: joinPath(currentPath.value, file.name) }); await listFiles() } catch (e) { error.value = `解压失败: ${String(e)}` }
+  try { await invoke('sftp_extract_tar_gz', { sessionId: props.sessionId, path: joinPath(currentPath.value, file.name) }); await listFiles() } catch (e) { error.value = t('sftp.extractFailed', { error: String(e) }) }
   closeMenu()
 }
 function formatSize(bytes: number): string {
@@ -224,21 +226,21 @@ onBeforeUnmount(() => {
   <section class="sftp-content-inner" @click="closeMenu" @dragover.prevent="isDragOver = true" @dragleave="isDragOver = false" @drop="handleDrop">
     <div class="sftp-toolbar">
       <div class="sftp-nav">
-        <button class="sftp-btn" title="上一级目录" :disabled="currentPath === '/'" @click.stop="goUp"><ChevronLeft :size="16" /></button>
-        <button class="sftp-btn" title="刷新" :disabled="loading" @click.stop="listFiles()"><RefreshCw :size="15" :class="{ spinning: loading }" /></button>
-        <button class="sftp-btn" title="新建文件夹" @click.stop="createDirectory"><FolderPlus :size="16" /></button>
+        <button class="sftp-btn" :title="t('sftp.parentDirectory')" :disabled="currentPath === '/'" @click.stop="goUp"><ChevronLeft :size="16" /></button>
+        <button class="sftp-btn" :title="t('sftp.refresh')" :disabled="loading" @click.stop="listFiles()"><RefreshCw :size="15" :class="{ spinning: loading }" /></button>
+        <button class="sftp-btn" :title="t('sftp.newFolder')" @click.stop="createDirectory"><FolderPlus :size="16" /></button>
         <div class="sftp-path" :title="currentPath">{{ currentPath }}</div>
-        <span class="item-count">{{ files.length }} 项</span>
-        <button class="sftp-btn sftp-close" title="关闭 SFTP" @click.stop="emit('close')"><X :size="15" /></button>
+        <span class="item-count">{{ t('sftp.itemCount', { count: files.length }) }}</span>
+        <button class="sftp-btn sftp-close" :title="t('sftp.close')" @click.stop="emit('close')"><X :size="15" /></button>
       </div>
     </div>
 
 
     <div class="sftp-file-list" @contextmenu="showBackgroundMenu">
-      <div v-if="loading" class="sftp-status">加载中...</div>
+      <div v-if="loading" class="sftp-status">{{ t('sftp.loading') }}</div>
       <div v-else-if="error" class="sftp-error">{{ error }}</div>
       <table v-else class="sftp-table">
-        <thead><tr><th @click="setSort('name')">名称 <span v-if="sortKey === 'name'">{{ sortAscending ? '↑' : '↓' }}</span></th><th @click="setSort('modified')">修改时间 <span v-if="sortKey === 'modified'">{{ sortAscending ? '↑' : '↓' }}</span></th><th @click="setSort('size')">大小 <span v-if="sortKey === 'size'">{{ sortAscending ? '↑' : '↓' }}</span></th></tr></thead>
+        <thead><tr><th @click="setSort('name')">{{ t('sftp.name') }} <span v-if="sortKey === 'name'">{{ sortAscending ? '↑' : '↓' }}</span></th><th @click="setSort('modified')">{{ t('sftp.modified') }} <span v-if="sortKey === 'modified'">{{ sortAscending ? '↑' : '↓' }}</span></th><th @click="setSort('size')">{{ t('sftp.size') }} <span v-if="sortKey === 'size'">{{ sortAscending ? '↑' : '↓' }}</span></th></tr></thead>
         <tbody>
           <tr v-for="file in sortedFiles" :key="file.name" :class="{ selected: selectedFile?.name === file.name }" @click.stop="selectedFile = file" @dblclick="openDirectory(file)" @contextmenu.stop="showMenu($event, file)">
             <td class="sftp-name" :title="file.name"><Folder v-if="file.is_dir" class="folder-icon" :size="16" /><File v-else class="file-icon" :size="16" /><span>{{ file.name }}</span></td>
@@ -251,32 +253,32 @@ onBeforeUnmount(() => {
     <Teleport to="body">
       <div v-if="menu" ref="contextMenu" class="context-menu" :class="{ 'theme-dark': dark }" :style="{ left: `${menu.x}px`, top: `${menu.y}px` }" @pointerdown.stop @click.stop>
         <template v-if="menu.file?.is_dir">
-          <button @click="openDirectory(menu.file!); closeMenu()"><FolderTree :size="15" />打开</button>
-          <button @click="copyPath(menu.file!)"><Copy :size="15" />复制文件夹路径</button>
+          <button @click="openDirectory(menu.file!); closeMenu()"><FolderTree :size="15" />{{ t('sftp.open') }}</button>
+          <button @click="copyPath(menu.file!)"><Copy :size="15" />{{ t('sftp.copyFolderPath') }}</button>
           <hr>
-          <button @click="openPermissions(menu.file!)"><Shield :size="15" />编辑权限</button>
-          <button @click="compressFile(menu.file!)"><Archive :size="15" />压缩为 tar.gz</button>
-          <button @click="renameFile(menu.file!); closeMenu()"><Pencil :size="15" />重命名</button>
-          <button class="danger" @click="deleteFile(menu.file!); closeMenu()"><Trash2 :size="15" />删除空文件夹</button>
+          <button @click="openPermissions(menu.file!)"><Shield :size="15" />{{ t('sftp.editPermissions') }}</button>
+          <button @click="compressFile(menu.file!)"><Archive :size="15" />{{ t('sftp.compressTarGz') }}</button>
+          <button @click="renameFile(menu.file!); closeMenu()"><Pencil :size="15" />{{ t('sftp.rename') }}</button>
+          <button class="danger" @click="deleteFile(menu.file!); closeMenu()"><Trash2 :size="15" />{{ t('sftp.deleteEmptyFolder') }}</button>
         </template>
         <template v-else-if="menu.file">
-          <button @click="downloadFile(menu.file)"><Download :size="15" />下载</button>
-          <button @click="copyPath(menu.file)"><Copy :size="15" />复制文件路径</button>
+          <button @click="downloadFile(menu.file)"><Download :size="15" />{{ t('sftp.download') }}</button>
+          <button @click="copyPath(menu.file)"><Copy :size="15" />{{ t('sftp.copyFilePath') }}</button>
           <hr>
-          <button @click="openPermissions(menu.file)"><Shield :size="15" />编辑权限</button>
-          <button v-if="isTarGz(menu.file)" @click="extractFile(menu.file)"><Archive :size="15" />解压到当前目录</button>
-          <button v-else @click="compressFile(menu.file)"><Archive :size="15" />压缩为 tar.gz</button>
-          <button @click="renameFile(menu.file); closeMenu()"><Pencil :size="15" />重命名</button>
-          <button class="danger" @click="deleteFile(menu.file); closeMenu()"><Trash2 :size="15" />删除文件</button>
+          <button @click="openPermissions(menu.file)"><Shield :size="15" />{{ t('sftp.editPermissions') }}</button>
+          <button v-if="isTarGz(menu.file)" @click="extractFile(menu.file)"><Archive :size="15" />{{ t('sftp.extractHere') }}</button>
+          <button v-else @click="compressFile(menu.file)"><Archive :size="15" />{{ t('sftp.compressTarGz') }}</button>
+          <button @click="renameFile(menu.file); closeMenu()"><Pencil :size="15" />{{ t('sftp.rename') }}</button>
+          <button class="danger" @click="deleteFile(menu.file); closeMenu()"><Trash2 :size="15" />{{ t('sftp.deleteFile') }}</button>
         </template>
         <template v-else>
-          <button @click="listFiles(); closeMenu()"><RefreshCw :size="15" />刷新</button>
-          <button @click="createDirectory(); closeMenu()"><FolderPlus :size="15" />新建文件夹</button>
+          <button @click="listFiles(); closeMenu()"><RefreshCw :size="15" />{{ t('sftp.refresh') }}</button>
+          <button @click="createDirectory(); closeMenu()"><FolderPlus :size="15" />{{ t('sftp.newFolder') }}</button>
         </template>
       </div>
     </Teleport>
 
-    <div v-if="isDragOver || uploading" class="drop-overlay"><Upload :size="22" />{{ uploading ? '正在上传...' : '松开以上传到当前目录' }}</div>
+    <div v-if="isDragOver || uploading" class="drop-overlay"><Upload :size="22" />{{ uploading ? t('sftp.uploading') : t('sftp.dropToUpload') }}</div>
   </section>
 </template>
 

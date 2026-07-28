@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { translate } from '../composables/useLocale'
 import type { SessionInfo } from '../types'
 
 export type SessionKind = 'ssh' | 'local'
@@ -128,7 +129,7 @@ export const useSessionStore = defineStore('session', () => {
       const terminalReady = new Promise<void>((resolve) => {
         terminalReadyResolvers.set(sessionId, resolve)
       })
-      tabs.value.push({ sessionId, kind: 'local', profileName: `本地终端 · ${label}`, localShell: shell })
+      tabs.value.push({ sessionId, kind: 'local', profileName: translate('terminal.localLabel', { label }), localShell: shell })
       activeTabId.value = sessionId
 
       await Promise.race([

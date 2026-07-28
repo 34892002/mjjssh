@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
+import { translate } from '../composables/useLocale'
 import type {
   SshProfileView,
   CreateProfileRequest,
@@ -28,7 +29,7 @@ export const useVaultStore = defineStore('vault', () => {
     } catch (e) {
       isReady.value = false
       profiles.value = []
-      error.value = `无法打开本地配置：${String(e)}`
+      error.value = translate('vault.openFailed', { error: String(e) })
     }
   }
 
