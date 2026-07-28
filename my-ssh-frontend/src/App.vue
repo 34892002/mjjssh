@@ -352,10 +352,7 @@ async function toggleMaximizeWindow() {
 async function closeWindow() {
   try { await appWindow.close() } catch (error) { console.error('Failed to close window:', error) }
 }
-async function startWindowDrag(event: MouseEvent) {
-  if (event.button !== 0) return
-  try { await appWindow.startDragging() } catch (error) { console.error('Failed to start window drag:', error) }
-}
+
 
 // --- Profile form ---
 const showForm = ref(false)
@@ -1184,7 +1181,7 @@ function openSyncSettings() {
               </svg>
             </div>
           </div>
-          <div class="titlebar-drag-region" data-tauri-drag-region @mousedown="startWindowDrag" />
+          <div class="titlebar-drag-region" data-tauri-drag-region />
           <div class="titlebar-actions" :aria-label="t('app.features')">
             <n-dropdown trigger="click" :options="languageOptions" :value="language" @select="changeLanguage">
               <button class="titlebar-language" :title="t('app.language', { language: languageLabel })" :aria-label="t('app.switchLanguage')">
@@ -1739,7 +1736,10 @@ function openSyncSettings() {
 
 
 
-.titlebar-drag-region { min-width: 16px; flex: 1; height: 100%; }
+.titlebar-drag-region {
+  flex: 1 0 16px;
+  height: 100%;
+}
 .titlebar-actions, .window-controls { display: flex; align-self: stretch; }
 .titlebar-action, .window-control { display: grid; place-items: center; width: 40px; height: 100%; padding: 0; border: 0; background: transparent; color: var(--app-muted); cursor: pointer; }
 .titlebar-language { display: inline-flex; align-items: center; align-self: stretch; gap: 5px; padding: 0 10px; border: 0; background: transparent; color: var(--app-muted); font: inherit; font-size: 12px; cursor: pointer; }
