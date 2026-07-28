@@ -12,6 +12,7 @@
 | AiSettings | 设置 → AI 页签的按需加载组件，管理 AI 服务配置、连接测试与 Agent 配置。 | `my-ssh-frontend/src/components/AiSettings.vue` |
 | ConnectionDialog | 展示 SSH 连接、认证、成功或失败的进度与操作入口；连接图标与颜色沿用当前主机配置。 | `my-ssh-frontend/src/components/ConnectionDialog.vue` |
 | EntityCard | 通用实体卡片外壳，统一主机和 SSH 密钥的图标、标题、辅助信息、操作区及可选底部信息布局。 | `my-ssh-frontend/src/components/EntityCard.vue` |
+| FloatingPanel | 模态弹窗内使用的临时浮动面板，提供遮罩、标题、Lucide 图标关闭按钮、Esc/点击遮罩关闭和内容插槽。 | `my-ssh-frontend/src/components/FloatingPanel.vue` |
 | KeysView | 管理 SSH 私钥与证书，包括创建、编辑和删除；密钥列表使用 `EntityCard` 渲染。 | `my-ssh-frontend/src/components/KeysView.vue` |
 | PermissionsDialog | 编辑远程文件或目录的 Unix 读、写、执行权限，并输出八进制权限值。 | `my-ssh-frontend/src/components/PermissionsDialog.vue` |
 | ScriptPanel | 终端工具栏的脚本选择面板，按标签树状展示本地和已缓存的订阅脚本；双击脚本后仅将文本填入当前 SSH 终端，不自动执行。 | `my-ssh-frontend/src/components/ScriptPanel.vue` |
@@ -27,4 +28,5 @@
 - `EntityCard` 使用具名插槽扩展具体实体：`actions` 用于编辑、删除等操作按钮，`footer` 用于 OS、地区等跨整张卡片的补充信息。主机由 `App.vue` 提供这两个区域，密钥由 `KeysView.vue` 提供 `actions`。
 - `EntityCard` 必填属性为 `icon`（Lucide Vue 组件）、`color`、`title` 和 `subtitle`。图标与颜色由调用方提供，组件不负责决定实体类型或持久化逻辑。
 - `ConnectionDialog` 由 `App.vue` 传入待连接主机的 `icon` 和 `color`，以保持连接进度弹窗与主机卡片的视觉配置一致。
+- `FloatingPanel` 适用于不应改变底层模态布局的临时选择器或编辑器。使用 `show` 控制显示，传入 `title` 与可选的 `width`，监听 `close` 清理调用方状态；具体表单、按钮和业务逻辑由默认插槽提供。
 - 路由 `my-ssh-frontend/src/router/index.ts` 的 `/` 与 `/sftp` 当前均指向 `App` 根组件。

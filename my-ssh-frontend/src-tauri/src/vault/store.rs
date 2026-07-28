@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
+use ssh_key::PrivateKey;
 
 use crate::local_security::{
     create_local_vault_key, decrypt_vault, encrypt_vault, existing_local_vault_key,
@@ -579,6 +580,7 @@ impl Vault {
                     .then(|| profile.credential.clone())
                     .flatten(),
                 private_key: key.as_ref().map(|key| key.private_key.clone()),
+                key_algorithm: key.as_ref().map(|key| key.algorithm.clone()),
                 cert_data: key.as_ref().and_then(|key| key.cert_data.clone()),
             })
         })
@@ -593,6 +595,7 @@ impl Vault {
                     id: key.id.clone(),
                     name: key.name.clone(),
                     key_type: key.key_type.clone(),
+                    algorithm: key.algorithm.clone(),
                     created_at: key.created_at.clone(),
                     updated_at: key.updated_at.clone(),
                 })
@@ -614,13 +617,14 @@ impl Vault {
     }
 
     pub fn create_key(&self, request: &CreateKeyRequest) -> Result<SshKeyView, VaultError> {
-        Self::validate_key_request(request)?;
+        let algorithm = Self::validate_key_request(request)?;
         self.mutate(|document| {
             let now = now();
             let key = SshKey {
                 id: uuid::Uuid::new_v4().to_string(),
                 name: request.name.clone(),
                 key_type: request.key_type.clone(),
+                algorithm: algorithm.clone(),
                 private_key: request.private_key.clone(),
                 cert_data: request
                     .cert_data
@@ -641,7 +645,7 @@ impl Vault {
         id: &str,
         request: &CreateKeyRequest,
     ) -> Result<SshKeyView, VaultError> {
-        Self::validate_key_request(request)?;
+        let algorithm = Self::validate_key_request(request)?;
         self.mutate(|document| {
             let key = document
                 .ssh_keys
@@ -650,6 +654,7 @@ impl Vault {
                 .ok_or_else(|| VaultError::InvalidSshKeyConfig(format!("Key not found: {id}")))?;
             key.name = request.name.clone();
             key.key_type = request.key_type.clone();
+            key.algorithm = algorithm.clone();
             key.private_key = request.private_key.clone();
             key.cert_data = request
                 .cert_data
@@ -960,12 +965,12 @@ impl Vault {
         Ok(())
     }
 
-    fn validate_key_request(request: &CreateKeyRequest) -> Result<(), VaultError> {
-        if request.private_key.trim().is_empty() {
-            return Err(VaultError::InvalidSshKeyConfig(
-                "private key is required".into(),
-            ));
-        }
+    fn validate_key_request(request: &CreateKeyRequest) -> Result<String, VaultError> {
+        let private_key =
+            PrivateKey::from_openssh(request.private_key.trim()).map_err(|error| {
+                VaultError::InvalidSshKeyConfig(format!("invalid OpenSSH private key: {error}"))
+            })?;
+        let algorithm = private_key.algorithm().as_str().to_owned();
         if request.key_type == "certificate"
             && request
                 .cert_data
@@ -976,7 +981,7 @@ impl Vault {
                 "an SSH user certificate is required for certificate keys".into(),
             ));
         }
-        Ok(())
+        Ok(algorithm)
     }
 
     fn normalized_ai_models(
@@ -1137,6 +1142,7 @@ fn key_view(key: &SshKey) -> SshKeyView {
         id: key.id.clone(),
         name: key.name.clone(),
         key_type: key.key_type.clone(),
+        algorithm: key.algorithm.clone(),
         created_at: key.created_at.clone(),
         updated_at: key.updated_at.clone(),
     }
@@ -1154,6 +1160,19 @@ fn io_error(error: std::io::Error) -> VaultError {
 mod tests {
     use super::*;
 
+    fn test_private_key() -> String {
+        let mut seed =
+            <rand_chacha::ChaCha20Rng as rand_chacha::rand_core::SeedableRng>::Seed::default();
+        getrandom::fill(&mut seed).unwrap();
+        let mut rng =
+            <rand_chacha::ChaCha20Rng as rand_chacha::rand_core::SeedableRng>::from_seed(seed);
+        PrivateKey::random(&mut rng, ssh_key::Algorithm::Ed25519)
+            .unwrap()
+            .to_openssh(ssh_key::LineEnding::LF)
+            .unwrap()
+            .to_string()
+    }
+
     fn test_dir() -> PathBuf {
         std::env::temp_dir().join(format!("mjj-ssh-vault-{}", uuid::Uuid::new_v4()))
     }
@@ -1162,11 +1181,12 @@ mod tests {
     fn creates_persists_and_recovers_encrypted_vault() {
         let directory = test_dir();
         let vault = Vault::open_for_test(&directory).unwrap();
+        let private_key = test_private_key();
         let key = vault
             .create_key(&CreateKeyRequest {
                 name: "Production".into(),
                 key_type: "key".into(),
-                private_key: "private-key".into(),
+                private_key: private_key.clone(),
                 cert_data: None,
             })
             .unwrap();
@@ -1186,23 +1206,39 @@ mod tests {
                 location: None,
             })
             .unwrap();
+        let credential = vault.decrypt_credential(&profile).unwrap();
         assert_eq!(
-            vault
-                .decrypt_credential(&profile)
-                .unwrap()
-                .private_key
-                .as_deref(),
-            Some("private-key")
+            credential.private_key.as_deref(),
+            Some(private_key.as_str())
         );
+        assert_eq!(credential.key_algorithm.as_deref(), Some("ssh-ed25519"));
         drop(vault);
 
         let persisted = fs::read_to_string(directory.join(VAULT_FILE_NAME)).unwrap();
-        assert!(!persisted.contains("private-key"));
+        assert!(!persisted.contains("BEGIN OPENSSH PRIVATE KEY"));
         assert!(persisted.contains("\"ciphertext\""));
         let reopened = Vault::open_for_test(&directory).unwrap();
         assert_eq!(reopened.list_profiles().unwrap().len(), 1);
         assert!(directory.join(VAULT_FILE_NAME).exists());
         assert!(directory.join(BACKUP_FILE_NAME).exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_private_key_imports() {
+        let directory = test_dir();
+        let vault = Vault::open_for_test(&directory).unwrap();
+
+        let error = vault
+            .create_key(&CreateKeyRequest {
+                name: "Invalid".into(),
+                key_type: "key".into(),
+                private_key: "not-a-private-key".into(),
+                cert_data: None,
+            })
+            .unwrap_err();
+
+        assert!(matches!(error, VaultError::InvalidSshKeyConfig(_)));
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -1214,7 +1250,7 @@ mod tests {
             .create_key(&CreateKeyRequest {
                 name: "Key".into(),
                 key_type: "key".into(),
-                private_key: "private-key".into(),
+                private_key: test_private_key(),
                 cert_data: None,
             })
             .unwrap();
@@ -1222,7 +1258,7 @@ mod tests {
             .create_key(&CreateKeyRequest {
                 name: "Later key".into(),
                 key_type: "key".into(),
-                private_key: "later-private-key".into(),
+                private_key: test_private_key(),
                 cert_data: None,
             })
             .unwrap();
@@ -1242,7 +1278,7 @@ mod tests {
             .create_key(&CreateKeyRequest {
                 name: "Shared key".into(),
                 key_type: "key".into(),
-                private_key: "private-key".into(),
+                private_key: test_private_key(),
                 cert_data: None,
             })
             .unwrap();
@@ -1322,7 +1358,7 @@ mod tests {
             .create_key(&CreateKeyRequest {
                 name: "Key".into(),
                 key_type: "key".into(),
-                private_key: "private-key".into(),
+                private_key: test_private_key(),
                 cert_data: None,
             })
             .unwrap();

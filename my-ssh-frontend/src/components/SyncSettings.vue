@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { Cloud, Download, Upload } from '@lucide/vue'
-import { NAlert, NButton, NInput, NPopconfirm, NSpace, NSwitch } from 'naive-ui'
+import { NAlert, NButton, NInput, NPopconfirm, NSpace, NSwitch, useMessage } from 'naive-ui'
 import { useVaultStore } from '../stores/vault'
 
 type SyncProvider = 'github_gist' | 'gitee_snippet'
@@ -24,12 +24,18 @@ type OperationResult = {
   sync: SyncStatus
 }
 
+type SyncDiscovery = {
+  remoteExists: boolean
+}
+
 const vaultStore = useVaultStore()
+const message = useMessage()
 const status = ref<SyncStatus | null>(null)
 const provider = ref<SyncProvider>('github_gist')
 const token = ref('')
 const syncPassword = ref('')
 const confirmSyncPassword = ref('')
+const discovery = ref<SyncDiscovery | null>(null)
 const currentPassword = ref('')
 const newPassword = ref('')
 const confirmNewPassword = ref('')
@@ -38,11 +44,10 @@ const passwordFormVisible = ref(false)
 const localPasswordFormVisible = ref(false)
 const passwordError = ref<string | null>(null)
 const loading = ref(false)
-const error = ref<string | null>(null)
-const notice = ref<string | null>(null)
+const conflictMessage = ref<string | null>(null)
 
 const isConfigured = computed(() => status.value?.configured === true)
-const hasConflict = computed(() => error.value?.includes('同步冲突') === true)
+const hasConflict = computed(() => conflictMessage.value !== null)
 const providerLabel = computed(() => provider.value === 'github_gist' ? 'GitHub Gist' : 'Gitee 私有代码片段')
 const configuredProviderLabel = computed(() => status.value?.provider === 'gitee_snippet' ? 'Gitee 私有代码片段' : 'GitHub Gist')
 
@@ -60,7 +65,7 @@ async function loadStatus() {
   try {
     applyStatus(await invoke<SyncStatus>('get_sync_status'))
   } catch (reason) {
-    error.value = formatSyncError(reason)
+    message.error(formatSyncError(reason))
   }
 }
 
@@ -69,42 +74,80 @@ async function run(
   success: string,
   refreshVault = false,
 ): Promise<boolean> {
-  error.value = null
-  notice.value = null
+  conflictMessage.value = null
   loading.value = true
   try {
     const result = await operation()
     applyStatus('sync' in result ? result.sync : result)
     if (refreshVault) await vaultStore.refreshAfterSync()
-    notice.value = success
+    message.success(success)
     return true
   } catch (reason) {
-    error.value = formatSyncError(reason)
+    const formatted = formatSyncError(reason)
+    if (formatted.includes('同步冲突')) {
+      conflictMessage.value = formatted
+      message.warning(formatted, { keepAliveOnHover: true })
+    } else {
+      message.error(formatted)
+    }
     return false
   } finally {
     loading.value = false
   }
 }
 
+function resetDiscovery() {
+  discovery.value = null
+  syncPassword.value = ''
+  confirmSyncPassword.value = ''
+}
+
+async function discoverRemote() {
+  if (!token.value.trim()) {
+    message.warning(`请输入 ${providerLabel.value} token。`)
+    return
+  }
+
+  conflictMessage.value = null
+  loading.value = true
+  try {
+    discovery.value = await invoke<SyncDiscovery>('discover_sync_remote', {
+      provider: provider.value,
+      token: token.value,
+    })
+  } catch (reason) {
+    message.error(formatSyncError(reason))
+  } finally {
+    loading.value = false
+  }
+}
+
 async function enable() {
-  if (!token.value.trim() || !syncPassword.value) {
-    error.value = '请输入访问 token 和至少 8 个字符的同步密码。'
+  if (!syncPassword.value) {
+    message.warning(discovery.value?.remoteExists ? '请输入云端同步密码。' : '请输入至少 8 个字符的同步密码。')
     return
   }
-  if (syncPassword.value !== confirmSyncPassword.value) {
-    error.value = '两次输入的同步密码不一致。'
+  if (!discovery.value?.remoteExists && syncPassword.value !== confirmSyncPassword.value) {
+    message.warning('两次输入的同步密码不一致。')
     return
   }
+
   const command = provider.value === 'github_gist' ? 'enable_github_gist_sync' : 'enable_gitee_snippet_sync'
   const succeeded = await run(
     () => invoke<SyncStatus>(command, {
       token: token.value,
       syncPassword: syncPassword.value,
     }),
-    `已连接或创建 ${providerLabel.value} 同步库，并已将本机凭据保存到系统凭据管理器。`,
+    discovery.value?.remoteExists
+      ? `已验证云端同步密码并导入 ${providerLabel.value} 同步库。`
+      : `已创建 ${providerLabel.value} 同步库，并已将本机凭据保存到系统凭据管理器。`,
     true,
   )
-  if (succeeded) window.dispatchEvent(new Event('sync-configuration-changed'))
+  if (succeeded) {
+    token.value = ''
+    resetDiscovery()
+    window.dispatchEvent(new Event('sync-configuration-changed'))
+  }
 }
 
 async function overwriteWithLocal() {
@@ -174,7 +217,7 @@ async function updateLocalSyncPassword() {
     applyStatus(await invoke<SyncStatus>('update_local_sync_password', {
       password: localSyncPassword.value,
     }))
-    notice.value = '已更新本机同步凭据；云端和本地配置均未修改。'
+    message.success('已更新本机同步凭据；云端和本地配置均未修改。')
     closeLocalPasswordForm()
   } catch (reason) {
     passwordError.value = formatSyncError(reason)
@@ -191,7 +234,7 @@ async function updateAutoSync(autoSync: boolean) {
     window.dispatchEvent(new Event('sync-configuration-changed'))
   } catch (reason) {
     if (status.value) status.value.autoSync = previous
-    error.value = formatSyncError(reason)
+    message.error(formatSyncError(reason))
   }
 }
 
@@ -206,8 +249,6 @@ async function changeSyncPassword() {
     return
   }
 
-  error.value = null
-  notice.value = null
   loading.value = true
   try {
     const result = await invoke<OperationResult>('change_sync_password', {
@@ -215,7 +256,7 @@ async function changeSyncPassword() {
       newPassword: newPassword.value,
     })
     applyStatus(result.sync)
-    notice.value = '已更新同步密码。所有同步设备请使用新密码。'
+    message.success('已更新同步密码。所有同步设备请使用新密码。')
     closePasswordForm()
   } catch (reason) {
     passwordError.value = formatSyncError(reason)
@@ -236,33 +277,28 @@ async function resolveConflict(resolution: 'keep_local' | 'accept_remote') {
 }
 
 async function deleteRemote() {
-
-  error.value = null
-  notice.value = null
   loading.value = true
   try {
     await invoke('delete_remote_sync_vault')
     await loadStatus()
     window.dispatchEvent(new Event('sync-configuration-changed'))
-    notice.value = '已删除远端同步库及本机保存的同步凭据。'
+    message.success('已删除远端同步库及本机保存的同步凭据。')
   } catch (reason) {
-    error.value = formatSyncError(reason)
+    message.error(formatSyncError(reason))
   } finally {
     loading.value = false
   }
 }
 
 async function disable() {
-  error.value = null
-  notice.value = null
   loading.value = true
   try {
     await invoke('disable_sync')
     await loadStatus()
     window.dispatchEvent(new Event('sync-configuration-changed'))
-    notice.value = '已解除本机同步绑定；远端 Gist 未删除。'
+    message.success('已解除本机同步绑定；远端 Gist 未删除。')
   } catch (reason) {
-    error.value = formatSyncError(reason)
+    message.error(formatSyncError(reason))
   } finally {
     loading.value = false
   }
@@ -273,6 +309,7 @@ onBeforeUnmount(() => {
   token.value = ''
   syncPassword.value = ''
   confirmSyncPassword.value = ''
+  discovery.value = null
   currentPassword.value = ''
   newPassword.value = ''
   confirmNewPassword.value = ''
@@ -290,33 +327,43 @@ onBeforeUnmount(() => {
       同步密码仅用于端到端加密云端副本，不影响本地 SSH 凭证。密码不会上传，且无法找回。
     </n-alert>
 
-    <n-alert v-if="error" type="error" :show-icon="false" class="sync-message">{{ error }}</n-alert>
-    <n-alert v-if="notice" type="success" :show-icon="false" class="sync-message">{{ notice }}</n-alert>
     <div v-if="hasConflict && isConfigured" class="sync-card conflict-card">
       <div class="sync-card-title">同步冲突</div>
       <p>本地和远端自上次同步后都发生了变化。选择覆盖前会备份本地 Vault 与下载的远端加密文件到应用数据目录的 <code>sync-conflicts</code>。</p>
       <n-space>
         <n-button type="warning" :loading="loading" @click="resolveConflict('keep_local')">保留本地并覆盖远端</n-button>
         <n-button :loading="loading" @click="resolveConflict('accept_remote')">采用远端并覆盖本地</n-button>
-        <n-button tertiary :disabled="loading" @click="error = null">取消</n-button>
+        <n-button tertiary :disabled="loading" @click="conflictMessage = null">取消</n-button>
       </n-space>
     </div>
 
     <template v-if="!isConfigured">
       <div class="sync-card">
         <div class="sync-card-title"><Cloud :size="19" />配置云同步</div>
-        <p>应用会按名称自动查找唯一的 MJJSSH 私有同步片段：找到后自动导入远端数据，找不到才创建。访问 token 与派生同步密钥会保存到系统凭据管理器，原始同步密码不会保存。</p>
-        <label>同步提供方
-          <select v-model="provider">
-            <option value="github_gist">GitHub Gist</option>
-            <option value="gitee_snippet">Gitee 私有代码片段</option>
-          </select>
-        </label>
+        <p>访问 token 仅用于检查云端同步库，探测成功前不会保存到系统凭据管理器。</p>
+        <div class="setup-step">
+          <strong>1. 连接云端</strong>
+          <label>同步提供方
+            <select v-model="provider" :disabled="loading || discovery !== null" @change="resetDiscovery">
+              <option value="github_gist">GitHub Gist</option>
+              <option value="gitee_snippet">Gitee 私有代码片段</option>
+            </select>
+          </label>
+          <label>{{ providerLabel }} token<n-input v-model:value="token" type="password" show-password-on="click" :disabled="loading || discovery !== null" placeholder="仅在完成配置后保存到系统凭据管理器" /></label>
+          <n-button v-if="!discovery" type="primary" :loading="loading" @click="discoverRemote">下一步</n-button>
+        </div>
 
-        <label>{{ providerLabel }} token<n-input v-model:value="token" type="password" show-password-on="click" placeholder="仅保存到系统凭据管理器" /></label>
-        <label>云同步加密密码<n-input v-model:value="syncPassword" type="password" show-password-on="click" placeholder="至少 8 个字符" /></label>
-        <label>确认云同步加密密码<n-input v-model:value="confirmSyncPassword" type="password" show-password-on="click" placeholder="再次输入同步密码" /></label>
-        <n-button type="primary" :loading="loading" @click="enable">连接并同步 {{ providerLabel }}</n-button>
+        <div v-if="discovery" class="setup-step">
+          <strong>2. {{ discovery.remoteExists ? '验证云端同步密码' : '设置云端同步密码' }}</strong>
+          <p v-if="discovery.remoteExists">已找到唯一的 MJJSSH 云端同步库。输入其同步密码后将验证并导入云端配置。</p>
+          <p v-else>未找到云端同步库。设置密码后将创建一个新的加密同步库。</p>
+          <label>{{ discovery.remoteExists ? '云端同步密码' : '新云同步密码' }}<n-input v-model:value="syncPassword" type="password" show-password-on="click" :disabled="loading" placeholder="至少 8 个字符" /></label>
+          <label v-if="!discovery.remoteExists">确认云同步密码<n-input v-model:value="confirmSyncPassword" type="password" show-password-on="click" :disabled="loading" placeholder="再次输入同步密码" /></label>
+          <n-space>
+            <n-button :disabled="loading" @click="resetDiscovery">上一步</n-button>
+            <n-button type="primary" :loading="loading" @click="enable">{{ discovery.remoteExists ? '验证并导入' : '设置密码并创建' }}</n-button>
+          </n-space>
+        </div>
       </div>
     </template>
 
@@ -441,11 +488,13 @@ onBeforeUnmount(() => {
 <style scoped>
 .sync-settings { display: grid; gap: 16px; }
 h3 { margin: 0; font-size: 18px; }
-.sync-message { margin: 0; }
+
 .sync-card { display: grid; gap: 13px; padding: 16px; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-panel); }
 .sync-card-title { display: flex; align-items: center; gap: 8px; font-weight: 650; }
 p { margin: 0; color: var(--app-muted); font-size: 13px; line-height: 1.55; }
 label { display: grid; gap: 6px; color: var(--app-text); font-size: 13px; font-weight: 600; }
+.setup-step { display: grid; gap: 12px; padding: 13px; border: 1px solid var(--app-border); border-radius: 7px; }
+.setup-step > strong { font-size: 13px; }
 
 select { width: 100%; padding: 8px 10px; border: 1px solid var(--app-border); border-radius: 6px; color: var(--app-text); background: var(--app-surface); }
 code { font-size: 12px; word-break: break-all; }

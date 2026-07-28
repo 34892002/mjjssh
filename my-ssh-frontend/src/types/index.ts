@@ -55,6 +55,7 @@ export interface SshKeyView {
   id: string
   name: string
   key_type: string
+  algorithm: string
   created_at: string
   updated_at: string
 }

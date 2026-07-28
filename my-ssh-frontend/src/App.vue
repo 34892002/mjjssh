@@ -3,7 +3,7 @@ import { defineAsyncComponent, ref, computed, onBeforeUnmount, onMounted, nextTi
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { Archive, Box, Cloud, CloudCog, Code2, Container, Copy, Cpu, Database, Download, EthernetPort, FileCode2, Globe2, HardDrive, Languages, Layers3, ListFilter, MapPin, MemoryStick, MonitorCog, Moon, Network, Plus, RadioTower, RefreshCw, Router, Server, ServerCog, Settings, ShieldCheck, Sparkles, Square, Sun, TerminalSquare, Upload, Waypoints, Workflow, X, Zap } from '@lucide/vue'
+import { Archive, Box, Cloud, CloudCog, Code2, Container, Copy, Cpu, Database, Download, EthernetPort, FileCode2, Globe2, HardDrive, Languages, Layers3, ListFilter, MemoryStick, MonitorCog, Moon, Network, Plus, RadioTower, RefreshCw, Router, Server, ServerCog, Settings, ShieldCheck, Sparkles, Square, Sun, TerminalSquare, Upload, Waypoints, Workflow, X, Zap } from '@lucide/vue'
 import {
   darkTheme,
   NConfigProvider,
@@ -29,6 +29,16 @@ import { useSessionStore } from './stores/session'
 import { useTransferStore } from './stores/transfer'
 import { useLocale, type AppLanguage } from './composables/useLocale'
 import EntityCard from './components/EntityCard.vue'
+import almalinuxIcon from './assets/os/almalinux.svg?raw'
+import alpineIcon from './assets/os/alpine.svg?raw'
+import archLinuxIcon from './assets/os/arch-linux.svg?raw'
+import centosIcon from './assets/os/centos.svg?raw'
+import debianIcon from './assets/os/debian.svg?raw'
+import fedoraIcon from './assets/os/fedora.svg?raw'
+import linuxIcon from './assets/os/linux.svg?raw'
+import opensuseIcon from './assets/os/opensuse.svg?raw'
+import rockyLinuxIcon from './assets/os/rocky-linux.svg?raw'
+import ubuntuIcon from './assets/os/ubuntu.svg?raw'
 const Terminal = defineAsyncComponent(() => import('./components/Terminal.vue'))
 const ConnectionDialog = defineAsyncComponent(() => import('./components/ConnectionDialog.vue'))
 const KeysView = defineAsyncComponent(() => import('./components/KeysView.vue'))
@@ -399,6 +409,25 @@ const profileKeyOptions = computed(() => vaultStore.sshKeys
 
 function hostIcon(icon: string | null) {
   return hostIconMap.get(icon ?? '') ?? MonitorCog
+}
+
+function asThemeIcon(svg: string) {
+  return svg.replace('<svg ', '<svg fill="currentColor" aria-hidden="true" ')
+}
+
+function osIcon(os: string | null) {
+  if (!os) return null
+  const normalized = os.toLowerCase()
+  if (normalized.includes('ubuntu')) return asThemeIcon(ubuntuIcon)
+  if (normalized.includes('debian')) return asThemeIcon(debianIcon)
+  if (normalized.includes('rocky')) return asThemeIcon(rockyLinuxIcon)
+  if (normalized.includes('almalinux') || normalized.includes('alma linux')) return asThemeIcon(almalinuxIcon)
+  if (normalized.includes('centos')) return asThemeIcon(centosIcon)
+  if (normalized.includes('alpine')) return asThemeIcon(alpineIcon)
+  if (normalized.includes('arch')) return asThemeIcon(archLinuxIcon)
+  if (normalized.includes('fedora')) return asThemeIcon(fedoraIcon)
+  if (normalized.includes('opensuse') || normalized.includes('open suse') || normalized.includes('suse')) return asThemeIcon(opensuseIcon)
+  return normalized.includes('linux') ? asThemeIcon(linuxIcon) : null
 }
 
 const isEditing = ref(false)
@@ -1057,15 +1086,21 @@ const showSettings = ref(false)
 const settingsSection = ref<'terminal' | 'ai' | 'sync' | 'system'>('terminal')
 const showDiagnosticExportConfirm = ref(false)
 const diagnosticExporting = ref(false)
+const diagnosticExportNotice = ref<{ type: 'success' | 'error'; message: string } | null>(null)
+
+function openDiagnosticExportConfirm() {
+  diagnosticExportNotice.value = null
+  showDiagnosticExportConfirm.value = true
+}
 
 async function confirmDiagnosticExport() {
   diagnosticExporting.value = true
   try {
     const path = await invoke<string>('export_diagnostic_bundle')
     showDiagnosticExportConfirm.value = false
-    window.alert(t('diagnostics.success', { path }))
+    diagnosticExportNotice.value = { type: 'success', message: t('diagnostics.success', { path }) }
   } catch {
-    window.alert(t('diagnostics.failed'))
+    diagnosticExportNotice.value = { type: 'error', message: t('diagnostics.failed') }
   } finally {
     diagnosticExporting.value = false
   }
@@ -1379,8 +1414,9 @@ function openSyncSettings() {
                       class="host-card"
                       :icon="hostIcon(profile.icon)"
                       :color="profile.color || '#3b82f6'"
-                      :title="profile.name"
-                      :subtitle="`${profile.username}@${profile.host}`"
+                      :title="profile.username"
+                      :subtitle="profile.name"
+                      invert-text-hierarchy
                       @dblclick="handleConnect(profile)"
                     >
                       <template #actions>
@@ -1398,8 +1434,11 @@ function openSyncSettings() {
                       </template>
                       <template #footer>
                         <div v-if="profile.os || profile.location" class="host-meta-row">
-                          <div v-if="profile.os" class="host-meta" :title="profile.os">{{ profile.os }}</div>
-                          <div v-if="profile.location" class="host-meta location" :title="profile.location"><MapPin :size="14" />{{ profile.location }}</div>
+                          <div v-if="profile.os" class="host-meta os" :title="profile.os">
+                            <span v-if="osIcon(profile.os)" class="host-os-icon" v-html="osIcon(profile.os)" />
+                            <MonitorCog v-else :size="14" />
+                          </div>
+                          <div v-if="profile.location" class="host-meta location" :title="profile.location">{{ profile.location }}</div>
                         </div>
                         <button
                           v-else
@@ -1584,7 +1623,16 @@ function openSyncSettings() {
                   </div>
                   <h3>{{ t('diagnostics.title') }}</h3>
                   <div class="settings-panel">
-                    <div class="settings-row"><div><strong>{{ t('diagnostics.title') }}</strong><p>{{ t('diagnostics.description') }}</p></div><n-button size="small" @click="showDiagnosticExportConfirm = true">{{ t('diagnostics.export') }}</n-button></div>
+                    <div class="settings-row"><div><strong>{{ t('diagnostics.title') }}</strong><p>{{ t('diagnostics.description') }}</p></div><n-button size="small" @click="openDiagnosticExportConfirm">{{ t('diagnostics.export') }}</n-button></div>
+                    <n-alert
+                      v-if="diagnosticExportNotice"
+                      :type="diagnosticExportNotice.type"
+                      closable
+                      style="margin-top: 12px"
+                      @close="diagnosticExportNotice = null"
+                    >
+                      {{ diagnosticExportNotice.message }}
+                    </n-alert>
                   </div>
                 </template>
               </main>
@@ -2186,8 +2234,24 @@ function openSyncSettings() {
   color: color-mix(in srgb, var(--app-muted) 82%, var(--app-text));
 }
 
-.host-meta.location { display: flex; align-items: center; gap: 4px; }
-.host-meta.location svg { flex: 0 0 auto; color: var(--app-accent); }
+.host-meta.os, .host-meta.location { display: flex; align-items: center; gap: 4px; }
+.host-meta.os { flex: 0 0 auto; }
+.host-meta.os svg { color: var(--app-muted); }
+.host-os-icon {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  color: color-mix(in srgb, var(--app-muted) 82%, var(--app-text));
+}
+
+.host-os-icon :deep(svg) {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.host-meta.location { flex: 1; }
+
 
 .host-info-refresh {
   display: flex;

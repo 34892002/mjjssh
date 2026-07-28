@@ -241,6 +241,8 @@ pub struct SshKey {
     pub id: String,
     pub name: String,
     pub key_type: String,
+    #[serde(default)]
+    pub algorithm: String,
     pub private_key: String,
     pub cert_data: Option<String>,
     pub created_at: String,
@@ -252,6 +254,7 @@ pub struct SshKeyView {
     pub id: String,
     pub name: String,
     pub key_type: String,
+    pub algorithm: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -289,5 +292,6 @@ pub struct GenerateSshKeyResult {
 pub struct DecryptedCredential {
     pub password: Option<String>,
     pub private_key: Option<String>,
+    pub key_algorithm: Option<String>,
     pub cert_data: Option<String>,
 }

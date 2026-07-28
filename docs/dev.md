@@ -108,12 +108,19 @@ type:
 - Teleport 组件可继承 `NConfigProvider` 主题，但不能继承 DOM 祖先的 `--app-*` 变量；需要时用 `useThemeVars()` 显式映射，并保留默认 `to`。
 - 嵌套模态使用官方 `v-model:show` 与 `preset` 结构，保留默认焦点管理；宽度等根节点样式通过 `NModal` 的 `style` 设置，避免 scoped CSS 在 Teleport 后失效。
 
+### 图标与浮动弹窗
+
+- 优先使用项目已引入的 `lucide-vue` 图标表达关闭、添加、刷新、删除等常见操作；图标按钮必须提供 `title` 或 `aria-label`，不要用文字按钮替代已有的通用图标。
+- 在 `NModal` 等模态窗口内，需要临时展示筛选、选择或编辑内容且不应撑开底层布局时，使用 `FloatingPanel`。调用方负责内容和状态，组件负责遮罩、关闭入口与焦点语义。
+
 ### 交互确认规范
 
 - 所有由按钮触发、会删除数据、覆盖数据、断开连接或修改安全设置的二次确认，必须使用 Naive UI 的 `NPopconfirm`，并将其包裹在按钮触发器上。
-- 禁止使用浏览器原生的 `window.confirm`、`window.alert` 或 `window.prompt`。确认提示必须紧邻触发操作，说明不可逆或覆盖影响，并提供明确的确认与取消文案。
+- 禁止使用浏览器原生的 `window.confirm`、`window.alert` 或 `window.prompt`，也不得通过未限定的 `confirm`、`alert`、`prompt` 调用它们。
+- 二次确认使用 `NPopconfirm` 或 `NModal`；成功、失败、警告和信息反馈使用 `NAlert`、`NMessage` 或 `NNotification`。需要保留详细结果（例如文件导出路径）时，优先使用可关闭的 `NAlert`。
+- 确认提示必须紧邻触发操作，说明不可逆或覆盖影响，并提供明确的确认与取消文案。
 
-示例：
+确认示例：
 
 ```vue
 <n-popconfirm
@@ -126,6 +133,14 @@ type:
   </template>
   此操作不可恢复。
 </n-popconfirm>
+```
+
+反馈示例：
+
+```vue
+<n-alert title="Success 类型" type="success" closable>
+  Leave it till tomorrow to unpack my case
+</n-alert>
 ```
 
 ### 性能开发规范

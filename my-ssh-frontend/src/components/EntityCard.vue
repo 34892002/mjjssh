@@ -6,6 +6,8 @@ defineProps<{
   color: string
   title: string
   subtitle: string
+  metadata?: string
+  invertTextHierarchy?: boolean
 }>()
 </script>
 
@@ -14,7 +16,7 @@ defineProps<{
     <div class="entity-icon" :style="{ '--entity-color': color }">
       <component :is="icon" :size="26" :stroke-width="1.8" />
     </div>
-    <div class="entity-content">
+    <div class="entity-content" :class="{ 'invert-text-hierarchy': invertTextHierarchy }">
       <div class="entity-title-row">
         <div class="entity-title" :title="title">{{ title }}</div>
         <div v-if="$slots.actions" class="entity-actions">
@@ -22,6 +24,7 @@ defineProps<{
         </div>
       </div>
       <div class="entity-subtitle" :title="subtitle">{{ subtitle }}</div>
+      <div v-if="metadata" class="entity-metadata" :title="metadata">{{ metadata }}</div>
     </div>
     <div v-if="$slots.footer" class="entity-footer">
       <slot name="footer" />
@@ -72,6 +75,8 @@ defineProps<{
   min-height: 24px;
 }
 
+.invert-text-hierarchy .entity-title-row { min-height: 16px; }
+
 .entity-title {
   min-width: 0;
   flex: 1;
@@ -83,7 +88,8 @@ defineProps<{
   color: var(--app-text);
 }
 
-.entity-subtitle {
+.entity-subtitle,
+.entity-metadata {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -92,6 +98,14 @@ defineProps<{
   line-height: 16px;
   color: var(--app-muted);
 }
+
+.entity-metadata {
+  color: color-mix(in srgb, var(--app-muted) 80%, transparent);
+}
+
+.invert-text-hierarchy { gap: 0; }
+.invert-text-hierarchy .entity-title { font-size: 11px; font-weight: 500; color: var(--app-muted); }
+.invert-text-hierarchy .entity-subtitle { font-size: 15px; font-weight: 650; line-height: 20px; color: var(--app-text); }
 
 .entity-actions {
   display: flex;

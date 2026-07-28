@@ -115,7 +115,7 @@ const zhCNMessages = {
   'diagnostics.exporting': '正在导出',
   'diagnostics.confirmTitle': '确认导出诊断包',
   'diagnostics.includedTitle': '将包含',
-  'diagnostics.includedItems': '安全运行日志、崩溃报告、应用与系统版本、主机和密钥数量摘要。',
+  'diagnostics.includedItems': '脱敏后的应用运行日志、崩溃报告、应用与系统版本、主机和密钥数量摘要。',
   'diagnostics.excludedTitle': '不会包含',
   'diagnostics.excludedItems': '原始 app.log 和 ai.log、密码、私钥、同步密码、Token、API Key、终端内容、AI 输入输出、主机详情和远程文件内容。',
   'diagnostics.warning': '导出内容虽已进行初步隐私保护，异常消息、调用栈或第三方库输出仍可能包含个人或敏感信息。请仅向受信任的支持人员提供此文件。',

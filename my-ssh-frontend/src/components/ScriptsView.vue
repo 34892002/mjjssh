@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
-import { Copy, Edit3, Plus, RefreshCw, Search, Trash2 } from '@lucide/vue'
+import { CircleCheck, CircleX, Copy, Edit3, Plus, RefreshCw, Search, Trash2 } from '@lucide/vue'
 import {
   NAlert,
   NButton,
@@ -292,22 +292,44 @@ function tagType(level: ScriptRiskLevel) {
         <div class="subscriptions-layout">
           <aside class="subscription-list">
             <n-empty v-if="!scriptStore.loading && scriptStore.subscriptions.length === 0" :description="t('scripts.noSubscriptions')" size="small" />
-            <button v-for="subscription in scriptStore.subscriptions" :key="subscription.id" class="subscription-item" :class="{ selected: selectedSubscriptionId === subscription.id }" @click="selectedSubscriptionId = subscription.id">
+            <button v-for="subscription in scriptStore.subscriptions" :key="subscription.id" class="subscription-item" :class="{ selected: selectedSubscriptionId === subscription.id }" :title="subscription.enabled ? t('scripts.enabled') : t('scripts.disabled')" @click="selectedSubscriptionId = subscription.id">
               <strong>{{ subscription.name }}</strong>
-              {{ subscription.enabled ? t('scripts.enabled') : t('scripts.disabled') }}
+              <CircleCheck v-if="subscription.enabled" :size="17" class="subscription-status enabled" :aria-label="t('scripts.enabled')" />
+              <CircleX v-else :size="17" class="subscription-status disabled" :aria-label="t('scripts.disabled')" />
             </button>
           </aside>
           <section class="subscription-content">
             <template v-if="selectedSubscription">
               <div class="subscription-detail">
                 <div><h3>{{ selectedSubscription.name }}</h3><p>{{ selectedSubscription.url }}</p></div>
-                <n-space>
-                  <n-switch :value="selectedSubscription.enabled" :disabled="scriptStore.loading" @update:value="toggleSubscription(selectedSubscription.id, $event)">
-                    <template #checked>{{ t('scripts.enabled') }}</template><template #unchecked>{{ t('scripts.disabled') }}</template>
-                  </n-switch>
-                  <n-button size="small" :loading="scriptStore.refreshingSubscriptionId === selectedSubscription.id" @click="refreshSubscription(selectedSubscription.id)"><template #icon><RefreshCw :size="14" /></template>{{ t('scripts.refresh') }}</n-button>
-                  <n-popconfirm @positive-click="deleteSubscription(selectedSubscription.id)"><template #trigger><n-button size="small" type="error" secondary :title="t('scripts.deleteSubscription')" :aria-label="t('scripts.deleteSubscription')"><template #icon><Trash2 :size="14" /></template></n-button></template>{{ t('scripts.deleteSubscriptionConfirm') }}</n-popconfirm>
-                </n-space>
+                <div class="subscription-actions">
+                  <n-switch
+                    size="small"
+                    :value="selectedSubscription.enabled"
+                    :disabled="scriptStore.loading"
+                    :title="selectedSubscription.enabled ? t('scripts.enabled') : t('scripts.disabled')"
+                    :aria-label="selectedSubscription.enabled ? t('scripts.enabled') : t('scripts.disabled')"
+                    @update:value="toggleSubscription(selectedSubscription.id, $event)"
+                  />
+                  <n-button
+                    size="tiny"
+                    quaternary
+                    :loading="scriptStore.refreshingSubscriptionId === selectedSubscription.id"
+                    :title="t('scripts.refresh')"
+                    :aria-label="t('scripts.refresh')"
+                    @click="refreshSubscription(selectedSubscription.id)"
+                  >
+                    <template #icon><RefreshCw :size="14" /></template>
+                  </n-button>
+                  <n-popconfirm @positive-click="deleteSubscription(selectedSubscription.id)">
+                    <template #trigger>
+                      <n-button size="tiny" quaternary type="error" :title="t('scripts.deleteSubscription')" :aria-label="t('scripts.deleteSubscription')">
+                        <template #icon><Trash2 :size="14" /></template>
+                      </n-button>
+                    </template>
+                    {{ t('scripts.deleteSubscriptionConfirm') }}
+                  </n-popconfirm>
+                </div>
               </div>
               <n-alert v-if="selectedSubscription.lastError" type="warning" :show-icon="false" style="margin-bottom: 12px">{{ selectedSubscription.lastError }}</n-alert>
               <n-empty v-if="!scriptStore.loading && filteredSubscriptionScripts.length === 0" :description="t('scripts.noCachedScripts')" />
@@ -359,14 +381,17 @@ function tagType(level: ScriptRiskLevel) {
 .script-card h3, .subscription-detail h3 { margin: 0; font-size: 15px; font-weight: 600; }
 .tag-row { flex-wrap: wrap; gap: 6px; margin-top: 12px; min-height: 22px; }
 .script-actions { gap: 8px; margin-top: 14px; }
-.subscriptions-layout { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 20px; min-height: 380px; }
+.subscriptions-layout { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 20px; min-height: max(380px, calc(100vh - 250px)); }
 .subscription-list { border-right: 1px solid var(--app-border); padding-right: 12px; display: flex; flex-direction: column; gap: 5px; }
-.subscription-item { text-align: left; border: 0; border-radius: 4px; background: transparent; color: var(--app-text); padding: 9px; cursor: pointer; }
+.subscription-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; text-align: left; border: 0; border-radius: 4px; background: transparent; color: var(--app-text); padding: 9px; cursor: pointer; }
 .subscription-item:hover, .subscription-item.selected { background: var(--app-hover); }
-.subscription-item strong, .subscription-item span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.subscription-item span { color: var(--app-muted); font-size: 12px; margin-top: 2px; }
+.subscription-item strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subscription-status { flex: 0 0 auto; }.subscription-status.enabled { color: #35b887; }.subscription-status.disabled { color: var(--app-muted); }
 .subscription-content { min-width: 0; }
 .subscription-detail { justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 14px; }
 .subscription-detail p { overflow-wrap: anywhere; }
+.subscription-actions { display: flex; align-items: center; flex: 0 0 auto; gap: 4px; min-height: 22px; }
+.subscription-actions :deep(.n-button) { width: 28px; height: 28px; padding: 0; }
+.subscription-actions :deep(.n-button .n-button__icon) { margin: 0; }
 @media (max-width: 720px) { .subscriptions-layout { grid-template-columns: 1fr; } .subscription-list { border-right: 0; border-bottom: 1px solid var(--app-border); padding: 0 0 12px; flex-direction: row; overflow-x: auto; } .subscription-item { min-width: 160px; } .scripts-header, .subscription-detail { align-items: flex-start; flex-direction: column; } }
 </style>

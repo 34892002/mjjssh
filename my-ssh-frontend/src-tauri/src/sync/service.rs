@@ -109,6 +109,12 @@ pub struct RemoteSyncStatus {
     pub remote_updated_at: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncDiscovery {
+    pub remote_exists: bool,
+}
+
 pub struct SyncService<'a> {
     vault: &'a Vault,
     app_dir: PathBuf,
@@ -185,6 +191,23 @@ impl<'a> SyncService<'a> {
         self.delete_credentials()?;
         self.state_store.clear()?;
         Ok(())
+    }
+
+    pub async fn discover(
+        &self,
+        provider: SyncProvider,
+        token: &str,
+    ) -> Result<SyncDiscovery, SyncServiceError> {
+        let documents = self.remote(provider)?.find_sync_vaults(token).await?;
+        match documents.len() {
+            0 => Ok(SyncDiscovery {
+                remote_exists: false,
+            }),
+            1 => Ok(SyncDiscovery {
+                remote_exists: true,
+            }),
+            _ => Err(SyncServiceError::MultipleSyncVaults),
+        }
     }
 
     pub fn set_auto_sync(&self, auto_sync: bool) -> Result<SyncStatus, SyncServiceError> {

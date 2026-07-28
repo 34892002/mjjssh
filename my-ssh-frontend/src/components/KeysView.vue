@@ -194,7 +194,8 @@ async function handleDelete(id: string) {
         :icon="KeyRound"
         :color="key.key_type === 'key' ? '#f59e0b' : '#22c55e'"
         :title="key.name"
-        :subtitle="key.key_type === 'key' ? 'SSH 私钥' : 'SSH 证书'"
+        :subtitle="key.algorithm || '未识别算法'"
+        :metadata="key.key_type === 'key' ? 'SSH 私钥' : 'SSH 证书'"
       >
         <template #actions>
           <n-button size="tiny" quaternary title="编辑密钥" aria-label="编辑密钥" @click="openEdit(key)">
@@ -273,6 +274,9 @@ async function handleDelete(id: string) {
         </n-form-item>
         <n-form-item label="类型">
           <n-select v-model:value="form.key_type" :options="keyTypeOptions" :disabled="!!editingKey" />
+        </n-form-item>
+        <n-form-item v-if="editingKey" label="算法">
+          <n-input :value="editingKey.algorithm || '未识别算法'" readonly />
         </n-form-item>
         <n-form-item label="私钥内容" :required="!editingKey">
           <n-input

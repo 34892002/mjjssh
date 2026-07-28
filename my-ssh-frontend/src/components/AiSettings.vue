@@ -1,7 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import {
-  NAlert,
   NButton,
   NButtonGroup,
   NForm,
@@ -15,8 +14,11 @@ import {
   NSwitch,
   NTabPane,
   NTabs,
+  NCheckbox,
+  NCheckboxGroup,
 } from 'naive-ui'
 import { Plus, RefreshCw, Sparkles } from '@lucide/vue'
+import FloatingPanel from './FloatingPanel.vue'
 import { useAiStore } from '../stores/ai'
 import type { AiAgentConfig, AiConnectionTestResult, AiModelConfig } from '../types/ai'
 
@@ -46,6 +48,10 @@ const modelForm = ref<AiModelConfig>(createModel())
 const savingConfig = ref(false)
 const testingConnection = ref(false)
 const discoveringModels = ref(false)
+const discoveredModelIds = ref<string[]>([])
+const selectedDiscoveredModelIds = ref<string[]>([])
+const modelSearch = ref('')
+const showModelPicker = ref(false)
 
 const connectionTest = ref<AiConnectionTestResult | null>(null)
 const editingAgent = ref<AiAgentConfig | null>(null)
@@ -55,8 +61,15 @@ const savingAgent = ref(false)
 const configured = computed(() => aiStore.config.configured)
 const providerOptions = [{ label: 'OpenAI-compatible', value: 'openai_compatible' }]
 const activeModel = computed(() => configForm.value.models.find((model) => model.id === configForm.value.activeModelId) ?? null)
+const availableDiscoveredModels = computed(() => {
+  const enabledIds = new Set(configForm.value.models.map((model) => model.id))
+  const search = modelSearch.value.trim().toLowerCase()
+  return discoveredModelIds.value.filter((id) => !enabledIds.has(id) && (!search || id.toLowerCase().includes(search)))
+})
 
-
+watch(() => aiStore.error, (error) => {
+  if (error) message.error(error)
+})
 
 function createModel(): AiModelConfig {
   return {
@@ -82,6 +95,9 @@ function syncConfigForm() {
   configForm.value.model = configForm.value.models.find((model) => model.id === configForm.value.activeModelId)?.name ?? ''
   configForm.value.timeoutSeconds = aiStore.config.timeoutSeconds ?? 60
   configForm.value.apiKey = ''
+  discoveredModelIds.value = []
+  selectedDiscoveredModelIds.value = []
+  showModelPicker.value = false
 }
 
 function selectModel(modelId: string | null) {
@@ -90,38 +106,56 @@ function selectModel(modelId: string | null) {
   configForm.value.model = model?.name ?? ''
 }
 
+function closeModelPicker() {
+  showModelPicker.value = false
+  modelSearch.value = ''
+  selectedDiscoveredModelIds.value = []
+}
 
+function insertDiscoveredModels() {
+  const existingIds = new Set(configForm.value.models.map((model) => model.id))
+  const addedModels = selectedDiscoveredModelIds.value
+    .filter((id) => !existingIds.has(id))
+    .map((id) => ({ ...createModel(), id, name: id }))
+  if (!addedModels.length) {
+    message.warning('请选择至少一个未启用的模型')
+    return
+  }
+  configForm.value.models.push(...addedModels)
+  if (!configForm.value.activeModelId) selectModel(addedModels[0].id)
+  message.success(`已插入 ${addedModels.length} 个模型`)
+  closeModelPicker()
+}
 
 async function discoverModels() {
   if (discoveringModels.value) return
   if (!configForm.value.baseUrl.trim()) {
-    aiStore.error = '请输入 API 地址'
+    message.warning('请输入 API 地址')
     return
   }
   if (!configForm.value.apiKey.trim() && !configured.value) {
-    aiStore.error = '请输入 API Key'
+    message.warning('请输入 API Key')
     return
   }
 
   discoveringModels.value = true
-  aiStore.error = null
   try {
     const models = await aiStore.discoverModels({
       baseUrl: configForm.value.baseUrl,
       apiKey: configForm.value.apiKey,
       timeoutSeconds: configForm.value.timeoutSeconds,
     })
-    const existingModelIds = new Set(configForm.value.models.map((model) => model.id))
-    const addedModels = models
-      .filter((id) => !existingModelIds.has(id))
-      .map((id) => ({ ...createModel(), id, name: id }))
-    if (!addedModels.length) {
-      message.warning(models.length ? '接口返回的模型均已在列表中' : '该 API 未返回可用模型')
+    const uniqueModels = [...new Set(models)]
+    if (!uniqueModels.length) {
+      message.warning('该 API 未返回可用模型')
       return
     }
-    configForm.value.models.push(...addedModels)
-    if (!configForm.value.activeModelId) selectModel(addedModels[0].id)
-    message.success(`已添加 ${addedModels.length} 个模型`)
+    discoveredModelIds.value = uniqueModels.sort()
+    selectedDiscoveredModelIds.value = []
+    modelSearch.value = ''
+    showModelPicker.value = true
+  } catch {
+    // The store error watcher displays the request failure.
   } finally {
     discoveringModels.value = false
   }
@@ -174,8 +208,7 @@ function removeModel(model: AiModelConfig) {
     return
   }
   const index = configForm.value.models.findIndex((item) => item.id === model.id)
-  if (index < 0) return
-  configForm.value.models.splice(index, 1)
+  if (index >= 0) configForm.value.models.splice(index, 1)
 }
 
 onMounted(async () => {
@@ -185,12 +218,12 @@ onMounted(async () => {
 
 async function saveConfig() {
   if (!configured.value && !configForm.value.apiKey.trim()) {
-    aiStore.error = '首次保存配置时请输入 API Key'
+    message.warning('首次保存配置时请输入 API Key')
     return
   }
 
   if (!activeModel.value) {
-    aiStore.error = '请添加并选择一个模型'
+    message.warning('请添加并选择一个模型')
     return
   }
 
@@ -201,6 +234,8 @@ async function saveConfig() {
     await aiStore.saveConfig(configForm.value)
     syncConfigForm()
     message.success('配置已保存')
+  } catch {
+    // The store error watcher displays the request failure.
   } finally {
     savingConfig.value = false
   }
@@ -212,6 +247,8 @@ async function testConnection() {
   connectionTest.value = null
   try {
     connectionTest.value = await aiStore.testConnection(activeModel.value?.id)
+  } catch {
+    // The store error watcher displays the request failure.
   } finally {
     testingConnection.value = false
   }
@@ -240,21 +277,27 @@ async function saveAgent() {
   try {
     await aiStore.saveAgent({ id: editingAgent.value?.id, ...agentForm.value })
     closeAgentEditor()
+    message.success('Agent 已保存')
+  } catch {
+    // The store error watcher displays the request failure.
   } finally {
     savingAgent.value = false
   }
 }
 
 async function deleteAgent(agent: AiAgentConfig) {
-  await aiStore.deleteAgent(agent.id)
-  if (editingAgent.value?.id === agent.id) closeAgentEditor()
+  try {
+    await aiStore.deleteAgent(agent.id)
+    if (editingAgent.value?.id === agent.id) closeAgentEditor()
+    message.success('Agent 已删除')
+  } catch {
+    // The store error watcher displays the request failure.
+  }
 }
 </script>
 
 <template>
   <section class="ai-settings">
-    <n-alert v-if="aiStore.error" type="error" :show-icon="false" class="settings-alert">{{ aiStore.error }}</n-alert>
-
     <n-tabs v-model:value="activeTab" type="line" class="ai-tabs" animated>
       <n-tab-pane name="provider" tab="提供商">
         <section class="tab-section">
@@ -298,8 +341,18 @@ async function deleteAgent(agent: AiAgentConfig) {
             <p v-else class="model-empty">尚未添加模型。</p>
           </section>
 
-          <form v-if="showModelEditor" class="model-editor" @submit.prevent="saveModel">
-            <h4>{{ editingModel ? '编辑模型' : '添加模型' }}</h4>
+          <FloatingPanel :show="showModelPicker" title="选择要插入的模型" @close="closeModelPicker">
+            <div class="model-picker-summary">{{ availableDiscoveredModels.length }} 个可选模型</div>
+            <n-input v-model:value="modelSearch" clearable placeholder="搜索模型 ID" />
+            <n-checkbox-group v-model:value="selectedDiscoveredModelIds" class="model-picker-list">
+              <n-checkbox v-for="modelId in availableDiscoveredModels" :key="modelId" :value="modelId">{{ modelId }}</n-checkbox>
+              <p v-if="!availableDiscoveredModels.length" class="model-empty">没有符合条件的模型。</p>
+            </n-checkbox-group>
+            <div class="model-picker-actions"><span>已选择 {{ selectedDiscoveredModelIds.length }} 项</span><n-button @click="closeModelPicker">取消</n-button><n-button type="primary" @click="insertDiscoveredModels">插入模型</n-button></div>
+          </FloatingPanel>
+
+          <FloatingPanel :show="showModelEditor" :title="editingModel ? '编辑模型' : '添加模型'" width="720px" @close="closeModelEditor">
+            <form class="model-editor" @submit.prevent="saveModel">
               <n-form label-placement="top" size="small">
                 <div class="model-form-grid"><n-form-item label="模型 ID"><n-input v-model:value="modelForm.id" maxlength="160" placeholder="例如 gpt-4.1-mini" required /></n-form-item><n-form-item label="显示名称"><n-input v-model:value="modelForm.name" maxlength="80" placeholder="例如 GPT-4.1 Mini" required /></n-form-item></div>
                 <div class="model-form-grid"><n-form-item label="最大上下文 Token"><n-input-number v-model:value="modelForm.maxContextTokens" :min="1" :precision="0" /></n-form-item><n-form-item label="最大输出 Token"><n-input-number v-model:value="modelForm.maxOutputTokens" :min="1" :precision="0" /></n-form-item></div>
@@ -308,7 +361,8 @@ async function deleteAgent(agent: AiAgentConfig) {
                 <div class="capability-grid"><label><span>工具调用</span><n-switch v-model:value="modelForm.supportsTools" /></label><label><span>图片输入</span><n-switch v-model:value="modelForm.supportsImages" /></label><label><span>并行工具调用</span><n-switch v-model:value="modelForm.supportsParallelToolCalls" :disabled="!modelForm.supportsTools" /></label><label><span>提示词缓存</span><n-switch v-model:value="modelForm.supportsPromptCaching" /></label><label><span>推理</span><n-switch v-model:value="modelForm.supportsReasoning" /></label></div>
               </n-form>
               <div class="provider-actions"><n-button type="primary" attr-type="submit">保存模型</n-button><n-button @click="closeModelEditor">取消</n-button></div>
-          </form>
+            </form>
+          </FloatingPanel>
 
           <div class="provider-actions">
             <n-button type="primary" :loading="savingConfig" @click="saveConfig">保存配置</n-button>
@@ -347,7 +401,7 @@ async function deleteAgent(agent: AiAgentConfig) {
 </template>
 
 <style scoped>
-.ai-settings { max-width: 760px; }.settings-alert { margin-bottom: 14px; }
+.ai-settings { max-width: 760px; }
 .ai-tabs :deep(.n-tabs-nav) { margin-bottom: 24px; }
 .ai-tabs :deep(.n-tabs-nav-scroll-content) { gap: 3px; }
 .ai-tabs :deep(.n-tabs-tab) { min-width: 104px; min-height: 36px; padding: 0 16px; color: var(--app-muted); font-size: 13px; transition: color .16s ease; }
@@ -356,5 +410,5 @@ async function deleteAgent(agent: AiAgentConfig) {
 .ai-tabs :deep(.n-tabs-tab__label) { display: grid; width: 100%; height: 100%; cursor: pointer; place-items: center; }
 .tab-section h3 { margin: 0 0 6px; color: var(--app-text); font-size: 15px; }.section-description, .privacy-notice { margin: 0 0 16px; color: var(--app-muted); font-size: 12px; line-height: 1.6; }.settings-card { border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-surface); overflow: hidden; }.settings-row { display: flex; align-items: center; justify-content: space-between; min-height: 82px; gap: 28px; padding: 14px 16px; border-bottom: 1px solid var(--app-border); }.settings-row:last-child { border-bottom: 0; }.row-description { min-width: 0; }.row-description strong { color: var(--app-text); font-size: 13px; }.row-description p { margin: 5px 0 0; color: var(--app-muted); font-size: 12px; line-height: 1.45; }.row-control { width: min(310px, 48%); flex: 0 0 auto; }.timeout-control { width: 132px; flex: 0 0 auto; }.settings-card :deep(.n-input), .settings-card :deep(.n-input-number), .settings-card :deep(.n-base-selection), .agent-editor :deep(.n-input) { --n-color: var(--app-base) !important; --n-color-focus: var(--app-base) !important; --n-border: 1px solid var(--app-border) !important; --n-border-focus: 1px solid var(--app-accent) !important; --n-text-color: var(--app-text) !important; --n-placeholder-color: var(--app-muted) !important; }.settings-card :deep(.n-input-wrapper), .settings-card :deep(.n-input-number-input), .settings-card :deep(.n-base-selection-label) { background: var(--app-base) !important; }.provider-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 16px; }.configured-status { color: #35b887; font-size: 12px; }.connection-test-result { margin: 10px 0 0; font-size: 12px; }.connection-test-result.success { color: #35b887; }.connection-test-result.authentication_failed, .connection-test-result.model_unavailable, .connection-test-result.rate_limited, .connection-test-result.service_unavailable, .connection-test-result.timeout, .connection-test-result.network_error { color: #d9973f; }.privacy-notice { margin-top: 14px; }.agent-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }.agent-heading .section-description { margin-bottom: 18px; }.agent-list { display: flex; flex-direction: column; gap: 8px; }.agent-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface); }.agent-card.selected { border-color: var(--app-accent); }.agent-card-main { display: flex; align-items: center; gap: 10px; }.agent-card-main svg { color: var(--app-accent); }.agent-card p { margin: 3px 0 0; color: var(--app-muted); font-size: 11px; }.agent-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }.agent-editor { margin-top: 16px; padding: 18px; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-surface); }.agent-editor h4 { margin: 0 0 14px; color: var(--app-text); }.agent-editor :deep(.n-form-item-label) { color: var(--app-muted) !important; }.coming-soon { display: flex; min-height: 180px; flex-direction: column; align-items: center; justify-content: center; padding: 20px; border: 1px solid var(--app-border); border-radius: 10px; background: var(--app-surface); color: var(--app-text); text-align: center; }.coming-soon svg { margin-bottom: 10px; color: var(--app-accent); }.coming-soon p { margin: 7px 0 0; color: var(--app-muted); font-size: 12px; }
 @media (max-width: 620px) { .ai-tabs :deep(.n-tabs-tab) { min-width: auto; padding: 7px 10px; }.settings-row, .model-card { align-items: stretch; flex-direction: column; gap: 12px; }.row-control { width: 100%; }.timeout-control { width: 100%; }.model-actions { justify-content: flex-start; }.model-form-grid, .capability-grid { grid-template-columns: 1fr; } }
-.model-section { margin-top: 20px; }.model-section h4 { margin: 0 0 6px; color: var(--app-text); font-size: 14px; }.model-list { display: flex; flex-direction: column; gap: 8px; }.model-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface); }.model-card.selected { border-color: var(--app-accent); }.model-card-main { display: flex; min-width: 0; align-items: center; gap: 10px; }.model-card-main svg { flex: 0 0 auto; color: var(--app-accent); }.model-card-main strong { color: var(--app-text); font-size: 13px; }.model-card-main p, .model-empty { margin: 3px 0 0; color: var(--app-muted); font-size: 11px; }.model-card-main code { color: inherit; }.model-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }.model-editor { margin-top: 16px; padding: 18px; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface); }.model-editor h4 { margin: 0 0 16px; color: var(--app-text); font-size: 16px; }.model-editor :deep(.n-input), .model-editor :deep(.n-input-number), .model-editor :deep(.n-base-selection) { --n-color: var(--app-base) !important; --n-color-focus: var(--app-base) !important; --n-border: 1px solid var(--app-border) !important; --n-border-focus: 1px solid var(--app-accent) !important; --n-text-color: var(--app-text) !important; --n-placeholder-color: var(--app-muted) !important; }.model-editor :deep(.n-input-wrapper), .model-editor :deep(.n-input-number-input), .model-editor :deep(.n-base-selection-label) { background: var(--app-base) !important; }.model-editor :deep(.n-form-item-label) { color: var(--app-muted) !important; }.model-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }.capability-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }.capability-grid label { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; color: var(--app-text); font-size: 12px; }.delete-confirm-text { overflow-wrap: anywhere; }
+.model-section { margin-top: 20px; }.model-section h4 { margin: 0 0 6px; color: var(--app-text); font-size: 14px; }.model-list { display: flex; flex-direction: column; gap: 8px; }.model-card { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface); }.model-card.selected { border-color: var(--app-accent); }.model-card-main { display: flex; min-width: 0; align-items: center; gap: 10px; }.model-card-main svg { flex: 0 0 auto; color: var(--app-accent); }.model-card-main strong { color: var(--app-text); font-size: 13px; }.model-card-main p, .model-empty { margin: 3px 0 0; color: var(--app-muted); font-size: 11px; }.model-card-main code { color: inherit; }.model-actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }.model-picker-summary { margin-bottom: 12px; color: var(--app-muted); font-size: 12px; }.model-picker-list { display: grid; min-height: 0; max-height: 340px; gap: 9px; overflow-y: auto; padding: 4px 2px; }.model-picker-list :deep(.n-checkbox) { min-height: 28px; }.model-picker-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }.model-picker-actions span { margin-right: auto; color: var(--app-muted); font-size: 12px; }.model-editor { margin-top: 16px; padding: 18px; border: 1px solid var(--app-border); border-radius: 8px; background: var(--app-surface); }.model-editor h4 { margin: 0 0 16px; color: var(--app-text); font-size: 16px; }.model-editor :deep(.n-input), .model-editor :deep(.n-input-number), .model-editor :deep(.n-base-selection) { --n-color: var(--app-base) !important; --n-color-focus: var(--app-base) !important; --n-border: 1px solid var(--app-border) !important; --n-border-focus: 1px solid var(--app-accent) !important; --n-text-color: var(--app-text) !important; --n-placeholder-color: var(--app-muted) !important; }.model-editor :deep(.n-input-wrapper), .model-editor :deep(.n-input-number-input), .model-editor :deep(.n-base-selection-label) { background: var(--app-base) !important; }.model-editor :deep(.n-form-item-label) { color: var(--app-muted) !important; }.model-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }.capability-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }.capability-grid label { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-width: 0; color: var(--app-text); font-size: 12px; }.delete-confirm-text { overflow-wrap: anywhere; }
 </style>

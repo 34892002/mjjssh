@@ -28,9 +28,8 @@ pub fn run() {
     let log_dir = app_dir.join("logs");
     std::fs::create_dir_all(&log_dir).expect("Failed to create log dir");
     ai::log::initialize(log_dir.join("ai.log"));
-    diagnostics::initialize(&app_dir);
     diagnostics::install_panic_hook(app_dir.clone());
-    diagnostics::log::event("application", "started", env!("CARGO_PKG_VERSION"));
+    log::info!("MJJSSH {} started", env!("CARGO_PKG_VERSION"));
 
     tauri::Builder::default()
         .plugin(
@@ -74,6 +73,7 @@ pub fn run() {
             commands::vault::init_vault,
             commands::vault::get_vault_md5,
             commands::sync::get_sync_status,
+            commands::sync::discover_sync_remote,
             commands::sync::enable_github_gist_sync,
             commands::sync::enable_gitee_snippet_sync,
             commands::sync::upload_sync_vault,

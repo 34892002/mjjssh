@@ -2,7 +2,7 @@ use tauri::State;
 
 use crate::state::AppState;
 use crate::sync::service::{
-    RemoteSyncStatus, SyncOperationResult, SyncProvider, SyncService, SyncStatus,
+    RemoteSyncStatus, SyncDiscovery, SyncOperationResult, SyncProvider, SyncService, SyncStatus,
 };
 
 #[tauri::command]
@@ -14,6 +14,24 @@ pub async fn get_sync_status(state: State<'_, AppState>) -> Result<SyncStatus, S
     SyncService::new(vault, &state.app_dir)
         .map_err(|error| error.to_string())?
         .status()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn discover_sync_remote(
+    state: State<'_, AppState>,
+    provider: String,
+    token: String,
+) -> Result<SyncDiscovery, String> {
+    let provider = SyncProvider::parse(&provider).map_err(|error| error.to_string())?;
+    let vault_guard = state.vault.lock().await;
+    let vault = vault_guard
+        .as_ref()
+        .ok_or_else(|| "Vault is not open".to_string())?;
+    SyncService::new(vault, &state.app_dir)
+        .map_err(|error| error.to_string())?
+        .discover(provider, &token)
+        .await
         .map_err(|error| error.to_string())
 }
 

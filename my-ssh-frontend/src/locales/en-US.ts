@@ -117,7 +117,7 @@ const enUSMessages = {
   'diagnostics.exporting': 'Exporting',
   'diagnostics.confirmTitle': 'Confirm diagnostic export',
   'diagnostics.includedTitle': 'Included',
-  'diagnostics.includedItems': 'Safe runtime logs, crash reports, application and system versions, and counts of hosts and keys.',
+  'diagnostics.includedItems': 'Sanitized application runtime logs, crash reports, application and system versions, and counts of hosts and keys.',
   'diagnostics.excludedTitle': 'Not included',
   'diagnostics.excludedItems': 'Raw app.log and ai.log, passwords, private keys, sync passwords, tokens, API keys, terminal content, AI input/output, host details, and remote file content.',
   'diagnostics.warning': 'Although initial privacy protections are applied, exception messages, call stacks, or third-party library output may still contain personal or sensitive information. Share this file only with trusted support staff.',

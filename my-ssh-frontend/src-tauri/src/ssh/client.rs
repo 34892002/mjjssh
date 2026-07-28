@@ -476,7 +476,32 @@ impl SshSession {
                     .ok_or_else(|| SshError::Auth("Private key not provided".into()))?;
                 let key_pair = decode_secret_key(key_pem, None)
                     .map_err(|e| SshError::Auth(format!("Invalid private key: {}", e)))?;
-                let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(key_pair), None);
+                let actual_algorithm = key_pair.algorithm().as_str().to_owned();
+                if let Some(stored_algorithm) = credential
+                    .key_algorithm
+                    .as_deref()
+                    .filter(|algorithm| !algorithm.is_empty())
+                {
+                    if stored_algorithm != actual_algorithm {
+                        return Err(SshError::Auth(
+                            "Stored key algorithm does not match the private key".into(),
+                        ));
+                    }
+                }
+                let hash_alg = if key_pair.algorithm().is_rsa() {
+                    handle
+                        .best_supported_rsa_hash()
+                        .await
+                        .map_err(|e| {
+                            SshError::Auth(format!(
+                                "Could not negotiate RSA signature algorithm: {e}"
+                            ))
+                        })?
+                        .flatten()
+                } else {
+                    None
+                };
+                let key_with_hash = PrivateKeyWithHashAlg::new(Arc::new(key_pair), hash_alg);
                 handle
                     .authenticate_publickey(username, key_with_hash)
                     .await

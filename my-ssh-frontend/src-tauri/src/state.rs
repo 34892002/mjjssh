@@ -59,7 +59,7 @@ impl AppState {
                 Ok(())
             }
             Err(error) => {
-                crate::diagnostics::log::event("vault", "open_failed", error.to_string());
+                log::warn!("Could not open local Vault: {}", error);
                 Err(error)
             }
         }
