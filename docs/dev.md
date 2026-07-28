@@ -307,8 +307,16 @@ npm run tauri build
 ```
 
 输出：
-- `src-tauri/target/release/mjj-ssh.exe`
-- `src-tauri/target/release/bundle/nsis/mjj-ssh_0.1.0_x64-setup.exe`
+- `src-tauri/target/release/` 按照平台生成对应安装文件
+
+### 更新版本
+
+发布新版本时，将以下文件中的版本号统一更新为目标版本：
+
+- `my-ssh-frontend/src-tauri/tauri.conf.json`：安装包与应用版本。
+- `my-ssh-frontend/src-tauri/Cargo.toml`：Rust crate 版本。
+- `my-ssh-frontend/package.json`：前端包版本。
+- `my-ssh-frontend/package-lock.json`：根包及 `packages[""]` 的版本。
 
 ---
 
