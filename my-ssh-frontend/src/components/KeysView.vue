@@ -17,7 +17,7 @@ import {
   NRadioGroup,
 } from 'naive-ui'
 import { useVaultStore } from '../stores/vault'
-import type { SshKeyView, CreateKeyRequest, GenerateSshKeyRequest } from '../types'
+import type { SshKeyView, CreateKeyRequest, GenerateSshKeyRequest, ImportedSshKeyAlgorithm } from '../types'
 import { useLocale } from '../composables/useLocale'
 
 const vaultStore = useVaultStore()
@@ -36,6 +36,7 @@ const editingKey = ref<SshKeyView | null>(null)
 const form = ref<CreateKeyRequest>({
   name: '',
   key_type: 'key',
+  algorithm: 'auto',
   private_key: '',
   cert_data: '',
 })
@@ -46,13 +47,20 @@ const keyTypeOptions = computed(() => [
   { label: t('keys.certificate'), value: 'certificate' },
 ])
 
+const importedAlgorithmOptions = computed(() => [
+  { label: t('keys.autoDetect'), value: 'auto' },
+  { label: 'RSA', value: 'ssh-rsa' },
+  { label: 'Ed25519', value: 'ssh-ed25519' },
+  { label: t('keys.dsaLegacy'), value: 'ssh-dss' },
+])
+
 onMounted(() => {
   void vaultStore.loadKeys()
 })
 
 function openCreate() {
   editingKey.value = null
-  form.value = { name: '', key_type: 'key', private_key: '', cert_data: '' }
+  form.value = { name: '', key_type: 'key', algorithm: 'auto', private_key: '', cert_data: '' }
   formError.value = ''
   showForm.value = true
 }
@@ -99,6 +107,7 @@ function openEdit(key: SshKeyView) {
   form.value = {
     name: key.name,
     key_type: key.key_type,
+    algorithm: (key.algorithm || 'auto') as ImportedSshKeyAlgorithm,
     private_key: '',
     cert_data: '',
   }
@@ -130,6 +139,7 @@ async function handleSubmit() {
   const data: CreateKeyRequest = {
     name: form.value.name,
     key_type: form.value.key_type,
+    algorithm: form.value.algorithm,
     private_key: form.value.private_key || 'PLACEHOLDER',
     cert_data: form.value.cert_data || undefined,
   }
@@ -275,8 +285,9 @@ async function handleDelete(id: string) {
         <n-form-item :label="t('keys.type')">
           <n-select v-model:value="form.key_type" :options="keyTypeOptions" :disabled="!!editingKey" />
         </n-form-item>
-        <n-form-item v-if="editingKey" :label="t('keys.algorithm')">
-          <n-input :value="editingKey.algorithm || t('keys.unknownAlgorithm')" readonly />
+        <n-form-item :label="t('keys.algorithm')">
+          <n-select v-model:value="form.algorithm" :options="importedAlgorithmOptions" />
+          <template #feedback>{{ t('keys.algorithmHint') }}</template>
         </n-form-item>
         <n-form-item :label="t('keys.privateKeyContent')" :required="!editingKey">
           <n-input

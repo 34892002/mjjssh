@@ -63,8 +63,9 @@ Vault 的唯一业务数据格式为 JSON，存储位置：`<程序目录>/data/
 | `id` | string | 是 | UUID |
 | `name` | string | 是 | 密钥名称 |
 | `keyType` | string | 是 | `key` / `certificate` |
+| `algorithm` | string | 是 | 从私钥内容识别出的 SSH 算法；导入时的手动选择仅用于一致性校验，不可覆盖实际算法 |
 | `privateKey` | string | 是 | 私钥内容；包含在本地与云端整体加密的 Vault 中 |
-| `certData` | string / null | 否 | SSH 用户证书内容；包含在本地与云端整体加密的 Vault 中 |
+| `certData` | string / null | 否 | SSH 用户证书内容；保存时解析并校验其公钥与私钥匹配；包含在本地与云端整体加密的 Vault 中 |
 | `createdAt` | string | 是 | RFC3339 |
 | `updatedAt` | string | 是 | RFC3339 |
 
@@ -87,6 +88,7 @@ profiles[].keyId -> sshKeys[].id
 ```
 
 - `authType: "certificate"` 必须引用 `keyType: "certificate"` 且有 `certData` 的 SSH 密钥。
+- 证书密钥仅接受 OpenSSH 用户证书；其嵌入公钥必须与关联私钥一致。CA 信任链、有效期与用户主体由目标 SSH 服务端验证。
 - 写入、导入和云端下载解密后都必须校验 UUID 唯一性和所有 `keyId` 引用。
 - 删除密钥时，必须清除引用它的 profile `keyId`，或在 UI 中拒绝删除；实现须选择并保持一致的行为。
 - 新格式不在 profile 中重复存储 `privateKey` 或 `certData`。迁移旧数据时，旧字段需转换到 `sshKeys`。

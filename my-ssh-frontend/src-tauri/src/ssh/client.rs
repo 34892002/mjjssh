@@ -4,6 +4,7 @@ use russh::keys::{decode_secret_key, Certificate, PrivateKeyWithHashAlg, PublicK
 use russh::*;
 use russh_sftp::client::SftpSession;
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -76,6 +77,39 @@ fn recovery_command(marker: &str) -> String {
     format!("printf '\\r\\033[2K{}\\r\\033[2K'", marker)
 }
 
+fn ssh_client_config() -> client::Config {
+    let mut config = client::Config {
+        inactivity_timeout: Some(std::time::Duration::from_secs(300)),
+        ..Default::default()
+    };
+
+    // Keep russh's modern defaults first, then offer algorithms required by
+    // older network equipment when no stronger common choice exists.
+    let preferred = &mut config.preferred;
+    let mut kex = preferred.kex.to_vec();
+    kex.extend([kex::DH_G14_SHA1, kex::DH_G1_SHA1, kex::DH_GEX_SHA1]);
+    preferred.kex = Cow::Owned(kex);
+
+    let mut key = preferred.key.to_vec();
+    key.push(russh::keys::Algorithm::Dsa);
+    preferred.key = Cow::Owned(key);
+
+    let mut cipher = preferred.cipher.to_vec();
+    cipher.extend([
+        cipher::AES_256_CBC,
+        cipher::AES_192_CBC,
+        cipher::AES_128_CBC,
+        cipher::TRIPLE_DES_CBC,
+    ]);
+    preferred.cipher = Cow::Owned(cipher);
+
+    let mut mac = preferred.mac.to_vec();
+    mac.extend([mac::HMAC_SHA1_ETM, mac::HMAC_SHA1]);
+    preferred.mac = Cow::Owned(mac);
+
+    config
+}
+
 fn interactive_input(command: &str, completion_command: &str) -> String {
     format!("{}\r{}\r", command, completion_command)
 }
@@ -106,6 +140,7 @@ pub struct ExpectedHostKey {
 #[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ConnectionProgressStage {
+    NegotiatedAlgorithms,
     VerifyingHostKey,
     Authenticating,
 }
@@ -115,6 +150,11 @@ pub struct ConnectionProgress {
     pub stage: ConnectionProgressStage,
     pub algorithm: Option<String>,
     pub fingerprint: Option<String>,
+    pub kex: Option<String>,
+    pub host_key: Option<String>,
+    pub cipher: Option<String>,
+    pub client_mac: Option<String>,
+    pub server_mac: Option<String>,
 }
 
 #[derive(Clone)]
@@ -263,10 +303,34 @@ impl Handler for SshClientHandler {
             stage: ConnectionProgressStage::VerifyingHostKey,
             algorithm: Some(observed.key_type.clone()),
             fingerprint: Some(observed.fingerprint.clone()),
+            kex: None,
+            host_key: None,
+            cipher: None,
+            client_mac: None,
+            server_mac: None,
         });
         Ok(self.expected_host_key.as_ref().is_some_and(|expected| {
             expected.algorithm == observed.key_type && expected.fingerprint == observed.fingerprint
         }))
+    }
+
+    async fn kex_done(
+        &mut self,
+        _shared_secret: Option<&[u8]>,
+        names: &russh::Names,
+        _session: &mut client::Session,
+    ) -> Result<(), Self::Error> {
+        let _ = self.progress_tx.send(ConnectionProgress {
+            stage: ConnectionProgressStage::NegotiatedAlgorithms,
+            algorithm: None,
+            fingerprint: None,
+            kex: Some(names.kex.as_ref().to_owned()),
+            host_key: Some(names.key.as_str().to_owned()),
+            cipher: Some(names.cipher.as_ref().to_owned()),
+            client_mac: Some(names.client_mac.as_ref().to_owned()),
+            server_mac: Some(names.server_mac.as_ref().to_owned()),
+        });
+        Ok(())
     }
 
     async fn data(
@@ -404,10 +468,7 @@ impl SshSession {
         progress_tx: mpsc::UnboundedSender<ConnectionProgress>,
         cancellation_token: CancellationToken,
     ) -> Result<(Self, mpsc::Receiver<Vec<u8>>), SshError> {
-        let config = client::Config {
-            inactivity_timeout: Some(std::time::Duration::from_secs(300)),
-            ..Default::default()
-        };
+        let config = ssh_client_config();
 
         let config = Arc::new(config);
         // Bound buffered terminal output so a slow WebView cannot grow memory indefinitely.
@@ -499,6 +560,11 @@ impl SshSession {
             stage: ConnectionProgressStage::Authenticating,
             algorithm: None,
             fingerprint: None,
+            kex: None,
+            host_key: None,
+            cipher: None,
+            client_mac: None,
+            server_mac: None,
         });
 
         match auth_type {
@@ -565,6 +631,18 @@ impl SshSession {
 
                 let cert = Certificate::from_openssh(cert_data)
                     .map_err(|e| SshError::Auth(format!("Invalid certificate: {}", e)))?;
+                if !cert.cert_type().is_user() {
+                    return Err(SshError::Auth(
+                        "Certificate authentication requires an SSH user certificate".into(),
+                    ));
+                }
+                if cert.algorithm() != key_pair.algorithm()
+                    || cert.public_key() != key_pair.public_key().key_data()
+                {
+                    return Err(SshError::Auth(
+                        "Certificate public key does not match the private key".into(),
+                    ));
+                }
 
                 handle
                     .authenticate_openssh_cert(username, Arc::new(key_pair), cert)
@@ -1105,8 +1183,33 @@ impl SessionManager {
 mod tests {
     use super::{
         completion_command, completion_status, interactive_input, recovery_command,
-        TerminalDisplayFilter,
+        ssh_client_config, TerminalDisplayFilter,
     };
+
+    #[test]
+    fn ssh_client_config_appends_legacy_algorithms_after_modern_defaults() {
+        let config = ssh_client_config();
+        let preferred = config.preferred;
+
+        assert_eq!(
+            preferred.kex.last().unwrap().as_ref(),
+            "diffie-hellman-group-exchange-sha1"
+        );
+        assert_eq!(preferred.key.last().unwrap().as_str(), "ssh-dss");
+        assert_eq!(preferred.cipher.last().unwrap().as_ref(), "3des-cbc");
+        assert_eq!(preferred.mac.last().unwrap().as_ref(), "hmac-sha1");
+
+        assert!(
+            preferred
+                .cipher
+                .iter()
+                .position(|algorithm| algorithm.as_ref() == "chacha20-poly1305@openssh.com")
+                < preferred
+                    .cipher
+                    .iter()
+                    .position(|algorithm| algorithm.as_ref() == "aes128-cbc")
+        );
+    }
 
     #[test]
     fn completion_command_keeps_terminal_controls_as_bash_escapes() {

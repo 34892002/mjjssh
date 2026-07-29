@@ -364,6 +364,8 @@ pub struct SshKeyView {
 pub struct CreateKeyRequest {
     pub name: String,
     pub key_type: String,
+    #[serde(default)]
+    pub algorithm: Option<String>,
     pub private_key: String,
     pub cert_data: Option<String>,
 }

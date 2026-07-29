@@ -357,6 +357,7 @@ pub async fn generate_ssh_key(
     let key = CreateKeyRequest {
         name: name.to_owned(),
         key_type: "key".into(),
+        algorithm: None,
         private_key,
         cert_data: None,
     };

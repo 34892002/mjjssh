@@ -101,9 +101,12 @@ export interface SshKeyView {
   updated_at: string
 }
 
+export type ImportedSshKeyAlgorithm = 'auto' | 'ssh-rsa' | 'ssh-ed25519' | 'ssh-dss'
+
 export interface CreateKeyRequest {
   name: string
   key_type: string
+  algorithm?: ImportedSshKeyAlgorithm
   private_key: string
   cert_data?: string
 }

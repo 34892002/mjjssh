@@ -28,6 +28,13 @@ const props = defineProps<{
     expectedAlgorithm?: string
     expectedFingerprint?: string
   }
+  negotiatedAlgorithms?: {
+    kex: string
+    host_key: string
+    cipher: string
+    client_mac: string
+    server_mac: string
+  }
   dark: boolean
 }>()
 
@@ -48,7 +55,20 @@ function fingerprintLabel() {
   return props.hostKey ? `${props.hostKey.algorithm}  ${props.hostKey.fingerprint}` : t('connection.verifyingFingerprint')
 }
 
-watch(() => props.status, (status) => {
+function negotiatedAlgorithmsLabel() {
+  const algorithms = props.negotiatedAlgorithms
+  return algorithms
+    ? t('connection.negotiatedAlgorithms', {
+      kex: algorithms.kex,
+      hostKey: algorithms.host_key,
+      cipher: algorithms.cipher,
+      clientMac: algorithms.client_mac,
+      serverMac: algorithms.server_mac,
+    })
+    : null
+}
+
+watch([() => props.status, () => props.negotiatedAlgorithms], ([status]) => {
   const secureChannel = { label: t('connection.secureChannelEstablished', { host: props.host, port: props.port }), state: 'done' as StepState }
   const proxyTunnel = props.proxy
     ? { label: t('connection.proxyTunnelEstablished', { proxy: proxyLabel() }), state: 'done' as StepState }
@@ -63,15 +83,32 @@ watch(() => props.status, (status) => {
   if (status === 'connecting') {
     steps.value = [{ label: t('connection.initializingSecureChannel'), state: 'done' }, connectionRoute]
   } else if (status === 'verifying') {
-    steps.value = [...(proxyTunnel ? [proxyTunnel] : []), secureChannel, { label: fingerprintLabel(), state: 'active' }]
+    steps.value = [
+      ...(proxyTunnel ? [proxyTunnel] : []),
+      secureChannel,
+      ...(negotiatedAlgorithmsLabel() ? [{ label: negotiatedAlgorithmsLabel()!, state: 'done' as StepState }] : []),
+      { label: fingerprintLabel(), state: 'active' },
+    ]
   } else if (status === 'host-key-confirm') {
     steps.value = [...(proxyTunnel ? [proxyTunnel] : []), secureChannel, { label: t('connection.awaitingFingerprintConfirmation'), state: 'active' }]
   } else if (status === 'host-key-changed') {
     steps.value = [...(proxyTunnel ? [proxyTunnel] : []), secureChannel, { label: t('connection.hostKeyChanged'), state: 'error' }]
   } else if (status === 'authenticating') {
-    steps.value = [...(proxyTunnel ? [proxyTunnel] : []), secureChannel, { label: fingerprintLabel(), state: 'done' }, { label: t('connection.authenticating'), state: 'active' }]
+    steps.value = [
+      ...(proxyTunnel ? [proxyTunnel] : []),
+      secureChannel,
+      ...(negotiatedAlgorithmsLabel() ? [{ label: negotiatedAlgorithmsLabel()!, state: 'done' as StepState }] : []),
+      { label: fingerprintLabel(), state: 'done' },
+      { label: t('connection.authenticating'), state: 'active' },
+    ]
   } else if (status === 'success') {
-    steps.value = [...(proxyTunnel ? [proxyTunnel] : []), secureChannel, { label: fingerprintLabel(), state: 'done' }, { label: t('connection.authenticated'), state: 'done' }]
+    steps.value = [
+      ...(proxyTunnel ? [proxyTunnel] : []),
+      secureChannel,
+      ...(negotiatedAlgorithmsLabel() ? [{ label: negotiatedAlgorithmsLabel()!, state: 'done' as StepState }] : []),
+      { label: fingerprintLabel(), state: 'done' },
+      { label: t('connection.authenticated'), state: 'done' },
+    ]
   } else {
     steps.value = [...(props.proxy ? [connectionRoute] : []), { label: props.error || t('connection.failed'), state: 'error' }]
   }

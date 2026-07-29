@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-use ssh_key::PrivateKey;
+use ssh_key::{Certificate, PrivateKey};
 
 use crate::local_security::{
     create_local_vault_key, decrypt_vault, encrypt_vault, existing_local_vault_key,
@@ -233,6 +233,15 @@ impl Vault {
             "profile",
         )?;
         ensure_unique_uuids(document.ssh_keys.iter().map(|key| &key.id), "SSH key")?;
+        for key in &document.ssh_keys {
+            Self::validate_key_request(&CreateKeyRequest {
+                name: key.name.clone(),
+                key_type: key.key_type.clone(),
+                algorithm: (!key.algorithm.is_empty()).then(|| key.algorithm.clone()),
+                private_key: key.private_key.clone(),
+                cert_data: key.cert_data.clone(),
+            })?;
+        }
         ensure_unique_uuids(document.proxies.iter().map(|proxy| &proxy.id), "proxy")?;
         ensure_unique_ids(document.ai_agents.iter().map(|agent| &agent.id), "AI agent")?;
         let mut proxy_names = HashSet::new();
@@ -1222,16 +1231,52 @@ impl Vault {
                 VaultError::InvalidSshKeyConfig(format!("invalid OpenSSH private key: {error}"))
             })?;
         let algorithm = private_key.algorithm().as_str().to_owned();
-        if request.key_type == "certificate"
-            && request
+
+        if let Some(selected_algorithm) = request
+            .algorithm
+            .as_deref()
+            .map(str::trim)
+            .filter(|algorithm| !algorithm.is_empty() && *algorithm != "auto")
+        {
+            if selected_algorithm != algorithm {
+                return Err(VaultError::InvalidSshKeyConfig(format!(
+                    "selected algorithm {selected_algorithm} does not match private key algorithm {algorithm}"
+                )));
+            }
+        }
+
+        if request.key_type == "certificate" {
+            let certificate_data = request
                 .cert_data
                 .as_deref()
-                .map_or(true, |certificate| certificate.trim().is_empty())
-        {
-            return Err(VaultError::InvalidSshKeyConfig(
-                "an SSH user certificate is required for certificate keys".into(),
-            ));
+                .map(str::trim)
+                .filter(|certificate| !certificate.is_empty())
+                .ok_or_else(|| {
+                    VaultError::InvalidSshKeyConfig(
+                        "an SSH user certificate is required for certificate keys".into(),
+                    )
+                })?;
+            let certificate = Certificate::from_openssh(certificate_data).map_err(|error| {
+                VaultError::InvalidSshKeyConfig(format!(
+                    "invalid OpenSSH user certificate: {error}"
+                ))
+            })?;
+
+            if !certificate.cert_type().is_user() {
+                return Err(VaultError::InvalidSshKeyConfig(
+                    "certificate keys require an SSH user certificate, not a host certificate"
+                        .into(),
+                ));
+            }
+            if certificate.algorithm() != private_key.algorithm()
+                || certificate.public_key() != private_key.public_key().key_data()
+            {
+                return Err(VaultError::InvalidSshKeyConfig(
+                    "certificate public key does not match the private key".into(),
+                ));
+            }
         }
+
         Ok(algorithm)
     }
 
@@ -1515,6 +1560,7 @@ mod tests {
             .create_key(&CreateKeyRequest {
                 name: "Production".into(),
                 key_type: "key".into(),
+                algorithm: None,
                 private_key: private_key.clone(),
                 cert_data: None,
             })
@@ -1594,8 +1640,131 @@ mod tests {
             .create_key(&CreateKeyRequest {
                 name: "Invalid".into(),
                 key_type: "key".into(),
+                algorithm: None,
                 private_key: "not-a-private-key".into(),
                 cert_data: None,
+            })
+            .unwrap_err();
+
+        assert!(matches!(error, VaultError::InvalidSshKeyConfig(_)));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn rejects_import_algorithm_that_does_not_match_private_key() {
+        let directory = test_dir();
+        let vault = Vault::open_for_test(&directory).unwrap();
+
+        let error = vault
+            .create_key(&CreateKeyRequest {
+                name: "Mismatched algorithm".into(),
+                key_type: "key".into(),
+                algorithm: Some("ssh-rsa".into()),
+                private_key: test_private_key(),
+                cert_data: None,
+            })
+            .unwrap_err();
+
+        assert!(matches!(error, VaultError::InvalidSshKeyConfig(_)));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn rejects_invalid_certificate_content() {
+        let directory = test_dir();
+        let vault = Vault::open_for_test(&directory).unwrap();
+
+        let error = vault
+            .create_key(&CreateKeyRequest {
+                name: "Invalid certificate".into(),
+                key_type: "certificate".into(),
+                algorithm: None,
+                private_key: test_private_key(),
+                cert_data: Some("not-a-certificate".into()),
+            })
+            .unwrap_err();
+
+        assert!(matches!(error, VaultError::InvalidSshKeyConfig(_)));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn accepts_matching_user_certificate() {
+        let directory = test_dir();
+        let vault = Vault::open_for_test(&directory).unwrap();
+        let mut seed =
+            <rand_chacha::ChaCha20Rng as rand_chacha::rand_core::SeedableRng>::Seed::default();
+        getrandom::fill(&mut seed).unwrap();
+        let mut rng =
+            <rand_chacha::ChaCha20Rng as rand_chacha::rand_core::SeedableRng>::from_seed(seed);
+        let subject = PrivateKey::random(&mut rng, ssh_key::Algorithm::Ed25519).unwrap();
+        let certificate_authority =
+            PrivateKey::random(&mut rng, ssh_key::Algorithm::Ed25519).unwrap();
+        let mut certificate_builder = ssh_key::certificate::Builder::new_with_random_nonce(
+            &mut rng,
+            subject.public_key(),
+            0,
+            u64::MAX,
+        )
+        .unwrap();
+        certificate_builder.valid_principal("test-user").unwrap();
+        let certificate = certificate_builder
+            .sign(&certificate_authority)
+            .unwrap()
+            .to_openssh()
+            .unwrap();
+        let private_key = subject
+            .to_openssh(ssh_key::LineEnding::LF)
+            .unwrap()
+            .to_string();
+
+        let key = vault
+            .create_key(&CreateKeyRequest {
+                name: "Matching certificate".into(),
+                key_type: "certificate".into(),
+                algorithm: Some("ssh-ed25519".into()),
+                private_key,
+                cert_data: Some(certificate),
+            })
+            .unwrap();
+
+        assert_eq!(key.algorithm, "ssh-ed25519");
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn rejects_certificate_for_a_different_private_key() {
+        let directory = test_dir();
+        let vault = Vault::open_for_test(&directory).unwrap();
+        let mut seed =
+            <rand_chacha::ChaCha20Rng as rand_chacha::rand_core::SeedableRng>::Seed::default();
+        getrandom::fill(&mut seed).unwrap();
+        let mut rng =
+            <rand_chacha::ChaCha20Rng as rand_chacha::rand_core::SeedableRng>::from_seed(seed);
+        let subject = PrivateKey::random(&mut rng, ssh_key::Algorithm::Ed25519).unwrap();
+        let certificate_authority =
+            PrivateKey::random(&mut rng, ssh_key::Algorithm::Ed25519).unwrap();
+        let mut certificate_builder = ssh_key::certificate::Builder::new_with_random_nonce(
+            &mut rng,
+            subject.public_key(),
+            0,
+            u64::MAX,
+        )
+        .unwrap();
+        certificate_builder.valid_principal("test-user").unwrap();
+        let certificate = certificate_builder
+            .sign(&certificate_authority)
+            .unwrap()
+            .to_openssh()
+            .unwrap();
+
+        let error = vault
+            .create_key(&CreateKeyRequest {
+                name: "Wrong certificate".into(),
+                key_type: "certificate".into(),
+                algorithm: None,
+                private_key: test_private_key(),
+                cert_data: Some(certificate),
             })
             .unwrap_err();
 
@@ -1611,6 +1780,7 @@ mod tests {
             .create_key(&CreateKeyRequest {
                 name: "Key".into(),
                 key_type: "key".into(),
+                algorithm: None,
                 private_key: test_private_key(),
                 cert_data: None,
             })
@@ -1619,6 +1789,7 @@ mod tests {
             .create_key(&CreateKeyRequest {
                 name: "Later key".into(),
                 key_type: "key".into(),
+                algorithm: None,
                 private_key: test_private_key(),
                 cert_data: None,
             })
@@ -1639,6 +1810,7 @@ mod tests {
             .create_key(&CreateKeyRequest {
                 name: "Shared key".into(),
                 key_type: "key".into(),
+                algorithm: None,
                 private_key: test_private_key(),
                 cert_data: None,
             })
@@ -1720,6 +1892,7 @@ mod tests {
             .create_key(&CreateKeyRequest {
                 name: "Key".into(),
                 key_type: "key".into(),
+                algorithm: None,
                 private_key: test_private_key(),
                 cert_data: None,
             })

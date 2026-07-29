@@ -722,10 +722,23 @@ type HostKeyInfo = {
   expectedFingerprint?: string
 }
 
+type NegotiatedAlgorithms = {
+  kex: string
+  host_key: string
+  cipher: string
+  client_mac: string
+  server_mac: string
+}
+
 type ConnectionProgress = {
-  stage: 'verifying_host_key' | 'authenticating'
+  stage: 'negotiated_algorithms' | 'verifying_host_key' | 'authenticating'
   algorithm?: string
   fingerprint?: string
+  kex?: string
+  host_key?: string
+  cipher?: string
+  client_mac?: string
+  server_mac?: string
 }
 
 type ConnectionProxyInfo = {
@@ -741,6 +754,7 @@ type ConnectionState = {
   status: ConnectionDialogStatus
   error: string
   hostKey: HostKeyInfo | null
+  negotiatedAlgorithms: NegotiatedAlgorithms | null
   reconnecting: boolean
 }
 
@@ -798,6 +812,7 @@ async function handleConnect(
     status: 'connecting',
     error: '',
     hostKey: null,
+    negotiatedAlgorithms: null,
     reconnecting: isReconnect,
   })
   sessionStore.error = null
@@ -809,7 +824,19 @@ async function handleConnect(
     // SSH handshake event emitted by the backend.
     unlistenProgress = await listen<ConnectionProgress>(`ssh-connection-progress:${sessionId}`, ({ payload }) => {
       if (!connectionStates.value[sessionId]) return
-      if (payload.stage === 'verifying_host_key') {
+      if (payload.stage === 'negotiated_algorithms') {
+        if (payload.kex && payload.host_key && payload.cipher && payload.client_mac && payload.server_mac) {
+          updateConnectionState(sessionId, {
+            negotiatedAlgorithms: {
+              kex: payload.kex,
+              host_key: payload.host_key,
+              cipher: payload.cipher,
+              client_mac: payload.client_mac,
+              server_mac: payload.server_mac,
+            },
+          })
+        }
+      } else if (payload.stage === 'verifying_host_key') {
         updateConnectionState(sessionId, {
           status: 'verifying',
           hostKey: payload.algorithm && payload.fingerprint
@@ -919,6 +946,7 @@ async function handleTerminalDisconnected(sessionId: string, reason: string) {
     status: 'error',
     error: reason,
     hostKey: null,
+    negotiatedAlgorithms: null,
     reconnecting: true,
   })
 }
@@ -1416,6 +1444,7 @@ function openSyncSettings() {
               :status="connectionStates[tab.sessionId].status"
               :error="connectionStates[tab.sessionId].error"
               :host-key="connectionStates[tab.sessionId].hostKey ?? undefined"
+              :negotiated-algorithms="connectionStates[tab.sessionId].negotiatedAlgorithms ?? undefined"
               :dark="isDarkTheme"
               @trust-host-key="handleTrustHostKey(tab.sessionId)"
               @retry="handleRetry(tab.sessionId)"
