@@ -2908,7 +2908,7 @@ dependencies = [
 
 [[package]]
 name = "mjj-ssh"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "aes-gcm",
  "anyhow",
