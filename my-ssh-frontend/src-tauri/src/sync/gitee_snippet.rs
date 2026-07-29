@@ -224,6 +224,7 @@ fn document_from_gist(gist: GiteeGistResponse) -> Result<RemoteDocument, GiteeSn
         content_hash: content_hash(&content),
         content,
         remote_updated_at: gist.updated_at,
+        etag: None,
     })
 }
 

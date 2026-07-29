@@ -16,6 +16,7 @@ use super::gitee_snippet::{GiteeSnippetError, GiteeSnippetRemote};
 use super::github_gist::{GithubGistError, GithubGistRemote, GIST_FILE_NAME};
 use super::models::{RemoteDocument, SyncEnvelopeError};
 use super::state::{SyncState, SyncStateError, SyncStateStore};
+use super::webdav::{WebDavCredentials, WebDavError, WebDavRemote};
 use super::{
     decrypt_vault, decrypt_vault_with_key, derive_sync_key, encrypt_vault, encrypt_vault_with_key,
     EncryptedVault, SyncCryptoError,
@@ -23,11 +24,13 @@ use super::{
 
 pub const GITHUB_GIST_PROVIDER: &str = "github_gist";
 pub const GITEE_SNIPPET_PROVIDER: &str = "gitee_snippet";
+pub const WEBDAV_PROVIDER: &str = "webdav";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncProvider {
     GithubGist,
     GiteeSnippet,
+    WebDav,
 }
 
 impl SyncProvider {
@@ -35,6 +38,7 @@ impl SyncProvider {
         match value {
             GITHUB_GIST_PROVIDER => Ok(Self::GithubGist),
             GITEE_SNIPPET_PROVIDER => Ok(Self::GiteeSnippet),
+            WEBDAV_PROVIDER => Ok(Self::WebDav),
             _ => Err(SyncServiceError::UnsupportedProvider),
         }
     }
@@ -43,6 +47,7 @@ impl SyncProvider {
         match self {
             Self::GithubGist => GITHUB_GIST_PROVIDER,
             Self::GiteeSnippet => GITEE_SNIPPET_PROVIDER,
+            Self::WebDav => WEBDAV_PROVIDER,
         }
     }
 }
@@ -69,6 +74,8 @@ pub enum SyncServiceError {
     Github(#[from] GithubGistError),
     #[error("Gitee sync error: {0}")]
     Gitee(#[from] GiteeSnippetError),
+    #[error("WebDAV sync error: {0}")]
+    WebDav(#[from] WebDavError),
     #[error("sync encryption error: {0}")]
     Crypto(#[from] SyncCryptoError),
     #[error(
@@ -126,46 +133,108 @@ pub struct SyncService<'a> {
 enum Remote {
     Github(GithubGistRemote),
     Gitee(GiteeSnippetRemote),
+    WebDav(WebDavRemote),
+}
+
+#[derive(Clone)]
+enum RemoteCredentials {
+    Token(String),
+    WebDav(WebDavCredentials),
 }
 
 impl Remote {
-    async fn get(&self, token: &str, remote_id: &str) -> Result<RemoteDocument, SyncServiceError> {
-        match self {
-            Self::Github(remote) => Ok(remote.get(token, remote_id).await?),
-            Self::Gitee(remote) => Ok(remote.get(token, remote_id).await?),
+    async fn get(
+        &self,
+        credentials: &RemoteCredentials,
+        remote_id: &str,
+    ) -> Result<RemoteDocument, SyncServiceError> {
+        match (self, credentials) {
+            (Self::Github(remote), RemoteCredentials::Token(token)) => {
+                Ok(remote.get(token, remote_id).await?)
+            }
+            (Self::Gitee(remote), RemoteCredentials::Token(token)) => {
+                Ok(remote.get(token, remote_id).await?)
+            }
+            (Self::WebDav(remote), RemoteCredentials::WebDav(credentials)) => {
+                Ok(remote.get(credentials).await?)
+            }
+            _ => Err(SyncServiceError::CredentialsUnavailable),
         }
     }
 
-    async fn find_sync_vaults(&self, token: &str) -> Result<Vec<RemoteDocument>, SyncServiceError> {
-        match self {
-            Self::Github(remote) => Ok(remote.find_sync_vaults(token).await?),
-            Self::Gitee(remote) => Ok(remote.find_sync_vaults(token).await?),
+    async fn find_sync_vaults(
+        &self,
+        credentials: &RemoteCredentials,
+    ) -> Result<Vec<RemoteDocument>, SyncServiceError> {
+        match (self, credentials) {
+            (Self::Github(remote), RemoteCredentials::Token(token)) => {
+                Ok(remote.find_sync_vaults(token).await?)
+            }
+            (Self::Gitee(remote), RemoteCredentials::Token(token)) => {
+                Ok(remote.find_sync_vaults(token).await?)
+            }
+            (Self::WebDav(remote), RemoteCredentials::WebDav(credentials)) => {
+                Ok(remote.find_sync_vaults(credentials).await?)
+            }
+            _ => Err(SyncServiceError::CredentialsUnavailable),
         }
     }
 
-    async fn create(&self, token: &str, content: &str) -> Result<RemoteDocument, SyncServiceError> {
-        match self {
-            Self::Github(remote) => Ok(remote.create(token, content).await?),
-            Self::Gitee(remote) => Ok(remote.create(token, content).await?),
+    async fn create(
+        &self,
+        credentials: &RemoteCredentials,
+        content: &str,
+    ) -> Result<RemoteDocument, SyncServiceError> {
+        match (self, credentials) {
+            (Self::Github(remote), RemoteCredentials::Token(token)) => {
+                Ok(remote.create(token, content).await?)
+            }
+            (Self::Gitee(remote), RemoteCredentials::Token(token)) => {
+                Ok(remote.create(token, content).await?)
+            }
+            (Self::WebDav(remote), RemoteCredentials::WebDav(credentials)) => {
+                Ok(remote.create(credentials, content).await?)
+            }
+            _ => Err(SyncServiceError::CredentialsUnavailable),
         }
     }
 
     async fn update(
         &self,
-        token: &str,
-        remote_id: &str,
+        credentials: &RemoteCredentials,
+        current: &RemoteDocument,
         content: &str,
     ) -> Result<RemoteDocument, SyncServiceError> {
-        match self {
-            Self::Github(remote) => Ok(remote.update(token, remote_id, content).await?),
-            Self::Gitee(remote) => Ok(remote.update(token, remote_id, content).await?),
+        match (self, credentials) {
+            (Self::Github(remote), RemoteCredentials::Token(token)) => {
+                Ok(remote.update(token, &current.remote_id, content).await?)
+            }
+            (Self::Gitee(remote), RemoteCredentials::Token(token)) => {
+                Ok(remote.update(token, &current.remote_id, content).await?)
+            }
+            (Self::WebDav(remote), RemoteCredentials::WebDav(credentials)) => {
+                Ok(remote.update(credentials, current, content).await?)
+            }
+            _ => Err(SyncServiceError::CredentialsUnavailable),
         }
     }
 
-    async fn delete(&self, token: &str, remote_id: &str) -> Result<(), SyncServiceError> {
-        match self {
-            Self::Github(remote) => Ok(remote.delete(token, remote_id).await?),
-            Self::Gitee(remote) => Ok(remote.delete(token, remote_id).await?),
+    async fn delete(
+        &self,
+        credentials: &RemoteCredentials,
+        remote_id: &str,
+    ) -> Result<(), SyncServiceError> {
+        match (self, credentials) {
+            (Self::Github(remote), RemoteCredentials::Token(token)) => {
+                Ok(remote.delete(token, remote_id).await?)
+            }
+            (Self::Gitee(remote), RemoteCredentials::Token(token)) => {
+                Ok(remote.delete(token, remote_id).await?)
+            }
+            (Self::WebDav(remote), RemoteCredentials::WebDav(credentials)) => {
+                Ok(remote.delete(credentials).await?)
+            }
+            _ => Err(SyncServiceError::CredentialsUnavailable),
         }
     }
 }
@@ -200,7 +269,27 @@ impl<'a> SyncService<'a> {
         provider: SyncProvider,
         token: &str,
     ) -> Result<SyncDiscovery, SyncServiceError> {
-        let documents = self.remote(provider)?.find_sync_vaults(token).await?;
+        self.discover_with_credentials(provider, RemoteCredentials::Token(token.into()))
+            .await
+    }
+
+    pub async fn discover_webdav(
+        &self,
+        credentials: WebDavCredentials,
+    ) -> Result<SyncDiscovery, SyncServiceError> {
+        self.discover_with_credentials(SyncProvider::WebDav, RemoteCredentials::WebDav(credentials))
+            .await
+    }
+
+    async fn discover_with_credentials(
+        &self,
+        provider: SyncProvider,
+        credentials: RemoteCredentials,
+    ) -> Result<SyncDiscovery, SyncServiceError> {
+        let documents = self
+            .remote(provider)?
+            .find_sync_vaults(&credentials)
+            .await?;
         match documents.len() {
             0 => Ok(SyncDiscovery {
                 remote_exists: false,
@@ -222,10 +311,10 @@ impl<'a> SyncService<'a> {
     pub async fn check_remote_status(&self) -> Result<RemoteSyncStatus, SyncServiceError> {
         let state = self.configured_state()?;
         let local = self.vault.sync_snapshot()?;
-        let token = self.saved_token()?;
+        let credentials = self.saved_credentials(&state)?;
         let remote = self
             .remote_for_state(&state)?
-            .get(&token, &state.remote_id)
+            .get(&credentials, &state.remote_id)
             .await?;
         let key = self.saved_key()?;
         let envelope = verify_remote_with_key(&remote, &key)?;
@@ -248,10 +337,10 @@ impl<'a> SyncService<'a> {
         password: String,
     ) -> Result<SyncStatus, SyncServiceError> {
         let state = self.configured_state()?;
-        let token = self.saved_token()?;
+        let credentials = self.saved_credentials(&state)?;
         let remote = self
             .remote_for_state(&state)?
-            .get(&token, &state.remote_id)
+            .get(&credentials, &state.remote_id)
             .await?;
         let envelope = parse_envelope(&remote)?;
         let key = derive_key_for_envelope(&envelope, password)?;
@@ -260,10 +349,10 @@ impl<'a> SyncService<'a> {
         Ok(status_from_state(Some(state)))
     }
 
-    pub async fn enable_create(
+    async fn enable_create(
         &self,
         provider: SyncProvider,
-        token: &str,
+        credentials: RemoteCredentials,
         password: String,
     ) -> Result<SyncStatus, SyncServiceError> {
         if self.state_store.load()?.is_some() {
@@ -274,11 +363,11 @@ impl<'a> SyncService<'a> {
         let encrypted = encrypt_snapshot(snapshot, password.clone(), device_id.clone())?;
         let derived_sync_key = derive_key_for_envelope(&encrypted, password)?;
         let remote_client = self.remote(provider)?;
-        let matching = remote_client.find_sync_vaults(token).await?;
+        let matching = remote_client.find_sync_vaults(&credentials).await?;
         let remote = match matching.as_slice() {
             [] => {
                 remote_client
-                    .create(token, &serialize_envelope(&encrypted)?)
+                    .create(&credentials, &serialize_envelope(&encrypted)?)
                     .await?
             }
             [_] => {
@@ -295,7 +384,7 @@ impl<'a> SyncService<'a> {
             device_id,
             true,
         );
-        self.save_credentials(token, &derived_sync_key)?;
+        self.save_credentials(provider, &credentials, &derived_sync_key)?;
         self.state_store.save(&state)?;
         Ok(status_from_state(Some(state)))
     }
@@ -306,13 +395,40 @@ impl<'a> SyncService<'a> {
         token: &str,
         password: String,
     ) -> Result<SyncStatus, SyncServiceError> {
+        self.enable_or_import_with_credentials(
+            provider,
+            RemoteCredentials::Token(token.into()),
+            password,
+        )
+        .await
+    }
+
+    pub async fn enable_or_import_webdav(
+        &self,
+        credentials: WebDavCredentials,
+        password: String,
+    ) -> Result<SyncStatus, SyncServiceError> {
+        self.enable_or_import_with_credentials(
+            SyncProvider::WebDav,
+            RemoteCredentials::WebDav(credentials),
+            password,
+        )
+        .await
+    }
+
+    async fn enable_or_import_with_credentials(
+        &self,
+        provider: SyncProvider,
+        credentials: RemoteCredentials,
+        password: String,
+    ) -> Result<SyncStatus, SyncServiceError> {
         if self.state_store.load()?.is_some() {
             return Err(SyncServiceError::Conflict);
         }
         let remote = self.remote(provider)?;
-        match remote.find_sync_vaults(token).await?.as_slice() {
-            [] => self.enable_create(provider, token, password).await,
-            [document] => self.import_document(provider, token, password, document),
+        match remote.find_sync_vaults(&credentials).await?.as_slice() {
+            [] => self.enable_create(provider, credentials, password).await,
+            [document] => self.import_document(provider, &credentials, password, document),
             _ => Err(SyncServiceError::MultipleSyncVaults),
         }
     }
@@ -320,7 +436,7 @@ impl<'a> SyncService<'a> {
     fn import_document(
         &self,
         provider: SyncProvider,
-        token: &str,
+        credentials: &RemoteCredentials,
         password: String,
         remote: &RemoteDocument,
     ) -> Result<SyncStatus, SyncServiceError> {
@@ -335,7 +451,7 @@ impl<'a> SyncService<'a> {
             uuid::Uuid::new_v4().to_string(),
             true,
         );
-        self.save_credentials(token, &derived_sync_key)?;
+        self.save_credentials(provider, credentials, &derived_sync_key)?;
         self.state_store.save(&state)?;
         Ok(status_from_state(Some(state)))
     }
@@ -349,9 +465,9 @@ impl<'a> SyncService<'a> {
                 sync: status_from_state(Some(state)),
             });
         }
-        let token = self.saved_token()?;
+        let credentials = self.saved_credentials(&state)?;
         let remote_client = self.remote_for_state(&state)?;
-        let current = remote_client.get(&token, &state.remote_id).await?;
+        let current = remote_client.get(&credentials, &state.remote_id).await?;
         let key = self.saved_key()?;
         let current_envelope = verify_remote_with_key(&current, &key)?;
         if current.content_hash != state.last_synced_content_hash {
@@ -364,7 +480,7 @@ impl<'a> SyncService<'a> {
             .0;
         let encrypted = encrypt_snapshot_with_key(snapshot, &key, state.device_id.clone(), salt)?;
         let remote = remote_client
-            .update(&token, &state.remote_id, &serialize_envelope(&encrypted)?)
+            .update(&credentials, &current, &serialize_envelope(&encrypted)?)
             .await?;
         let state = state_from_remote(
             SyncProvider::parse(&state.provider)?,
@@ -385,14 +501,14 @@ impl<'a> SyncService<'a> {
         current_password: String,
         new_password: String,
     ) -> Result<SyncOperationResult, SyncServiceError> {
-        let token = self.saved_token()?;
         let state = self.configured_state()?;
+        let credentials = self.saved_credentials(&state)?;
         let snapshot = self.vault.sync_snapshot()?;
         if snapshot.revision != state.last_synced_vault_revision {
             return Err(SyncServiceError::Conflict);
         }
         let remote_client = self.remote_for_state(&state)?;
-        let current = remote_client.get(&token, &state.remote_id).await?;
+        let current = remote_client.get(&credentials, &state.remote_id).await?;
         let saved_key = self.saved_key()?;
         let envelope = verify_remote_with_key(&current, &saved_key)?;
         if current.content_hash != state.last_synced_content_hash {
@@ -406,7 +522,7 @@ impl<'a> SyncService<'a> {
         let encrypted = encrypt_snapshot(snapshot, new_password.clone(), state.device_id.clone())?;
         let derived_sync_key = derive_key_for_envelope(&encrypted, new_password)?;
         let remote = remote_client
-            .update(&token, &state.remote_id, &serialize_envelope(&encrypted)?)
+            .update(&credentials, &current, &serialize_envelope(&encrypted)?)
             .await?;
         let state = state_from_remote(
             SyncProvider::parse(&state.provider)?,
@@ -425,10 +541,10 @@ impl<'a> SyncService<'a> {
 
     pub async fn download(&self) -> Result<SyncOperationResult, SyncServiceError> {
         let state = self.configured_state()?;
-        let token = self.saved_token()?;
+        let credentials = self.saved_credentials(&state)?;
         let remote = self
             .remote_for_state(&state)?
-            .get(&token, &state.remote_id)
+            .get(&credentials, &state.remote_id)
             .await?;
         let key = self.saved_key()?;
         let envelope = verify_remote_with_key(&remote, &key)?;
@@ -460,9 +576,9 @@ impl<'a> SyncService<'a> {
     pub async fn resolve_keep_local(&self) -> Result<SyncOperationResult, SyncServiceError> {
         let state = self.configured_state()?;
         let snapshot = self.vault.sync_snapshot()?;
-        let token = self.saved_token()?;
+        let credentials = self.saved_credentials(&state)?;
         let remote_client = self.remote_for_state(&state)?;
-        let current = remote_client.get(&token, &state.remote_id).await?;
+        let current = remote_client.get(&credentials, &state.remote_id).await?;
         let key = self.saved_key()?;
         let envelope = verify_remote_with_key(&current, &key)?;
         self.back_up_conflict(&snapshot.content, &current.content)?;
@@ -473,7 +589,7 @@ impl<'a> SyncService<'a> {
             .0;
         let encrypted = encrypt_snapshot_with_key(snapshot, &key, state.device_id.clone(), salt)?;
         let remote = remote_client
-            .update(&token, &state.remote_id, &serialize_envelope(&encrypted)?)
+            .update(&credentials, &current, &serialize_envelope(&encrypted)?)
             .await?;
         let state = state_from_remote(
             SyncProvider::parse(&state.provider)?,
@@ -492,10 +608,10 @@ impl<'a> SyncService<'a> {
     pub async fn resolve_accept_remote(&self) -> Result<SyncOperationResult, SyncServiceError> {
         let state = self.configured_state()?;
         let snapshot = self.vault.sync_snapshot()?;
-        let token = self.saved_token()?;
+        let credentials = self.saved_credentials(&state)?;
         let remote = self
             .remote_for_state(&state)?
-            .get(&token, &state.remote_id)
+            .get(&credentials, &state.remote_id)
             .await?;
         let key = self.saved_key()?;
         let envelope = verify_remote_with_key(&remote, &key)?;
@@ -518,9 +634,9 @@ impl<'a> SyncService<'a> {
 
     pub async fn delete_remote(&self) -> Result<(), SyncServiceError> {
         let state = self.configured_state()?;
-        let token = self.saved_token()?;
+        let credentials = self.saved_credentials(&state)?;
         self.remote_for_state(&state)?
-            .delete(&token, &state.remote_id)
+            .delete(&credentials, &state.remote_id)
             .await?;
         self.delete_credentials()?;
         self.state_store.clear()?;
@@ -560,8 +676,20 @@ impl<'a> SyncService<'a> {
             .ok_or(SyncServiceError::NotConfigured)
     }
 
-    fn saved_token(&self) -> Result<String, SyncServiceError> {
-        get_sync_secret("token")?.ok_or(SyncServiceError::CredentialsUnavailable)
+    fn saved_credentials(&self, state: &SyncState) -> Result<RemoteCredentials, SyncServiceError> {
+        match SyncProvider::parse(&state.provider)? {
+            SyncProvider::GithubGist | SyncProvider::GiteeSnippet => Ok(RemoteCredentials::Token(
+                get_sync_secret("token")?.ok_or(SyncServiceError::CredentialsUnavailable)?,
+            )),
+            SyncProvider::WebDav => Ok(RemoteCredentials::WebDav(WebDavCredentials {
+                url: get_sync_secret("webdav-url")?
+                    .ok_or(SyncServiceError::CredentialsUnavailable)?,
+                username: get_sync_secret("webdav-username")?
+                    .ok_or(SyncServiceError::CredentialsUnavailable)?,
+                password: get_sync_secret("webdav-password")?
+                    .ok_or(SyncServiceError::CredentialsUnavailable)?,
+            })),
+        }
     }
 
     fn saved_key(&self) -> Result<[u8; super::SYNC_KEY_LENGTH], SyncServiceError> {
@@ -570,14 +698,35 @@ impl<'a> SyncService<'a> {
         decode_saved_key(&value)
     }
 
-    fn save_credentials(&self, token: &str, derived_key: &str) -> Result<(), SyncServiceError> {
-        set_sync_secret("token", token)?;
+    fn save_credentials(
+        &self,
+        provider: SyncProvider,
+        credentials: &RemoteCredentials,
+        derived_key: &str,
+    ) -> Result<(), SyncServiceError> {
+        match (provider, credentials) {
+            (
+                SyncProvider::GithubGist | SyncProvider::GiteeSnippet,
+                RemoteCredentials::Token(token),
+            ) => {
+                set_sync_secret("token", token)?;
+            }
+            (SyncProvider::WebDav, RemoteCredentials::WebDav(credentials)) => {
+                set_sync_secret("webdav-url", &credentials.url)?;
+                set_sync_secret("webdav-username", &credentials.username)?;
+                set_sync_secret("webdav-password", &credentials.password)?;
+            }
+            _ => return Err(SyncServiceError::CredentialsUnavailable),
+        }
         set_sync_secret("derived-key", derived_key)?;
         Ok(())
     }
 
     fn delete_credentials(&self) -> Result<(), SyncServiceError> {
         delete_sync_secret("token")?;
+        delete_sync_secret("webdav-url")?;
+        delete_sync_secret("webdav-username")?;
+        delete_sync_secret("webdav-password")?;
         delete_sync_secret("derived-key")?;
         Ok(())
     }
@@ -590,6 +739,7 @@ impl<'a> SyncService<'a> {
         match provider {
             SyncProvider::GithubGist => Ok(Remote::Github(GithubGistRemote::new()?)),
             SyncProvider::GiteeSnippet => Ok(Remote::Gitee(GiteeSnippetRemote::new()?)),
+            SyncProvider::WebDav => Ok(Remote::WebDav(WebDavRemote::new()?)),
         }
     }
 }
@@ -729,18 +879,29 @@ fn state_from_remote(
 
 fn status_from_state(state: Option<SyncState>) -> SyncStatus {
     match state {
-        Some(state) => SyncStatus {
-            configured: true,
-            provider: Some(state.provider),
-            remote_id: Some(state.remote_id),
-            remote_file_name: Some(GIST_FILE_NAME.into()),
-            state: "idle".into(),
-            last_synced_at: Some(state.last_synced_at),
-            device_id: Some(state.device_id),
-            auto_sync: state.auto_sync,
-            local_vault_revision: None,
-            last_synced_vault_revision: Some(state.last_synced_vault_revision),
-        },
+        Some(state) => {
+            let remote_file_name = match state.provider.as_str() {
+                WEBDAV_PROVIDER => state
+                    .remote_id
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or("mjjssh-vault.json")
+                    .into(),
+                _ => GIST_FILE_NAME.into(),
+            };
+            SyncStatus {
+                configured: true,
+                provider: Some(state.provider),
+                remote_id: Some(state.remote_id),
+                remote_file_name: Some(remote_file_name),
+                state: "idle".into(),
+                last_synced_at: Some(state.last_synced_at),
+                device_id: Some(state.device_id),
+                auto_sync: state.auto_sync,
+                local_vault_revision: None,
+                last_synced_vault_revision: Some(state.last_synced_vault_revision),
+            }
+        }
         None => SyncStatus {
             configured: false,
             provider: None,
@@ -794,6 +955,7 @@ mod tests {
             content: serde_json::to_string(&envelope).unwrap(),
             content_hash: "sha256:test".into(),
             remote_updated_at: "2026-07-21T00:00:00Z".into(),
+            etag: None,
         };
 
         let error =

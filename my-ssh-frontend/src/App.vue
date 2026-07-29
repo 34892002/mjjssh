@@ -157,7 +157,7 @@ const scriptButtonRef = ref<HTMLButtonElement | null>(null)
 const transferNoticeVisible = ref(false)
 let transferNoticeTimer: ReturnType<typeof setTimeout> | null = null
 
-const syncProviderLabel = computed(() => syncStatus.value?.provider === 'gitee_snippet' ? t('sync.giteePrivateSnippet') : 'GitHub Gist')
+const syncProviderLabel = computed(() => syncStatus.value?.provider === 'github_gist' ? 'GitHub Gist' : syncStatus.value?.provider === 'gitee_snippet' ? t('sync.giteePrivateSnippet') : 'WebDAV')
 const syncVersionState = computed(() => {
   const state = remoteSyncStatus.value?.state
   if (!state) return t('sync.notCheckedRemote')

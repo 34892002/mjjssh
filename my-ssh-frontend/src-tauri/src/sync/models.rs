@@ -16,6 +16,7 @@ pub struct RemoteDocument {
     pub content: String,
     pub content_hash: String,
     pub remote_updated_at: String,
+    pub etag: Option<String>,
 }
 
 pub fn content_hash(content: &str) -> String {

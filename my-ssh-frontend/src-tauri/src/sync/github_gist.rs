@@ -240,6 +240,7 @@ fn document_from_gist(gist: GistResponse) -> Result<RemoteDocument, GithubGistEr
         content_hash: content_hash(&content),
         content,
         remote_updated_at: gist.updated_at,
+        etag: None,
     })
 }
 

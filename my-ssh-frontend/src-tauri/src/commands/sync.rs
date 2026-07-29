@@ -4,6 +4,7 @@ use crate::state::AppState;
 use crate::sync::service::{
     RemoteSyncStatus, SyncDiscovery, SyncOperationResult, SyncProvider, SyncService, SyncStatus,
 };
+use crate::sync::webdav::WebDavCredentials;
 
 #[tauri::command]
 pub async fn get_sync_status(state: State<'_, AppState>) -> Result<SyncStatus, String> {
@@ -31,6 +32,57 @@ pub async fn discover_sync_remote(
     SyncService::new(vault, &state.app_dir)
         .map_err(|error| error.to_string())?
         .discover(provider, &token)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebDavSyncConfig {
+    url: String,
+    username: String,
+    password: String,
+}
+
+impl From<WebDavSyncConfig> for WebDavCredentials {
+    fn from(config: WebDavSyncConfig) -> Self {
+        Self {
+            url: config.url,
+            username: config.username,
+            password: config.password,
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn discover_webdav_sync_remote(
+    state: State<'_, AppState>,
+    config: WebDavSyncConfig,
+) -> Result<SyncDiscovery, String> {
+    let vault_guard = state.vault.lock().await;
+    let vault = vault_guard
+        .as_ref()
+        .ok_or_else(|| "Vault is not open".to_string())?;
+    SyncService::new(vault, &state.app_dir)
+        .map_err(|error| error.to_string())?
+        .discover_webdav(config.into())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn enable_webdav_sync(
+    state: State<'_, AppState>,
+    config: WebDavSyncConfig,
+    sync_password: String,
+) -> Result<SyncStatus, String> {
+    let vault_guard = state.vault.lock().await;
+    let vault = vault_guard
+        .as_ref()
+        .ok_or_else(|| "Vault is not open".to_string())?;
+    SyncService::new(vault, &state.app_dir)
+        .map_err(|error| error.to_string())?
+        .enable_or_import_webdav(config.into(), sync_password)
         .await
         .map_err(|error| error.to_string())
 }

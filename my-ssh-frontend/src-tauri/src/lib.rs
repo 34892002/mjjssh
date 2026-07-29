@@ -77,6 +77,8 @@ pub fn run() {
             commands::vault::list_system_font_families,
             commands::sync::get_sync_status,
             commands::sync::discover_sync_remote,
+            commands::sync::discover_webdav_sync_remote,
+            commands::sync::enable_webdav_sync,
             commands::sync::enable_github_gist_sync,
             commands::sync::enable_gitee_snippet_sync,
             commands::sync::upload_sync_vault,

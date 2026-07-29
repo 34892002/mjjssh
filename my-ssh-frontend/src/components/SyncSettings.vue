@@ -6,7 +6,7 @@ import { NAlert, NButton, NInput, NPopconfirm, NSpace, NSwitch, useMessage } fro
 import { useVaultStore } from '../stores/vault'
 import { useLocale } from '../composables/useLocale'
 
-type SyncProvider = 'github_gist' | 'gitee_snippet'
+type SyncProvider = 'github_gist' | 'gitee_snippet' | 'webdav'
 type SyncStatus = {
   configured: boolean
   provider: string | null
@@ -35,6 +35,9 @@ const message = useMessage()
 const status = ref<SyncStatus | null>(null)
 const provider = ref<SyncProvider>('github_gist')
 const token = ref('')
+const webDavUrl = ref('')
+const webDavUsername = ref('')
+const webDavPassword = ref('')
 const syncPassword = ref('')
 const confirmSyncPassword = ref('')
 const discovery = ref<SyncDiscovery | null>(null)
@@ -50,14 +53,14 @@ const conflictMessage = ref<string | null>(null)
 
 const isConfigured = computed(() => status.value?.configured === true)
 const hasConflict = computed(() => conflictMessage.value !== null)
-const providerLabel = computed(() => provider.value === 'github_gist' ? 'GitHub Gist' : t('sync.giteePrivateSnippet'))
-const configuredProviderLabel = computed(() => status.value?.provider === 'gitee_snippet' ? t('sync.giteePrivateSnippet') : 'GitHub Gist')
+const providerLabel = computed(() => provider.value === 'github_gist' ? 'GitHub Gist' : provider.value === 'gitee_snippet' ? t('sync.giteePrivateSnippet') : 'WebDAV')
+const configuredProviderLabel = computed(() => status.value?.provider === 'github_gist' ? 'GitHub Gist' : status.value?.provider === 'gitee_snippet' ? t('sync.giteePrivateSnippet') : 'WebDAV')
 
 
 
 function applyStatus(nextStatus: SyncStatus) {
   status.value = nextStatus
-  if (nextStatus.provider === 'github_gist' || nextStatus.provider === 'gitee_snippet') {
+  if (nextStatus.provider === 'github_gist' || nextStatus.provider === 'gitee_snippet' || nextStatus.provider === 'webdav') {
     provider.value = nextStatus.provider
   }
 
@@ -105,7 +108,12 @@ function resetDiscovery() {
 }
 
 async function discoverRemote() {
-  if (!token.value.trim()) {
+  const isWebDav = provider.value === 'webdav'
+  if (isWebDav && (!webDavUrl.value.trim() || !webDavUsername.value.trim() || !webDavPassword.value)) {
+    message.warning(t('sync.webDavCredentialsRequired'))
+    return
+  }
+  if (!isWebDav && !token.value.trim()) {
     message.warning(t('sync.tokenRequired', { provider: providerLabel.value }))
     return
   }
@@ -113,10 +121,14 @@ async function discoverRemote() {
   conflictMessage.value = null
   loading.value = true
   try {
-    discovery.value = await invoke<SyncDiscovery>('discover_sync_remote', {
-      provider: provider.value,
-      token: token.value,
-    })
+    discovery.value = isWebDav
+      ? await invoke<SyncDiscovery>('discover_webdav_sync_remote', {
+          config: { url: webDavUrl.value, username: webDavUsername.value, password: webDavPassword.value },
+        })
+      : await invoke<SyncDiscovery>('discover_sync_remote', {
+          provider: provider.value,
+          token: token.value,
+        })
   } catch (reason) {
     message.error(formatSyncError(reason))
   } finally {
@@ -134,12 +146,11 @@ async function enable() {
     return
   }
 
-  const command = provider.value === 'github_gist' ? 'enable_github_gist_sync' : 'enable_gitee_snippet_sync'
+  const command = provider.value === 'github_gist' ? 'enable_github_gist_sync' : provider.value === 'gitee_snippet' ? 'enable_gitee_snippet_sync' : 'enable_webdav_sync'
   const succeeded = await run(
-    () => invoke<SyncStatus>(command, {
-      token: token.value,
-      syncPassword: syncPassword.value,
-    }),
+    () => invoke<SyncStatus>(command, provider.value === 'webdav'
+      ? { config: { url: webDavUrl.value, username: webDavUsername.value, password: webDavPassword.value }, syncPassword: syncPassword.value }
+      : { token: token.value, syncPassword: syncPassword.value }),
     discovery.value?.remoteExists
       ? t('sync.remotePasswordVerifiedAndImported', { provider: providerLabel.value })
       : t('sync.syncVaultCreated', { provider: providerLabel.value }),
@@ -147,6 +158,9 @@ async function enable() {
   )
   if (succeeded) {
     token.value = ''
+    webDavUrl.value = ''
+    webDavUsername.value = ''
+    webDavPassword.value = ''
     resetDiscovery()
     window.dispatchEvent(new Event('sync-configuration-changed'))
   }
@@ -166,13 +180,16 @@ function formatSyncError(reason: unknown): string {
   if (normalized.includes('cloud sync conflict') || normalized.includes('rejected the update because the remote changed')) {
     return t('sync.conflictError')
   }
+  if (normalized.includes('must use https') || normalized.includes('webdav url')) {
+    return t('sync.webDavInvalidUrl')
+  }
   if (normalized.includes('authentication failed')) {
     return t('sync.authenticationFailed')
   }
   if (normalized.includes('rate limit was reached')) {
     return t('sync.rateLimited')
   }
-  if (normalized.includes('gist was not found') || normalized.includes('snippet was not found')) {
+  if (normalized.includes('gist was not found') || normalized.includes('snippet was not found') || normalized.includes('sync file was not found')) {
     return t('sync.remoteNotFound')
   }
   if (normalized.includes('sync password is incorrect or sync data is corrupted')) {
@@ -309,6 +326,9 @@ async function disable() {
 onMounted(() => { void loadStatus() })
 onBeforeUnmount(() => {
   token.value = ''
+  webDavUrl.value = ''
+  webDavUsername.value = ''
+  webDavPassword.value = ''
   syncPassword.value = ''
   confirmSyncPassword.value = ''
   discovery.value = null
@@ -342,20 +362,26 @@ onBeforeUnmount(() => {
     <template v-if="!isConfigured">
       <div class="sync-card">
         <div class="sync-card-title"><Cloud :size="19" />{{ t('sync.configure') }}</div>
-        <p>{{ t('sync.tokenNotice') }}</p>
-        <div class="setup-step">
+        <p>{{ provider === 'webdav' ? t('sync.webDavNotice') : t('sync.tokenNotice') }}</p>
+        <div v-if="!discovery" class="setup-step">
           <strong>{{ t('sync.connectRemoteStep') }}</strong>
           <label>{{ t('sync.provider') }}
-            <select v-model="provider" :disabled="loading || discovery !== null" @change="resetDiscovery">
+            <select v-model="provider" :disabled="loading" @change="resetDiscovery">
               <option value="github_gist">GitHub Gist</option>
               <option value="gitee_snippet">{{ t('sync.giteePrivateSnippet') }}</option>
+              <option value="webdav">WebDAV</option>
             </select>
           </label>
-          <label>{{ t('sync.tokenLabel', { provider: providerLabel }) }}<n-input v-model:value="token" type="password" show-password-on="click" :disabled="loading || discovery !== null" :placeholder="t('sync.tokenPlaceholder')" /></label>
-          <n-button v-if="!discovery" type="primary" :loading="loading" @click="discoverRemote">{{ t('sync.next') }}</n-button>
+          <template v-if="provider === 'webdav'">
+            <label>{{ t('sync.webDavUrl') }}<n-input v-model:value="webDavUrl" :disabled="loading" :placeholder="t('sync.webDavUrlPlaceholder')" /></label>
+            <label>{{ t('sync.webDavUsername') }}<n-input v-model:value="webDavUsername" :disabled="loading" autocomplete="username" /></label>
+            <label>{{ t('sync.webDavPassword') }}<n-input v-model:value="webDavPassword" type="password" show-password-on="click" :disabled="loading" autocomplete="current-password" /></label>
+          </template>
+          <label v-else>{{ t('sync.tokenLabel', { provider: providerLabel }) }}<n-input v-model:value="token" type="password" show-password-on="click" :disabled="loading" :placeholder="t('sync.tokenPlaceholder')" /></label>
+          <n-button type="primary" :loading="loading" @click="discoverRemote">{{ t('sync.next') }}</n-button>
         </div>
 
-        <div v-if="discovery" class="setup-step">
+        <div v-else class="setup-step">
           <strong>{{ discovery.remoteExists ? t('sync.verifyRemotePasswordStep') : t('sync.setRemotePasswordStep') }}</strong>
           <p v-if="discovery.remoteExists">{{ t('sync.remoteVaultFound') }}</p>
           <p v-else>{{ t('sync.remoteVaultNotFound') }}</p>

@@ -82,7 +82,10 @@ impl SyncStateStore {
 }
 
 fn validate(state: &SyncState) -> Result<(), SyncStateError> {
-    if !matches!(state.provider.as_str(), "github_gist" | "gitee_snippet") {
+    if !matches!(
+        state.provider.as_str(),
+        "github_gist" | "gitee_snippet" | "webdav"
+    ) {
         return Err(SyncStateError::Invalid("unsupported provider".into()));
     }
     if state.remote_id.trim().is_empty()
@@ -135,6 +138,8 @@ mod tests {
             fs::read_to_string(directory.join(STATE_FILE_NAME)).expect("read sync state");
         assert!(!persisted.contains("token"));
         assert!(!persisted.contains("derivedSyncKey"));
+        assert!(!persisted.contains("password"));
+        assert!(!persisted.contains("username"));
 
         fs::remove_dir_all(directory).expect("remove temporary sync state directory");
     }
