@@ -20,6 +20,7 @@ fn profile(name: &str) -> CreateProfileRequest {
         auth_type: AuthType::Password,
         credential: Some("test-password".into()),
         key_id: None,
+        proxy_id: None,
         group_name: None,
         icon: None,
         color: None,

@@ -42,6 +42,7 @@ import ubuntuIcon from './assets/os/ubuntu.svg?raw'
 const Terminal = defineAsyncComponent(() => import('./components/Terminal.vue'))
 const ConnectionDialog = defineAsyncComponent(() => import('./components/ConnectionDialog.vue'))
 const KeysView = defineAsyncComponent(() => import('./components/KeysView.vue'))
+const ProxiesView = defineAsyncComponent(() => import('./components/ProxiesView.vue'))
 const ScriptsView = defineAsyncComponent(() => import('./components/ScriptsView.vue'))
 const SftpView = defineAsyncComponent(() => import('./components/SftpView.vue'))
 const AiChatPanel = defineAsyncComponent(() => import('./components/AiChatPanel.vue'))
@@ -51,7 +52,7 @@ const TransferPanel = defineAsyncComponent(() => import('./components/TransferPa
 const ScriptPanel = defineAsyncComponent(() => import('./components/ScriptPanel.vue'))
 const PermissionsDialog = defineAsyncComponent(() => import('./components/PermissionsDialog.vue'))
 const ActionDialog = defineAsyncComponent(() => import('./components/ActionDialog.vue'))
-import type { SshProfileView, CreateProfileRequest } from './types'
+import type { SshProfileView, CreateProfileRequest, TerminalSettings } from './types'
 import type { LocalShell } from './stores/session'
 import type { DropdownOption } from 'naive-ui'
 
@@ -314,6 +315,69 @@ const autoSyncBadgeType = computed<'info' | 'success' | 'warning' | 'error' | un
   }
 })
 
+function defaultTerminalSettings(): TerminalSettings {
+  return {
+    terminalType: 'xterm-256color',
+    fontSize: 14,
+    fontFamily: 'Cascadia Code, Fira Code, JetBrains Mono, Consolas, monospace',
+    scrollbackLines: 5000,
+    backspaceSends: 'del',
+    altSendsEscape: true,
+    connectTimeoutSeconds: 30,
+    keepaliveIntervalSeconds: 60,
+  }
+}
+
+const terminalSettingsDraft = ref<TerminalSettings>(defaultTerminalSettings())
+const terminalSettingsSaving = ref(false)
+const terminalSettingsError = ref<string | null>(null)
+const terminalTypeOptions = [
+  { label: 'xterm-256color', value: 'xterm-256color' },
+  { label: 'xterm', value: 'xterm' },
+  { label: 'vt100', value: 'vt100' },
+]
+const fontFamilyOptions = ref<Array<{ label: string; value: string }>>([])
+
+async function loadSystemFontFamilies() {
+  try {
+    const families = await invoke<string[]>('list_system_font_families')
+    fontFamilyOptions.value = families.map((family) => ({ label: family, value: family }))
+  } catch (error) {
+    console.warn('Failed to list system font families:', error)
+  }
+}
+
+const backspaceOptions = computed(() => [
+  { label: t('settings.backspaceDel'), value: 'del' },
+  { label: t('settings.backspaceBs'), value: 'bs' },
+])
+const altOptions = computed(() => [
+  { label: t('settings.altEsc'), value: 'escape' },
+  { label: t('settings.alt8Bit'), value: '8bit' },
+])
+const altMode = computed({
+  get: () => terminalSettingsDraft.value.altSendsEscape ? 'escape' : '8bit',
+  set: (value: string) => { terminalSettingsDraft.value.altSendsEscape = value === 'escape' },
+})
+
+function resetTerminalSettings() {
+  terminalSettingsDraft.value = defaultTerminalSettings()
+  terminalSettingsError.value = null
+}
+
+async function saveTerminalSettings() {
+  terminalSettingsSaving.value = true
+  terminalSettingsError.value = null
+  try {
+    await sessionStore.saveTerminalSettings({ ...terminalSettingsDraft.value })
+    terminalSettingsDraft.value = { ...sessionStore.terminalSettings }
+  } catch (error) {
+    terminalSettingsError.value = String(error)
+  } finally {
+    terminalSettingsSaving.value = false
+  }
+}
+
 const autoSyncBadgeTitle = computed(() => {
   if (autoSyncState.value === 'pending' && autoSyncDueAt.value) {
     const seconds = Math.max(0, Math.ceil((autoSyncDueAt.value - autoSyncNow.value) / 1_000))
@@ -366,6 +430,7 @@ const form = ref<CreateProfileRequest>({
   auth_type: 'password',
   credential: '',
   key_id: undefined,
+  proxy_id: undefined,
   group_name: '',
   icon: 'monitor-cog',
   color: '#3b82f6',
@@ -403,6 +468,10 @@ const hostColorOptions = ['#3b82f6', '#14b8a6', '#22c55e', '#eab308', '#f97316',
 const profileKeyOptions = computed(() => vaultStore.sshKeys
   .filter((key) => form.value.auth_type !== 'certificate' || key.key_type === 'certificate')
   .map((key) => ({ label: key.name, value: key.id })))
+const profileProxyOptions = computed(() => vaultStore.proxies.map((proxy) => ({
+  label: `${proxy.name} (${proxy.host}:${proxy.port})`,
+  value: proxy.id,
+})))
 
 function hostIcon(icon: string | null) {
   return hostIconMap.get(icon ?? '') ?? MonitorCog
@@ -442,7 +511,7 @@ const groupedProfiles = computed(() => {
 })
 
 // --- Lifecycle ---
-const activeView = ref<'hosts' | 'keys' | 'scripts'>('hosts')
+const activeView = ref<'hosts' | 'keys' | 'proxies' | 'scripts'>('hosts')
 
 function closeTerminalPopoversOnOutsideClick(event: PointerEvent) {
   const target = event.target as Node
@@ -498,12 +567,15 @@ async function startLocalTerminal(key: string | number) {
 
 onMounted(async () => {
   isMaximized.value = await appWindow.isMaximized()
-  const [, , shells] = await Promise.all([
-    vaultStore.init(),
+  await vaultStore.init()
+  const [, shells] = await Promise.all([
     transferStore.initialize(),
     invoke<LocalShellInfo[]>('list_local_shells'),
+    sessionStore.loadTerminalSettings(),
+    loadSystemFontFamilies(),
     loadSyncStatus(),
   ])
+  terminalSettingsDraft.value = { ...sessionStore.terminalSettings }
   localShells.value = shells
   vaultMd5 = await readVaultMd5()
   vaultMd5Timer = setInterval(() => { void checkVaultMd5() }, 10_000)
@@ -514,6 +586,7 @@ onMounted(async () => {
 
 watch(activeView, (view) => {
   if (view === 'keys') void vaultStore.loadKeys()
+  if (view === 'proxies') void vaultStore.loadProxies()
 })
 
 watch(() => form.value.auth_type, (authType) => {
@@ -532,6 +605,7 @@ watch(() => transferStore.tasks.length, (count, previousCount) => {
 // --- Lifecycle ---
 // --- Profile CRUD ---
 function openCreateForm() {
+  void vaultStore.loadProxies()
   isEditing.value = false
   editingProfile.value = null
   formError.value = null
@@ -543,6 +617,7 @@ function openCreateForm() {
     auth_type: 'password',
     credential: '',
     key_id: undefined,
+    proxy_id: undefined,
     group_name: '',
     icon: 'monitor-cog',
     color: '#3b82f6',
@@ -551,6 +626,7 @@ function openCreateForm() {
 }
 
 function openEditForm(profile: SshProfileView) {
+  void vaultStore.loadProxies()
   isEditing.value = true
   editingProfile.value = profile
   formError.value = null
@@ -562,6 +638,7 @@ function openEditForm(profile: SshProfileView) {
     auth_type: profile.auth_type,
     credential: '',
     key_id: profile.key_id || undefined,
+    proxy_id: profile.proxy_id || undefined,
     group_name: profile.group_name || '',
     icon: profile.icon || 'monitor-cog',
     color: profile.color || '#3b82f6',
@@ -596,6 +673,8 @@ async function handleFormSubmit() {
     auth_type: form.value.auth_type,
     credential: form.value.auth_type === 'password' ? (form.value.credential || undefined) : undefined,
     key_id: form.value.auth_type !== 'password' ? form.value.key_id : undefined,
+    proxy_id: form.value.proxy_id,
+    clear_proxy: isEditing.value && !form.value.proxy_id,
     group_name: form.value.group_name || undefined,
     icon: form.value.icon || 'server',
     color: form.value.color || '#3b82f6',
@@ -649,9 +728,16 @@ type ConnectionProgress = {
   fingerprint?: string
 }
 
+type ConnectionProxyInfo = {
+  name: string
+  host: string
+  port: number
+}
+
 type ConnectionState = {
   profile: SshProfileView
   info: { host: string; port: number; username: string; profileName: string }
+  proxy: ConnectionProxyInfo | null
   status: ConnectionDialogStatus
   error: string
   hostKey: HostKeyInfo | null
@@ -677,6 +763,13 @@ function removeConnectionState(sessionId: string) {
   connectionStates.value = remaining
 }
 
+async function connectionProxy(profile: SshProfileView): Promise<ConnectionProxyInfo | null> {
+  if (!profile.proxy_id) return null
+  await vaultStore.loadProxies()
+  const proxy = vaultStore.proxies.find((item) => item.id === profile.proxy_id)
+  return proxy ? { name: proxy.name, host: proxy.host, port: proxy.port } : null
+}
+
 async function handleConnect(
   profile: SshProfileView,
   reuseSessionId?: string,
@@ -692,6 +785,7 @@ async function handleConnect(
   }
 
   const sessionId = reuseSessionId ?? crypto.randomUUID()
+  const proxy = await connectionProxy(profile)
   setConnectionState(sessionId, {
     profile,
     info: {
@@ -700,6 +794,7 @@ async function handleConnect(
       username: profile.username,
       profileName: profile.name,
     },
+    proxy,
     status: 'connecting',
     error: '',
     hostKey: null,
@@ -802,13 +897,14 @@ async function handleRetry(sessionId: string) {
   if (connection) await handleConnect(connection.profile, sessionId, connection.reconnecting)
 }
 
-function handleTerminalDisconnected(sessionId: string, reason: string) {
+async function handleTerminalDisconnected(sessionId: string, reason: string) {
   const tab = sessionStore.tabs.find((item) => item.sessionId === sessionId)
   const profile = tab?.kind === 'ssh' && tab.profileId
     ? vaultStore.profiles.find((item) => item.id === tab.profileId)
     : undefined
   if (!tab || !profile) return
 
+  const proxy = await connectionProxy(profile)
   sessionStore.setActiveTab(sessionId)
   activeTerminalInfo.value = { host: profile.host, port: profile.port, username: profile.username }
   setConnectionState(sessionId, {
@@ -819,6 +915,7 @@ function handleTerminalDisconnected(sessionId: string, reason: string) {
       username: profile.username,
       profileName: profile.name,
     },
+    proxy,
     status: 'error',
     error: reason,
     hostKey: null,
@@ -1127,6 +1224,8 @@ function selectSettingsSection(section: 'terminal' | 'ai' | 'sync' | 'system') {
 }
 
 function openSettings() {
+  terminalSettingsDraft.value = { ...sessionStore.terminalSettings }
+  terminalSettingsError.value = null
   selectSettingsSection('terminal')
   showSettings.value = true
 }
@@ -1300,6 +1399,7 @@ function openSyncSettings() {
               :session-id="tab.sessionId"
               :kind="tab.kind"
               :dark="isDarkTheme"
+              :settings="tab.terminalSettings"
               :reconnect-version="reconnectVersions[tab.sessionId]"
               @disconnected="handleTerminalDisconnected(tab.sessionId, $event)"
             />
@@ -1310,6 +1410,7 @@ function openSyncSettings() {
               :port="connectionStates[tab.sessionId].info.port"
               :username="connectionStates[tab.sessionId].info.username"
               :profile-name="connectionStates[tab.sessionId].info.profileName"
+              :proxy="connectionStates[tab.sessionId].proxy"
               :icon="hostIcon(connectionStates[tab.sessionId].profile.icon ?? null)"
               :color="connectionStates[tab.sessionId].profile.color || '#3b82f6'"
               :status="connectionStates[tab.sessionId].status"
@@ -1351,6 +1452,10 @@ function openSyncSettings() {
                     <FileCode2 :size="16" />
                     <span>{{ t('nav.scripts') }}</span>
                   </div>
+                  <div class="nav-item" :class="{ active: activeView === 'proxies' }" @click="activeView = 'proxies'">
+                    <Waypoints :size="16" />
+                    <span>{{ t('nav.proxies') }}</span>
+                  </div>
                 </div>
 
                 <div class="sidebar-bottom">
@@ -1368,6 +1473,7 @@ function openSyncSettings() {
               <div class="main-content">
                 <!-- Keys view -->
                 <KeysView v-if="activeView === 'keys'" />
+                <ProxiesView v-else-if="activeView === 'proxies'" />
                 <ScriptsView v-else-if="activeView === 'scripts'" />
 
                 <!-- Hosts view -->
@@ -1544,6 +1650,17 @@ function openSyncSettings() {
                 {{ t('form.createKey') }}
               </n-button>
             </n-form-item>
+            <n-form-item :label="t('form.proxy')">
+              <n-select
+                v-model:value="form.proxy_id"
+                clearable
+                :options="profileProxyOptions"
+                :placeholder="t('form.proxyPlaceholder')"
+              />
+              <n-button v-if="vaultStore.proxies.length === 0" size="small" type="primary" style="margin-left: 8px" @click="activeView = 'proxies'; showForm = false">
+                {{ t('form.createProxy') }}
+              </n-button>
+            </n-form-item>
             <n-form-item :label="t('form.group')">
               <n-input v-model:value="form.group_name" :placeholder="t('form.groupPlaceholder')" />
             </n-form-item>
@@ -1605,10 +1722,20 @@ function openSyncSettings() {
               <main class="settings-content">
                 <template v-if="settingsSection === 'terminal'">
                   <h3>{{ t('settings.terminal') }}</h3>
-                  <div class="settings-panel">
-                    <div class="settings-row"><div><strong>{{ t('settings.renderer') }}</strong><p>{{ t('settings.rendererDescription') }}</p></div><span class="settings-value">{{ t('settings.enabled') }}</span></div>
-                    <div class="settings-row"><div><strong>{{ t('settings.buffer') }}</strong><p>{{ t('settings.bufferDescription') }}</p></div><span class="settings-value">{{ t('settings.lines') }}</span></div>
+                  <p class="terminal-settings-note">{{ t('settings.terminalNewSessionsOnly') }}</p>
+                  <div class="settings-panel terminal-settings-panel">
+                    <div class="settings-row"><div><strong>{{ t('settings.encoding') }}</strong><p>{{ t('settings.encodingDescription') }}</p></div><span class="settings-value">UTF-8</span></div>
+                    <div class="settings-row"><div><strong>{{ t('settings.terminalType') }}</strong><p>{{ t('settings.terminalTypeDescription') }}</p></div><n-select v-model:value="terminalSettingsDraft.terminalType" size="small" :options="terminalTypeOptions" /></div>
+                    <div class="settings-row"><div><strong>{{ t('settings.fontFamily') }}</strong><p>{{ t('settings.fontFamilyDescription') }}</p></div><n-select v-model:value="terminalSettingsDraft.fontFamily" size="small" filterable tag :options="fontFamilyOptions" /></div>
+                    <div class="settings-row"><div><strong>{{ t('settings.fontSize') }}</strong><p>{{ t('settings.fontSizeDescription') }}</p></div><n-input-number v-model:value="terminalSettingsDraft.fontSize" size="small" :min="8" :max="24" /></div>
+                    <div class="settings-row"><div><strong>{{ t('settings.buffer') }}</strong><p>{{ t('settings.bufferDescription') }}</p></div><n-input-number v-model:value="terminalSettingsDraft.scrollbackLines" size="small" :min="1000" :max="50000" :step="1000" /></div>
+                    <div class="settings-row"><div><strong>{{ t('settings.backspace') }}</strong><p>{{ t('settings.backspaceDescription') }}</p></div><n-select v-model:value="terminalSettingsDraft.backspaceSends" size="small" :options="backspaceOptions" /></div>
+                    <div class="settings-row"><div><strong>{{ t('settings.alt') }}</strong><p>{{ t('settings.altDescription') }}</p></div><n-select v-model:value="altMode" size="small" :options="altOptions" /></div>
+                    <div class="settings-row"><div><strong>{{ t('settings.connectTimeout') }}</strong><p>{{ t('settings.connectTimeoutDescription') }}</p></div><n-input-number v-model:value="terminalSettingsDraft.connectTimeoutSeconds" size="small" :min="5" :max="120" /></div>
+                    <div class="settings-row"><div><strong>{{ t('settings.keepalive') }}</strong><p>{{ t('settings.keepaliveDescription') }}</p></div><n-input-number v-model:value="terminalSettingsDraft.keepaliveIntervalSeconds" size="small" :min="0" :max="300" :step="15" /></div>
                   </div>
+                  <n-alert v-if="terminalSettingsError" type="error" :show-icon="false">{{ terminalSettingsError }}</n-alert>
+                  <div class="settings-actions"><n-button :disabled="terminalSettingsSaving" @click="resetTerminalSettings">{{ t('settings.resetTerminal') }}</n-button><n-button type="primary" :loading="terminalSettingsSaving" @click="saveTerminalSettings">{{ t('settings.saveTerminal') }}</n-button></div>
                 </template>
                 <AiSettings v-else-if="settingsSection === 'ai'" />
                 <SyncSettings v-else-if="settingsSection === 'sync'" />
@@ -2469,6 +2596,8 @@ function openSyncSettings() {
 
 .settings-content h3 { margin-bottom: 18px; }
 
+.terminal-settings-note { margin: -8px 0 14px; color: var(--app-muted); font-size: 12px; line-height: 1.5; }
+
 .settings-panel {
   margin-bottom: 14px;
   padding: 4px 16px;
@@ -2490,6 +2619,8 @@ function openSyncSettings() {
 .settings-row strong, .sync-intro strong, .empty-settings strong { font-size: 14px; color: var(--app-text); }
 .settings-row p, .sync-intro p, .empty-settings p { margin: 4px 0 0; font-size: 12px; color: var(--app-muted); }
 .settings-value { flex-shrink: 0; font-size: 12px; color: var(--app-accent); }
+.terminal-settings-panel :deep(.n-select),
+.terminal-settings-panel :deep(.n-input-number) { width: 180px; flex: 0 0 auto; }
 .diagnostic-export-confirmation { display: grid; gap: 8px; }
 .diagnostic-export-confirmation p { margin: 0 0 8px; color: var(--app-muted); font-size: 13px; line-height: 1.6; }
 .diagnostic-export-confirmation :deep(.n-alert) { margin-top: 4px; line-height: 1.6; }
@@ -2520,7 +2651,7 @@ function openSyncSettings() {
 .password-settings :deep(.n-input__placeholder) { color: var(--app-text) !important; }
 .password-settings :deep(.n-input__placeholder) { opacity: 1; color: var(--app-muted) !important; }
 .password-settings :deep(.n-button) { font-weight: 600; }
-.settings-actions { display: flex; justify-content: flex-end; margin-top: 4px; }
+.settings-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
 
 .empty-settings {
   display: flex;

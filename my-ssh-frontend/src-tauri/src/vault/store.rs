@@ -14,9 +14,11 @@ use crate::local_security::{
 
 use super::models::{
     AiAgentConfig, AiModelConfig, AiProviderConfigSecret, AiProviderConfigView, AuthType,
-    CreateKeyRequest, CreateProfileRequest, CreateScriptRequest, DecryptedCredential,
-    SaveAiAgentConfigRequest, SaveAiProviderConfigRequest, Script, SshKey, SshKeyView, SshProfile,
-    UpdateProfileRequest, UpdateScriptRequest,
+    CreateKeyRequest, CreateProfileRequest, CreateScriptRequest, CreateSocks5ProxyRequest,
+    DecryptedCredential, SaveAiAgentConfigRequest, SaveAiProviderConfigRequest,
+    SaveTerminalSettingsRequest, Script, Socks5Proxy, Socks5ProxyAuthType, Socks5ProxyView, SshKey,
+    SshKeyView, SshProfile, TerminalSettings, UpdateProfileRequest, UpdateScriptRequest,
+    UpdateSocks5ProxyRequest,
 };
 
 const VAULT_FILE_NAME: &str = "vault.json";
@@ -48,6 +50,8 @@ pub enum VaultError {
     ProfileNotFound(String),
     #[error("Invalid AI configuration: {0}")]
     InvalidAiConfig(String),
+    #[error("Invalid terminal settings: {0}")]
+    InvalidTerminalSettings(String),
     #[error("Invalid SSH key configuration: {0}")]
     InvalidSshKeyConfig(String),
     #[error("AI Agent not found: {0}")]
@@ -58,6 +62,10 @@ pub enum VaultError {
     ScriptNotFound(String),
     #[error("Invalid script: {0}")]
     InvalidScript(String),
+    #[error("Proxy not found: {0}")]
+    ProxyNotFound(String),
+    #[error("Invalid SOCKS5 proxy: {0}")]
+    InvalidProxy(String),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -72,6 +80,8 @@ struct VaultDocument {
     #[serde(default)]
     ssh_keys: Vec<SshKey>,
     #[serde(default)]
+    proxies: Vec<Socks5Proxy>,
+    #[serde(default)]
     ai_provider_config: Option<StoredAiProviderConfig>,
     #[serde(default)]
     ai_agents: Vec<AiAgentConfig>,
@@ -79,6 +89,8 @@ struct VaultDocument {
     ai_executable_grants: Vec<StoredAiExecutableGrant>,
     #[serde(default)]
     scripts: Vec<Script>,
+    #[serde(default)]
+    terminal_settings: TerminalSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,7 +121,6 @@ pub struct VaultSyncSnapshot {
     pub content: Vec<u8>,
     pub vault_id: String,
     pub revision: u64,
-    pub updated_at: String,
 }
 
 pub struct Vault {
@@ -176,6 +187,7 @@ impl Vault {
             updated_at: now.clone(),
             profiles: Vec::new(),
             ssh_keys: Vec::new(),
+            proxies: Vec::new(),
             ai_provider_config: None,
             ai_agents: vec![AiAgentConfig {
                 id: DEFAULT_AGENT_ID.into(),
@@ -187,6 +199,7 @@ impl Vault {
             }],
             ai_executable_grants: Vec::new(),
             scripts: Vec::new(),
+            terminal_settings: TerminalSettings::default(),
         }
     }
 
@@ -220,7 +233,25 @@ impl Vault {
             "profile",
         )?;
         ensure_unique_uuids(document.ssh_keys.iter().map(|key| &key.id), "SSH key")?;
+        ensure_unique_uuids(document.proxies.iter().map(|proxy| &proxy.id), "proxy")?;
         ensure_unique_ids(document.ai_agents.iter().map(|agent| &agent.id), "AI agent")?;
+        let mut proxy_names = HashSet::new();
+        for proxy in &document.proxies {
+            validate_proxy_fields(
+                &proxy.name,
+                &proxy.host,
+                proxy.port,
+                &proxy.auth_type,
+                proxy.username.as_deref(),
+                proxy.password.as_deref(),
+                true,
+            )?;
+            if !proxy_names.insert(proxy.name.as_str()) {
+                return Err(VaultError::InvalidProxy(
+                    "proxy names must be unique".into(),
+                ));
+            }
+        }
         ensure_unique_uuids(document.scripts.iter().map(|script| &script.id), "script")?;
         let mut script_names = HashSet::new();
         for script in &document.scripts {
@@ -238,6 +269,14 @@ impl Vault {
         }
 
         for profile in &document.profiles {
+            if let Some(proxy_id) = &profile.proxy_id {
+                if !document.proxies.iter().any(|proxy| proxy.id == *proxy_id) {
+                    return Err(VaultError::InvalidProxy(format!(
+                        "profile {} references missing proxy {}",
+                        profile.id, proxy_id
+                    )));
+                }
+            }
             if let Some(key_id) = &profile.key_id {
                 let key = document
                     .ssh_keys
@@ -333,7 +372,6 @@ impl Vault {
                 content,
                 vault_id: document.vault_id.clone(),
                 revision: document.revision,
-                updated_at: document.updated_at.clone(),
             })
         })
     }
@@ -456,6 +494,70 @@ impl Vault {
         })
     }
 
+    pub fn terminal_settings(&self) -> Result<TerminalSettings, VaultError> {
+        self.read(|document| Ok(document.terminal_settings.clone()))
+    }
+
+    pub fn save_terminal_settings(
+        &self,
+        request: &SaveTerminalSettingsRequest,
+    ) -> Result<TerminalSettings, VaultError> {
+        let terminal_type = request.terminal_type.trim();
+        if !matches!(terminal_type, "xterm-256color" | "xterm" | "vt100") {
+            return Err(VaultError::InvalidTerminalSettings(
+                "unsupported terminal type".into(),
+            ));
+        }
+        if !(8..=24).contains(&request.font_size) {
+            return Err(VaultError::InvalidTerminalSettings(
+                "font_size must be between 8 and 24".into(),
+            ));
+        }
+        let font_family = request.font_family.trim();
+        if font_family.is_empty() || font_family.len() > 500 {
+            return Err(VaultError::InvalidTerminalSettings(
+                "font_family must contain between 1 and 500 characters".into(),
+            ));
+        }
+        if !(1_000..=50_000).contains(&request.scrollback_lines) {
+            return Err(VaultError::InvalidTerminalSettings(
+                "scrollback_lines must be between 1000 and 50000".into(),
+            ));
+        }
+        if !matches!(request.backspace_sends.as_str(), "del" | "bs") {
+            return Err(VaultError::InvalidTerminalSettings(
+                "backspace_sends must be del or bs".into(),
+            ));
+        }
+        if !(5..=120).contains(&request.connect_timeout_seconds) {
+            return Err(VaultError::InvalidTerminalSettings(
+                "connect_timeout_seconds must be between 5 and 120".into(),
+            ));
+        }
+        if request.keepalive_interval_seconds != 0
+            && !(15..=300).contains(&request.keepalive_interval_seconds)
+        {
+            return Err(VaultError::InvalidTerminalSettings(
+                "keepalive_interval_seconds must be 0 or between 15 and 300".into(),
+            ));
+        }
+
+        let settings = TerminalSettings {
+            terminal_type: terminal_type.into(),
+            font_size: request.font_size,
+            font_family: font_family.into(),
+            scrollback_lines: request.scrollback_lines,
+            backspace_sends: request.backspace_sends.clone(),
+            alt_sends_escape: request.alt_sends_escape,
+            connect_timeout_seconds: request.connect_timeout_seconds,
+            keepalive_interval_seconds: request.keepalive_interval_seconds,
+        };
+        self.mutate(|document| {
+            document.terminal_settings = settings.clone();
+            Ok(settings)
+        })
+    }
+
     pub fn list_profiles(&self) -> Result<Vec<SshProfile>, VaultError> {
         self.read(|document| Ok(document.profiles.clone()))
     }
@@ -478,6 +580,13 @@ impl Vault {
                 &request.auth_type,
                 request.key_id.as_deref(),
             )?;
+            if let Some(proxy_id) = &request.proxy_id {
+                if !document.proxies.iter().any(|proxy| proxy.id == *proxy_id) {
+                    return Err(VaultError::InvalidProxy(format!(
+                        "Proxy not found: {proxy_id}"
+                    )));
+                }
+            }
             let now = now();
             let profile = SshProfile {
                 id: uuid::Uuid::new_v4().to_string(),
@@ -492,6 +601,7 @@ impl Vault {
                     .filter(|value| !value.is_empty())
                     .map(str::to_owned),
                 key_id: request.key_id.clone(),
+                proxy_id: request.proxy_id.clone(),
                 group_name: request.group_name.clone(),
                 icon: request.icon.clone(),
                 color: request.color.clone(),
@@ -522,7 +632,19 @@ impl Vault {
                 .clone()
                 .unwrap_or(existing.auth_type.clone());
             let key_id = request.key_id.clone().or(existing.key_id.clone());
+            let proxy_id = if request.clear_proxy {
+                None
+            } else {
+                request.proxy_id.clone().or(existing.proxy_id.clone())
+            };
             Self::validate_certificate_key(document, &auth_type, key_id.as_deref())?;
+            if let Some(proxy_id) = &proxy_id {
+                if !document.proxies.iter().any(|proxy| proxy.id == *proxy_id) {
+                    return Err(VaultError::InvalidProxy(format!(
+                        "Proxy not found: {proxy_id}"
+                    )));
+                }
+            }
             let profile = &mut document.profiles[index];
             profile.name = request.name.clone().unwrap_or(existing.name);
             profile.host = request.host.clone().unwrap_or(existing.host);
@@ -535,6 +657,7 @@ impl Vault {
                 None => existing.credential,
             };
             profile.key_id = key_id;
+            profile.proxy_id = proxy_id;
             profile.group_name = request.group_name.clone().or(existing.group_name);
             profile.icon = request.icon.clone().or(existing.icon);
             profile.color = request.color.clone().or(existing.color);
@@ -551,6 +674,134 @@ impl Vault {
             document.profiles.retain(|profile| profile.id != id);
             if document.profiles.len() == before {
                 return Err(VaultError::ProfileNotFound(id.into()));
+            }
+            Ok(())
+        })
+    }
+
+    pub fn list_proxies(&self) -> Result<Vec<Socks5ProxyView>, VaultError> {
+        self.read(|document| {
+            let mut proxies: Vec<_> = document.proxies.iter().map(proxy_view).collect();
+            proxies.sort_by_key(|proxy| proxy.name.to_lowercase());
+            Ok(proxies)
+        })
+    }
+
+    pub fn get_proxy(&self, id: &str) -> Result<Socks5Proxy, VaultError> {
+        self.read(|document| {
+            document
+                .proxies
+                .iter()
+                .find(|proxy| proxy.id == id)
+                .cloned()
+                .ok_or_else(|| VaultError::ProxyNotFound(id.into()))
+        })
+    }
+
+    pub fn create_proxy(
+        &self,
+        request: &CreateSocks5ProxyRequest,
+    ) -> Result<Socks5ProxyView, VaultError> {
+        validate_proxy_fields(
+            &request.name,
+            &request.host,
+            request.port,
+            &request.auth_type,
+            request.username.as_deref(),
+            request.password.as_deref(),
+            true,
+        )?;
+        self.mutate(|document| {
+            let name = request.name.trim();
+            if document.proxies.iter().any(|proxy| proxy.name == name) {
+                return Err(VaultError::InvalidProxy("proxy name already exists".into()));
+            }
+            let timestamp = now();
+            let (username, password) = normalized_proxy_credentials(request);
+            let proxy = Socks5Proxy {
+                id: uuid::Uuid::new_v4().to_string(),
+                name: name.into(),
+                host: request.host.trim().into(),
+                port: request.port,
+                auth_type: request.auth_type.clone(),
+                username,
+                password,
+                created_at: timestamp.clone(),
+                updated_at: timestamp,
+            };
+            let view = proxy_view(&proxy);
+            document.proxies.push(proxy);
+            Ok(view)
+        })
+    }
+
+    pub fn update_proxy(
+        &self,
+        id: &str,
+        request: &UpdateSocks5ProxyRequest,
+    ) -> Result<Socks5ProxyView, VaultError> {
+        self.mutate(|document| {
+            let index = document
+                .proxies
+                .iter()
+                .position(|proxy| proxy.id == id)
+                .ok_or_else(|| VaultError::ProxyNotFound(id.into()))?;
+            let existing = document.proxies[index].clone();
+            let password = if request.auth_type == Socks5ProxyAuthType::Password {
+                request
+                    .password
+                    .as_deref()
+                    .filter(|value| !value.is_empty())
+                    .or(existing.password.as_deref())
+            } else {
+                None
+            };
+            validate_proxy_fields(
+                &request.name,
+                &request.host,
+                request.port,
+                &request.auth_type,
+                request.username.as_deref(),
+                password,
+                true,
+            )?;
+            let name = request.name.trim();
+            if document
+                .proxies
+                .iter()
+                .any(|proxy| proxy.id != id && proxy.name == name)
+            {
+                return Err(VaultError::InvalidProxy("proxy name already exists".into()));
+            }
+            let proxy = &mut document.proxies[index];
+            proxy.name = name.into();
+            proxy.host = request.host.trim().into();
+            proxy.port = request.port;
+            proxy.auth_type = request.auth_type.clone();
+            if request.auth_type == Socks5ProxyAuthType::Password {
+                proxy.username = normalized_optional_text(request.username.as_deref());
+                proxy.password = password.map(str::to_owned);
+            } else {
+                proxy.username = None;
+                proxy.password = None;
+            }
+            proxy.updated_at = now();
+            Ok(proxy_view(proxy))
+        })
+    }
+
+    pub fn delete_proxy(&self, id: &str) -> Result<(), VaultError> {
+        self.mutate(|document| {
+            let before = document.proxies.len();
+            document.proxies.retain(|proxy| proxy.id != id);
+            if document.proxies.len() == before {
+                return Err(VaultError::ProxyNotFound(id.into()));
+            }
+            for profile in &mut document.profiles {
+                if profile.proxy_id.as_deref() == Some(id) {
+                    profile.proxy_id = None;
+                    profile.updated_at = now();
+                }
             }
             Ok(())
         })
@@ -1063,6 +1314,84 @@ impl Vault {
     }
 }
 
+fn validate_proxy_fields(
+    name: &str,
+    host: &str,
+    port: u16,
+    auth_type: &Socks5ProxyAuthType,
+    username: Option<&str>,
+    password: Option<&str>,
+    require_password: bool,
+) -> Result<(), VaultError> {
+    let name = name.trim();
+    if name.is_empty() || name.chars().count() > 80 {
+        return Err(VaultError::InvalidProxy(
+            "name must contain 1 to 80 characters".into(),
+        ));
+    }
+    let host = host.trim();
+    if host.is_empty() || host.len() > 255 {
+        return Err(VaultError::InvalidProxy(
+            "host must contain 1 to 255 characters".into(),
+        ));
+    }
+    if port == 0 {
+        return Err(VaultError::InvalidProxy(
+            "port must be between 1 and 65535".into(),
+        ));
+    }
+    if *auth_type == Socks5ProxyAuthType::Password {
+        if username
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+        {
+            return Err(VaultError::InvalidProxy(
+                "username is required for password authentication".into(),
+            ));
+        }
+        if require_password && password.filter(|value| !value.is_empty()).is_none() {
+            return Err(VaultError::InvalidProxy(
+                "password is required for password authentication".into(),
+            ));
+        }
+        if username.is_some_and(|value| value.len() > 255)
+            || password.is_some_and(|value| value.len() > 255)
+        {
+            return Err(VaultError::InvalidProxy(
+                "username and password must be at most 255 bytes".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn normalized_proxy_credentials(
+    request: &CreateSocks5ProxyRequest,
+) -> (Option<String>, Option<String>) {
+    if request.auth_type == Socks5ProxyAuthType::Password {
+        (
+            normalized_optional_text(request.username.as_deref()),
+            normalized_optional_text(request.password.as_deref()),
+        )
+    } else {
+        (None, None)
+    }
+}
+
+fn proxy_view(proxy: &Socks5Proxy) -> Socks5ProxyView {
+    Socks5ProxyView {
+        id: proxy.id.clone(),
+        name: proxy.name.clone(),
+        host: proxy.host.clone(),
+        port: proxy.port,
+        auth_type: proxy.auth_type.clone(),
+        username: proxy.username.clone(),
+        created_at: proxy.created_at.clone(),
+        updated_at: proxy.updated_at.clone(),
+    }
+}
+
 fn validate_script_fields(
     name: &str,
     description: Option<&str>,
@@ -1199,6 +1528,7 @@ mod tests {
                 auth_type: AuthType::Key,
                 credential: None,
                 key_id: Some(key.id.clone()),
+                proxy_id: None,
                 group_name: None,
                 icon: None,
                 color: None,
@@ -1221,6 +1551,37 @@ mod tests {
         assert_eq!(reopened.list_profiles().unwrap().len(), 1);
         assert!(directory.join(VAULT_FILE_NAME).exists());
         assert!(directory.join(BACKUP_FILE_NAME).exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn persists_terminal_settings_and_rejects_invalid_values() {
+        let directory = test_dir();
+        let vault = Vault::open_for_test(&directory).unwrap();
+        let request = SaveTerminalSettingsRequest {
+            terminal_type: "xterm".into(),
+            font_size: 16,
+            font_family: "Cascadia Code, Consolas, monospace".into(),
+            scrollback_lines: 10_000,
+            backspace_sends: "bs".into(),
+            alt_sends_escape: false,
+            connect_timeout_seconds: 45,
+            keepalive_interval_seconds: 120,
+        };
+        let settings = vault.save_terminal_settings(&request).unwrap();
+        assert_eq!(settings.terminal_type, "xterm");
+        assert_eq!(settings.keepalive_interval_seconds, 120);
+        assert!(matches!(
+            vault.save_terminal_settings(&SaveTerminalSettingsRequest {
+                keepalive_interval_seconds: 1,
+                ..request.clone()
+            }),
+            Err(VaultError::InvalidTerminalSettings(_))
+        ));
+        drop(vault);
+
+        let reopened = Vault::open_for_test(&directory).unwrap();
+        assert_eq!(reopened.terminal_settings().unwrap().font_size, 16);
         fs::remove_dir_all(directory).unwrap();
     }
 
@@ -1292,6 +1653,7 @@ mod tests {
                     auth_type: AuthType::Key,
                     credential: None,
                     key_id: Some(key.id.clone()),
+                    proxy_id: None,
                     group_name: None,
                     icon: None,
                     color: None,
@@ -1371,6 +1733,7 @@ mod tests {
                 auth_type: AuthType::Key,
                 credential: None,
                 key_id: Some(key.id.clone()),
+                proxy_id: None,
                 group_name: None,
                 icon: None,
                 color: None,

@@ -10,6 +10,7 @@ export interface SshProfileView {
   username: string
   auth_type: AuthType
   key_id?: string
+  proxy_id?: string
   group_name: string | null
   icon: string | null
   color: string | null
@@ -27,6 +28,8 @@ export interface CreateProfileRequest {
   auth_type: AuthType
   credential?: string
   key_id?: string
+  proxy_id?: string
+  clear_proxy?: boolean
   group_name?: string
   icon?: string
   color?: string
@@ -39,6 +42,9 @@ export interface UpdateProfileRequest {
   username?: string
   auth_type?: AuthType
   credential?: string
+  key_id?: string
+  proxy_id?: string
+  clear_proxy?: boolean
   private_key?: string
   cert_data?: string
   group_name?: string
@@ -46,9 +52,44 @@ export interface UpdateProfileRequest {
   color?: string
 }
 
+export type Socks5ProxyAuthType = 'none' | 'password'
+
+export interface Socks5ProxyView {
+  id: string
+  name: string
+  host: string
+  port: number
+  auth_type: Socks5ProxyAuthType
+  username?: string
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateSocks5ProxyRequest {
+  name: string
+  host: string
+  port: number
+  auth_type: Socks5ProxyAuthType
+  username?: string
+  password?: string
+}
+
+export interface UpdateSocks5ProxyRequest extends CreateSocks5ProxyRequest {}
+
 export interface SessionInfo {
   id: string
   profile_id: string
+}
+
+export interface TerminalSettings {
+  terminalType: 'xterm-256color' | 'xterm' | 'vt100'
+  fontSize: number
+  fontFamily: string
+  scrollbackLines: number
+  backspaceSends: 'del' | 'bs'
+  altSendsEscape: boolean
+  connectTimeoutSeconds: number
+  keepaliveIntervalSeconds: number
 }
 
 export interface SshKeyView {

@@ -13,6 +13,11 @@ const props = defineProps<{
   port: number
   username: string
   profileName: string
+  proxy?: {
+    name: string
+    host: string
+    port: number
+  } | null
   icon: Component
   color: string
   status: ConnectionStatus
@@ -35,29 +40,40 @@ const emit = defineEmits<{
 const { t } = useLocale()
 const steps = ref<{ label: string; state: StepState }[]>([])
 
+function proxyLabel() {
+  return props.proxy ? `${props.proxy.name} (${props.proxy.host}:${props.proxy.port})` : ''
+}
+
 function fingerprintLabel() {
   return props.hostKey ? `${props.hostKey.algorithm}  ${props.hostKey.fingerprint}` : t('connection.verifyingFingerprint')
 }
 
 watch(() => props.status, (status) => {
   const secureChannel = { label: t('connection.secureChannelEstablished', { host: props.host, port: props.port }), state: 'done' as StepState }
+  const proxyTunnel = props.proxy
+    ? { label: t('connection.proxyTunnelEstablished', { proxy: proxyLabel() }), state: 'done' as StepState }
+    : null
+  const connectionRoute = {
+    label: props.proxy
+      ? t('connection.connectingViaProxy', { proxy: proxyLabel(), host: props.host, port: props.port })
+      : t('connection.connecting', { host: props.host, port: props.port }),
+    state: 'active' as StepState,
+  }
+
   if (status === 'connecting') {
-    steps.value = [
-      { label: t('connection.initializingSecureChannel'), state: 'done' },
-      { label: t('connection.connecting', { host: props.host, port: props.port }), state: 'active' },
-    ]
+    steps.value = [{ label: t('connection.initializingSecureChannel'), state: 'done' }, connectionRoute]
   } else if (status === 'verifying') {
-    steps.value = [secureChannel, { label: fingerprintLabel(), state: 'active' }]
+    steps.value = [...(proxyTunnel ? [proxyTunnel] : []), secureChannel, { label: fingerprintLabel(), state: 'active' }]
   } else if (status === 'host-key-confirm') {
-    steps.value = [secureChannel, { label: t('connection.awaitingFingerprintConfirmation'), state: 'active' }]
+    steps.value = [...(proxyTunnel ? [proxyTunnel] : []), secureChannel, { label: t('connection.awaitingFingerprintConfirmation'), state: 'active' }]
   } else if (status === 'host-key-changed') {
-    steps.value = [secureChannel, { label: t('connection.hostKeyChanged'), state: 'error' }]
+    steps.value = [...(proxyTunnel ? [proxyTunnel] : []), secureChannel, { label: t('connection.hostKeyChanged'), state: 'error' }]
   } else if (status === 'authenticating') {
-    steps.value = [secureChannel, { label: fingerprintLabel(), state: 'done' }, { label: t('connection.authenticating'), state: 'active' }]
+    steps.value = [...(proxyTunnel ? [proxyTunnel] : []), secureChannel, { label: fingerprintLabel(), state: 'done' }, { label: t('connection.authenticating'), state: 'active' }]
   } else if (status === 'success') {
-    steps.value = [secureChannel, { label: fingerprintLabel(), state: 'done' }, { label: t('connection.authenticated'), state: 'done' }]
+    steps.value = [...(proxyTunnel ? [proxyTunnel] : []), secureChannel, { label: fingerprintLabel(), state: 'done' }, { label: t('connection.authenticated'), state: 'done' }]
   } else {
-    steps.value = [{ label: props.error || t('connection.failed'), state: 'error' }]
+    steps.value = [...(props.proxy ? [connectionRoute] : []), { label: props.error || t('connection.failed'), state: 'error' }]
   }
 }, { immediate: true })
 
@@ -153,8 +169,9 @@ watch(() => props.status, (status) => {
 .connection-rail.error .connection-node { color: var(--app-accent); background: color-mix(in srgb, var(--app-accent) 18%, var(--app-panel)); }
 @keyframes node-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .62; } }
 .conn-steps { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
-.step { display: flex; align-items: center; gap: 8px; font-size: 12px; }
-.step-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.step { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; min-width: 0; }
+.step-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; margin-top: 5px; }
+.step-label { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
 .step.pending .step-dot { background: var(--app-border); }.step.pending .step-label { color: var(--app-muted); }
 .step.active .step-dot { background: var(--app-accent); animation: dot-pulse 1s ease-in-out infinite; }.step.active .step-label { color: var(--app-text); }
 .step.done .step-dot { background: #15803d; }.step.done .step-label { color: var(--app-muted); }

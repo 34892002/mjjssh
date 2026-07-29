@@ -14,7 +14,7 @@ use crate::vault::{Vault, VaultError, VaultSyncSnapshot};
 
 use super::gitee_snippet::{GiteeSnippetError, GiteeSnippetRemote};
 use super::github_gist::{GithubGistError, GithubGistRemote, GIST_FILE_NAME};
-use super::models::RemoteDocument;
+use super::models::{RemoteDocument, SyncEnvelopeError};
 use super::state::{SyncState, SyncStateError, SyncStateStore};
 use super::{
     decrypt_vault, decrypt_vault_with_key, derive_sync_key, encrypt_vault, encrypt_vault_with_key,
@@ -57,6 +57,8 @@ pub enum SyncServiceError {
     Conflict,
     #[error("multiple MJJSSH cloud sync vaults were found; delete duplicate private snippets, then try again")]
     MultipleSyncVaults,
+    #[error("cloud sync data uses an unsupported format")]
+    UnsupportedRemoteFormat,
     #[error("sync password is incorrect or sync data is corrupted")]
     InvalidRemoteData,
     #[error("cloud sync storage error: {0}")]
@@ -237,7 +239,7 @@ impl<'a> SyncService<'a> {
             local_vault_revision: local.revision,
             remote_vault_revision: envelope.revision,
             last_synced_vault_revision: state.last_synced_vault_revision,
-            remote_updated_at: envelope.updated_at,
+            remote_updated_at: remote.remote_updated_at,
         })
     }
 
@@ -279,10 +281,10 @@ impl<'a> SyncService<'a> {
                     .create(token, &serialize_envelope(&encrypted)?)
                     .await?
             }
-            [existing] => {
-                remote_client
-                    .update(token, &existing.remote_id, &serialize_envelope(&encrypted)?)
-                    .await?
+            [_] => {
+                // Another device may have created the remote after the initial
+                // discovery. Never replace that vault during first-time setup.
+                return Err(SyncServiceError::Conflict);
             }
             _ => return Err(SyncServiceError::MultipleSyncVaults),
         };
@@ -341,6 +343,12 @@ impl<'a> SyncService<'a> {
     pub async fn upload(&self) -> Result<SyncOperationResult, SyncServiceError> {
         let state = self.configured_state()?;
         let snapshot = self.vault.sync_snapshot()?;
+        if snapshot.revision == state.last_synced_vault_revision {
+            return Ok(SyncOperationResult {
+                status: "unchanged".into(),
+                sync: status_from_state(Some(state)),
+            });
+        }
         let token = self.saved_token()?;
         let remote_client = self.remote_for_state(&state)?;
         let current = remote_client.get(&token, &state.remote_id).await?;
@@ -624,7 +632,6 @@ fn encrypt_snapshot(
         password,
         snapshot.vault_id,
         snapshot.revision,
-        snapshot.updated_at,
         device_id,
     )
     .map_err(Into::into)
@@ -641,7 +648,6 @@ fn encrypt_snapshot_with_key(
         key,
         snapshot.vault_id,
         snapshot.revision,
-        snapshot.updated_at,
         device_id,
         salt,
     )
@@ -686,7 +692,13 @@ fn serialize_envelope(envelope: &EncryptedVault) -> Result<String, SyncServiceEr
 }
 
 fn parse_envelope(remote: &RemoteDocument) -> Result<EncryptedVault, SyncServiceError> {
-    serde_json::from_str(&remote.content).map_err(|_| SyncServiceError::InvalidRemoteData)
+    let envelope: EncryptedVault =
+        serde_json::from_str(&remote.content).map_err(|_| SyncServiceError::InvalidRemoteData)?;
+    envelope.validate().map_err(|error| match error {
+        SyncEnvelopeError::UnsupportedFormatVersion(_) => SyncServiceError::UnsupportedRemoteFormat,
+        _ => SyncServiceError::InvalidRemoteData,
+    })?;
+    Ok(envelope)
 }
 
 fn snapshot_metadata(envelope: &EncryptedVault) -> VaultSyncSnapshot {
@@ -694,7 +706,6 @@ fn snapshot_metadata(envelope: &EncryptedVault) -> VaultSyncSnapshot {
         content: Vec::new(),
         vault_id: envelope.vault_id.clone(),
         revision: envelope.revision,
-        updated_at: envelope.updated_at.clone(),
     }
 }
 
@@ -775,7 +786,6 @@ mod tests {
             "correct sync password".into(),
             uuid::Uuid::new_v4().to_string(),
             1,
-            "2026-07-21T00:00:00Z".into(),
             uuid::Uuid::new_v4().to_string(),
         )
         .unwrap();
@@ -783,6 +793,7 @@ mod tests {
             remote_id: "remote".into(),
             content: serde_json::to_string(&envelope).unwrap(),
             content_hash: "sha256:test".into(),
+            remote_updated_at: "2026-07-21T00:00:00Z".into(),
         };
 
         let error =

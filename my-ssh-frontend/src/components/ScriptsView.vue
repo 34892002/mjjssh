@@ -375,12 +375,16 @@ function tagType(level: ScriptRiskLevel) {
 .scripts-header h2 { margin: 0; font-size: 22px; font-weight: 600; }
 .scripts-header p, .script-card p, .subscription-detail p { margin: 4px 0 0; color: var(--app-muted); font-size: 13px; }
 .script-toolbar { max-width: 420px; margin: 0 0 16px; }
-.script-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
-.script-card { border: 1px solid var(--app-border); background: var(--app-surface); border-radius: 6px; padding: 14px; min-width: 0; }
-.script-card-heading { justify-content: space-between; align-items: flex-start; gap: 12px; }
+.script-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); grid-auto-rows: 224px; gap: 10px; }
+.script-card { display: flex; min-width: 0; height: 224px; flex-direction: column; border: 1px solid var(--app-border); background: var(--app-surface); border-radius: 6px; padding: 14px; }
+.script-card-heading { min-height: 58px; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.script-card-heading > div { min-width: 0; flex: 1 1 auto; }
+.script-card-heading :deep(.n-tag) { flex: 0 0 auto; }
 .script-card h3, .subscription-detail h3 { margin: 0; font-size: 15px; font-weight: 600; }
-.tag-row { flex-wrap: wrap; gap: 6px; margin-top: 12px; min-height: 22px; }
-.script-actions { gap: 8px; margin-top: 14px; }
+.script-card h3 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.script-card p { display: -webkit-box; overflow: hidden; line-height: 18px; line-clamp: 2; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.tag-row { min-height: 50px; max-height: 50px; flex-wrap: wrap; align-content: flex-start; overflow: hidden; gap: 6px; margin-top: 12px; }
+.script-actions { gap: 8px; margin-top: auto; }
 .subscriptions-layout { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 20px; min-height: max(380px, calc(100vh - 250px)); }
 .subscription-list { border-right: 1px solid var(--app-border); padding-right: 12px; display: flex; flex-direction: column; gap: 5px; }
 .subscription-item { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; text-align: left; border: 0; border-radius: 4px; background: transparent; color: var(--app-text); padding: 9px; cursor: pointer; }

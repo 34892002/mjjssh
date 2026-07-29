@@ -2,7 +2,7 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-pub const REMOTE_FORMAT_VERSION: u32 = 1;
+pub const REMOTE_FORMAT_VERSION: u32 = 2;
 pub const ARGON2ID_MEMORY_KIB: u32 = 65_536;
 pub const ARGON2ID_ITERATIONS: u32 = 3;
 pub const ARGON2ID_PARALLELISM: u32 = 4;
@@ -15,6 +15,7 @@ pub struct RemoteDocument {
     pub remote_id: String,
     pub content: String,
     pub content_hash: String,
+    pub remote_updated_at: String,
 }
 
 pub fn content_hash(content: &str) -> String {
@@ -110,7 +111,6 @@ pub struct EncryptedVault {
     pub format_version: u32,
     pub vault_id: String,
     pub revision: u64,
-    pub updated_at: String,
     pub updated_by_device_id: String,
     pub encryption: EncryptionMetadata,
     pub ciphertext: String,

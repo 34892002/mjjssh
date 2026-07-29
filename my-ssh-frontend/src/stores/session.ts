@@ -2,7 +2,7 @@ import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { translate } from '../composables/useLocale'
-import type { SessionInfo } from '../types'
+import type { SessionInfo, TerminalSettings } from '../types'
 
 export type SessionKind = 'ssh' | 'local'
 export type LocalShell = 'powershell' | 'git-bash'
@@ -13,6 +13,7 @@ export interface TabInfo {
   profileId?: string
   profileName: string
   localShell?: LocalShell
+  terminalSettings: TerminalSettings
 }
 
 export interface TerminalSelection {
@@ -32,6 +33,17 @@ function generateId(): string {
   return crypto.randomUUID()
 }
 
+const DEFAULT_TERMINAL_SETTINGS: TerminalSettings = {
+  terminalType: 'xterm-256color',
+  fontSize: 14,
+  fontFamily: 'Cascadia Code, Fira Code, JetBrains Mono, Consolas, monospace',
+  scrollbackLines: 5000,
+  backspaceSends: 'del',
+  altSendsEscape: true,
+  connectTimeoutSeconds: 30,
+  keepaliveIntervalSeconds: 60,
+}
+
 export const useSessionStore = defineStore('session', () => {
   const sessions = ref<SessionInfo[]>([])
   const tabs = ref<TabInfo[]>([])
@@ -41,6 +53,15 @@ export const useSessionStore = defineStore('session', () => {
   const terminalReadyResolvers = new Map<string, () => void>()
   const terminalSelections = new Map<string, TerminalSelection>()
   const terminalSelectionTimers = new Map<string, ReturnType<typeof setTimeout>>()
+  const terminalSettings = ref<TerminalSettings>({ ...DEFAULT_TERMINAL_SETTINGS })
+
+  async function loadTerminalSettings() {
+    terminalSettings.value = await invoke<TerminalSettings>('get_terminal_settings')
+  }
+
+  async function saveTerminalSettings(settings: TerminalSettings) {
+    terminalSettings.value = await invoke<TerminalSettings>('save_terminal_settings', { settings })
+  }
 
   function clearTerminalSelection(sessionId: string) {
     const timer = terminalSelectionTimers.get(sessionId)
@@ -90,7 +111,7 @@ export const useSessionStore = defineStore('session', () => {
         const terminalReady = new Promise<void>((resolve) => {
           terminalReadyResolvers.set(sessionId, resolve)
         })
-        tabs.value.push({ sessionId, kind: 'ssh', profileId, profileName })
+        tabs.value.push({ sessionId, kind: 'ssh', profileId, profileName, terminalSettings: { ...terminalSettings.value } })
         activeTabId.value = sessionId
 
         await Promise.race([
@@ -129,7 +150,7 @@ export const useSessionStore = defineStore('session', () => {
       const terminalReady = new Promise<void>((resolve) => {
         terminalReadyResolvers.set(sessionId, resolve)
       })
-      tabs.value.push({ sessionId, kind: 'local', profileName: translate('terminal.localLabel', { label }), localShell: shell })
+      tabs.value.push({ sessionId, kind: 'local', profileName: translate('terminal.localLabel', { label }), localShell: shell, terminalSettings: { ...terminalSettings.value } })
       activeTabId.value = sessionId
 
       await Promise.race([
@@ -239,6 +260,9 @@ export const useSessionStore = defineStore('session', () => {
     activeTab,
     loading,
     error,
+    terminalSettings,
+    loadTerminalSettings,
+    saveTerminalSettings,
     connect,
     startLocalTerminal,
     disconnect,

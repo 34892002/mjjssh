@@ -9,12 +9,14 @@ import { Unicode11Addon } from '@xterm/addon-unicode11'
 import '@xterm/xterm/css/xterm.css'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useSessionStore } from '../stores/session'
+import type { TerminalSettings } from '../types'
 
 const props = defineProps<{
   sessionId: string
   kind: 'ssh' | 'local'
   dark: boolean
   reconnectVersion?: number
+  settings: TerminalSettings
 }>()
 
 const emit = defineEmits<{
@@ -110,9 +112,9 @@ onMounted(async () => {
   terminal = new Terminal({
     allowProposedApi: true,
     cursorBlink: true,
-    scrollback: 5000,
-    fontSize: 14,
-    fontFamily: '"Cascadia Code", "Fira Code", "JetBrains Mono", Consolas, monospace',
+    scrollback: props.settings.scrollbackLines,
+    fontSize: props.settings.fontSize,
+    fontFamily: props.settings.fontFamily,
     theme: terminalTheme(),
   })
 
@@ -157,6 +159,17 @@ onMounted(async () => {
   }
 
   terminal.attachCustomKeyEventHandler((event) => {
+    if (event.type === 'keydown' && event.key === 'Backspace') {
+      void writeTerminalData(props.settings.backspaceSends === 'bs' ? '\b' : '\x7f')
+      return false
+    }
+    if (event.type === 'keydown' && event.altKey && !event.ctrlKey && event.key.length === 1) {
+      const data = props.settings.altSendsEscape
+        ? `\x1b${event.key}`
+        : String.fromCharCode(event.key.charCodeAt(0) | 0x80)
+      void writeTerminalData(data)
+      return false
+    }
     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'f') {
       if (event.type === 'keydown') openSearch()
       return false

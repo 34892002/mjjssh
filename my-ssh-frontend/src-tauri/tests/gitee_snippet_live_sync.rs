@@ -24,6 +24,7 @@ fn profile(name: &str) -> CreateProfileRequest {
         auth_type: AuthType::Password,
         credential: Some("test-password".into()),
         key_id: None,
+        proxy_id: None,
         group_name: None,
         icon: None,
         color: None,
@@ -139,17 +140,16 @@ async fn synchronizes_two_local_vaults_and_detects_conflicts() {
         let replacement = Vault::open(&replacement_directory)?;
         replacement.create_profile(&profile("replacement-host"))?;
         let replacement_service = SyncService::new(&replacement, &replacement_directory)?;
-        let replacement_status = replacement_service
-            .enable_create(
-                SyncProvider::GiteeSnippet,
-                &token,
-                UPDATED_TEST_PASSWORD.into(),
-            )
-            .await?;
-        assert_eq!(
-            replacement_status.remote_id.as_deref(),
-            Some(snippet_id.as_str())
-        );
+        assert!(matches!(
+            replacement_service
+                .enable_create(
+                    SyncProvider::GiteeSnippet,
+                    &token,
+                    UPDATED_TEST_PASSWORD.into(),
+                )
+                .await,
+            Err(SyncServiceError::Conflict)
+        ));
         assert_eq!(
             GiteeSnippetRemote::new()?
                 .find_sync_vaults(&token)

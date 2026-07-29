@@ -167,6 +167,7 @@ struct GistSummary {
 #[derive(Deserialize)]
 struct GistResponse {
     id: String,
+    updated_at: String,
     files: std::collections::HashMap<String, GistFile>,
 }
 
@@ -238,6 +239,7 @@ fn document_from_gist(gist: GistResponse) -> Result<RemoteDocument, GithubGistEr
         remote_id: gist.id,
         content_hash: content_hash(&content),
         content,
+        remote_updated_at: gist.updated_at,
     })
 }
 
@@ -339,6 +341,7 @@ mod tests {
         assert!(request.contains("authorization: Bearer secret-token"));
         assert_eq!(document.remote_id, "gist-id");
         assert_eq!(document.content, "ciphertext");
+        assert_eq!(document.remote_updated_at, "2026-07-20T12:00:00Z");
     }
 
     #[tokio::test]
@@ -388,7 +391,7 @@ mod tests {
 
     #[tokio::test]
     async fn rejects_missing_or_truncated_sync_file() {
-        let missing = r#"{"id":"gist-id","files":{}}"#;
+        let missing = r#"{"id":"gist-id","updated_at":"2026-07-20T12:00:00Z","files":{}}"#;
         let (base_url, _) = mock_server(200, &[], missing);
         let remote = GithubGistRemote::with_base_url(&base_url).unwrap();
         assert!(matches!(
@@ -396,8 +399,9 @@ mod tests {
             Err(GithubGistError::InvalidResponse)
         ));
 
-        let truncated =
-            format!(r#"{{"id":"gist-id","files":{{"{GIST_FILE_NAME}":{{"truncated":true}}}}}}"#);
+        let truncated = format!(
+            r#"{{"id":"gist-id","updated_at":"2026-07-20T12:00:00Z","files":{{"{GIST_FILE_NAME}":{{"truncated":true}}}}}}"#
+        );
         let (base_url, _) = mock_server(200, &[], &truncated);
         let remote = GithubGistRemote::with_base_url(&base_url).unwrap();
         assert!(matches!(

@@ -15,7 +15,6 @@ const SSH_SAFETY_PROBE: &str = "printf '__MYSSH_SAFETY_CONNECTION__ '; printf '%
 pub const UNRESPONSIVE_TERMINAL_REASON: &str =
     "Interactive terminal did not recover after an interrupted AI command.";
 
-const SSH_CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
 const SSH_CONNECTION_CANCELLED_REASON: &str = "SSH connection was cancelled.";
 
 pub async fn disconnect_unresponsive_terminal(
@@ -62,6 +61,7 @@ fn terminal_write_error_category(error: &crate::ssh::SshError) -> &'static str {
         crate::ssh::SshError::ChangedHostKey { .. } => "changed_host_key",
         crate::ssh::SshError::Auth(_) => "authentication_error",
         crate::ssh::SshError::Io(_) => "io_error",
+        crate::ssh::SshError::Proxy(_) => "proxy_error",
         crate::ssh::SshError::Ssh(_) => "ssh_error",
     }
 }
@@ -102,11 +102,17 @@ pub async fn connect_ssh(
     profile_id: String,
     session_id: String,
 ) -> Result<String, String> {
-    let (profile, credential) = state
+    let (profile, credential, proxy, terminal_settings) = state
         .with_vault(|vault| {
             let profile = vault.get_profile(&profile_id)?;
             let credential = vault.decrypt_credential(&profile)?;
-            Ok((profile, credential))
+            let proxy = profile
+                .proxy_id
+                .as_deref()
+                .map(|proxy_id| vault.get_proxy(proxy_id))
+                .transpose()?;
+            let terminal_settings = vault.terminal_settings()?;
+            Ok((profile, credential, proxy, terminal_settings))
         })
         .await
         .map_err(|e| e.to_string())?;
@@ -143,7 +149,7 @@ pub async fn connect_ssh(
     let connection_result = tokio::select! {
         _ = cancellation_token.cancelled() => Err(SSH_CONNECTION_CANCELLED_REASON.to_owned()),
         result = timeout(
-            SSH_CONNECTION_TIMEOUT,
+            Duration::from_secs(terminal_settings.connect_timeout_seconds.into()),
             SshSession::connect(
                 session_id.clone(),
                 profile_id,
@@ -152,6 +158,8 @@ pub async fn connect_ssh(
                 &profile.username,
                 &credential,
                 &profile.auth_type,
+                proxy.as_ref(),
+                &terminal_settings,
                 expected_host_key,
                 progress_tx,
                 cancellation_token.clone(),
@@ -172,7 +180,10 @@ pub async fn connect_ssh(
                 } => format!("HOST_KEY_CHANGED|{expected_key_type}|{expected}|{actual_key_type}|{actual}"),
                 error => error.to_string(),
             }),
-            Err(_) => Err(format!("SSH connection timed out after {} seconds.", SSH_CONNECTION_TIMEOUT.as_secs())),
+            Err(_) => Err(format!(
+                "SSH connection timed out after {} seconds.",
+                terminal_settings.connect_timeout_seconds,
+            )),
         },
     };
 

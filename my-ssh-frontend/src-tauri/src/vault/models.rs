@@ -1,6 +1,47 @@
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroize;
 
+pub const DEFAULT_TERMINAL_TYPE: &str = "xterm-256color";
+pub const DEFAULT_FONT_SIZE: u8 = 14;
+pub const DEFAULT_FONT_FAMILY: &str =
+    "Cascadia Code, Fira Code, JetBrains Mono, Consolas, monospace";
+pub const DEFAULT_SCROLLBACK_LINES: u32 = 5_000;
+pub const DEFAULT_CONNECT_TIMEOUT_SECONDS: u32 = 30;
+pub const DEFAULT_KEEPALIVE_INTERVAL_SECONDS: u32 = 60;
+
+fn default_font_family() -> String {
+    DEFAULT_FONT_FAMILY.into()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalSettings {
+    pub terminal_type: String,
+    pub font_size: u8,
+    #[serde(default = "default_font_family")]
+    pub font_family: String,
+    pub scrollback_lines: u32,
+    pub backspace_sends: String,
+    pub alt_sends_escape: bool,
+    pub connect_timeout_seconds: u32,
+    pub keepalive_interval_seconds: u32,
+}
+
+impl Default for TerminalSettings {
+    fn default() -> Self {
+        Self {
+            terminal_type: DEFAULT_TERMINAL_TYPE.into(),
+            font_size: DEFAULT_FONT_SIZE,
+            font_family: default_font_family(),
+            scrollback_lines: DEFAULT_SCROLLBACK_LINES,
+            backspace_sends: "del".into(),
+            alt_sends_escape: true,
+            connect_timeout_seconds: DEFAULT_CONNECT_TIMEOUT_SECONDS,
+            keepalive_interval_seconds: DEFAULT_KEEPALIVE_INTERVAL_SECONDS,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ScriptRiskLevel {
@@ -56,6 +97,58 @@ pub enum AuthType {
     Certificate,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Socks5ProxyAuthType {
+    None,
+    Password,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Socks5Proxy {
+    pub id: String,
+    pub name: String,
+    pub host: String,
+    pub port: u16,
+    pub auth_type: Socks5ProxyAuthType,
+    pub username: Option<String>,
+    pub password: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Socks5ProxyView {
+    pub id: String,
+    pub name: String,
+    pub host: String,
+    pub port: u16,
+    pub auth_type: Socks5ProxyAuthType,
+    pub username: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CreateSocks5ProxyRequest {
+    pub name: String,
+    pub host: String,
+    pub port: u16,
+    pub auth_type: Socks5ProxyAuthType,
+    pub username: Option<String>,
+    pub password: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct UpdateSocks5ProxyRequest {
+    pub name: String,
+    pub host: String,
+    pub port: u16,
+    pub auth_type: Socks5ProxyAuthType,
+    pub username: Option<String>,
+    pub password: Option<String>,
+}
+
 impl std::fmt::Display for AuthType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -76,6 +169,8 @@ pub struct SshProfile {
     pub auth_type: AuthType,
     pub credential: Option<String>,
     pub key_id: Option<String>,
+    #[serde(default)]
+    pub proxy_id: Option<String>,
     pub group_name: Option<String>,
     pub icon: Option<String>,
     pub color: Option<String>,
@@ -94,6 +189,7 @@ pub struct CreateProfileRequest {
     pub auth_type: AuthType,
     pub credential: Option<String>,
     pub key_id: Option<String>,
+    pub proxy_id: Option<String>,
     pub group_name: Option<String>,
     pub icon: Option<String>,
     pub color: Option<String>,
@@ -110,6 +206,9 @@ pub struct UpdateProfileRequest {
     pub auth_type: Option<AuthType>,
     pub credential: Option<String>,
     pub key_id: Option<String>,
+    pub proxy_id: Option<String>,
+    #[serde(default)]
+    pub clear_proxy: bool,
     pub group_name: Option<String>,
     pub icon: Option<String>,
     pub color: Option<String>,
@@ -126,6 +225,7 @@ pub struct SshProfileView {
     pub username: String,
     pub auth_type: AuthType,
     pub key_id: Option<String>,
+    pub proxy_id: Option<String>,
     pub group_name: Option<String>,
     pub icon: Option<String>,
     pub color: Option<String>,
@@ -145,6 +245,7 @@ impl From<&SshProfile> for SshProfileView {
             username: p.username.clone(),
             auth_type: p.auth_type.clone(),
             key_id: p.key_id.clone(),
+            proxy_id: p.proxy_id.clone(),
             group_name: p.group_name.clone(),
             icon: p.icon.clone(),
             color: p.color.clone(),
@@ -286,6 +387,19 @@ pub enum SshKeyAlgorithm {
 pub struct GenerateSshKeyResult {
     pub key: SshKeyView,
     pub public_key: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveTerminalSettingsRequest {
+    pub terminal_type: String,
+    pub font_size: u8,
+    pub font_family: String,
+    pub scrollback_lines: u32,
+    pub backspace_sends: String,
+    pub alt_sends_escape: bool,
+    pub connect_timeout_seconds: u32,
+    pub keepalive_interval_seconds: u32,
 }
 
 #[derive(Debug, Zeroize)]

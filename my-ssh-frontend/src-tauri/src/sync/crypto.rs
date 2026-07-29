@@ -35,7 +35,6 @@ pub fn encrypt_vault(
     mut password: String,
     vault_id: String,
     revision: u64,
-    updated_at: String,
     updated_by_device_id: String,
 ) -> Result<EncryptedVault, SyncCryptoError> {
     validate_metadata(&vault_id, &updated_by_device_id)?;
@@ -54,13 +53,7 @@ pub fn encrypt_vault(
     OsRng.fill_bytes(&mut salt);
     OsRng.fill_bytes(&mut nonce);
     let encryption = EncryptionMetadata::new(salt, nonce);
-    let aad = associated_data(
-        &vault_id,
-        revision,
-        &updated_at,
-        &updated_by_device_id,
-        &encryption,
-    )?;
+    let aad = associated_data(&vault_id, revision, &updated_by_device_id, &encryption)?;
     let mut key = derive_key(password, &salt)?;
     let cipher = Aes256Gcm::new_from_slice(&key).map_err(|_| SyncCryptoError::Encryption)?;
     let nonce = Nonce::try_from(nonce.as_slice()).map_err(|_| SyncCryptoError::Encryption)?;
@@ -80,7 +73,6 @@ pub fn encrypt_vault(
         format_version: super::models::REMOTE_FORMAT_VERSION,
         vault_id,
         revision,
-        updated_at,
         updated_by_device_id,
         encryption,
         ciphertext: STANDARD.encode(ciphertext),
@@ -119,7 +111,6 @@ pub fn decrypt_vault_with_key(
     let aad = associated_data(
         &envelope.vault_id,
         envelope.revision,
-        &envelope.updated_at,
         &envelope.updated_by_device_id,
         &envelope.encryption,
     )?;
@@ -157,7 +148,6 @@ pub fn encrypt_vault_with_key(
     key: &[u8; SYNC_KEY_LENGTH],
     vault_id: String,
     revision: u64,
-    updated_at: String,
     updated_by_device_id: String,
     salt: [u8; SALT_LENGTH],
 ) -> Result<EncryptedVault, SyncCryptoError> {
@@ -168,13 +158,7 @@ pub fn encrypt_vault_with_key(
     let mut nonce = [0u8; NONCE_LENGTH];
     OsRng.fill_bytes(&mut nonce);
     let encryption = EncryptionMetadata::new(salt, nonce);
-    let aad = associated_data(
-        &vault_id,
-        revision,
-        &updated_at,
-        &updated_by_device_id,
-        &encryption,
-    )?;
+    let aad = associated_data(&vault_id, revision, &updated_by_device_id, &encryption)?;
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| SyncCryptoError::Encryption)?;
     let nonce = Nonce::try_from(nonce.as_slice()).map_err(|_| SyncCryptoError::Encryption)?;
     let ciphertext = cipher
@@ -190,7 +174,6 @@ pub fn encrypt_vault_with_key(
         format_version: super::models::REMOTE_FORMAT_VERSION,
         vault_id,
         revision,
-        updated_at,
         updated_by_device_id,
         encryption,
         ciphertext: STANDARD.encode(ciphertext),
@@ -228,7 +211,6 @@ fn derive_key(
 fn associated_data(
     vault_id: &str,
     revision: u64,
-    updated_at: &str,
     updated_by_device_id: &str,
     encryption: &EncryptionMetadata,
 ) -> Result<Vec<u8>, SyncCryptoError> {
@@ -238,7 +220,6 @@ fn associated_data(
         format_version: u32,
         vault_id: &'a str,
         revision: u64,
-        updated_at: &'a str,
         updated_by_device_id: &'a str,
         encryption: super::models::KdfParameters,
     }
@@ -247,7 +228,6 @@ fn associated_data(
         format_version: super::models::REMOTE_FORMAT_VERSION,
         vault_id,
         revision,
-        updated_at,
         updated_by_device_id,
         encryption: encryption.aad_parameters(),
     })
@@ -264,7 +244,6 @@ mod tests {
             "correct sync password".into(),
             "b9b92c0e-0f4d-4b64-8f1a-53f7d4f56b9e".into(),
             18,
-            "2026-07-20T12:00:00Z".into(),
             "ee1cffb9-2f55-479d-8f84-a6f4a33f7c33".into(),
         )
         .unwrap()
@@ -279,6 +258,22 @@ mod tests {
             br#"{"formatVersion":1,"profiles":[{"host":"example.test"}]}"#
         );
         assert!(!envelope.ciphertext.contains("example.test"));
+        assert!(!serde_json::to_string(&envelope)
+            .unwrap()
+            .contains("updatedAt"));
+    }
+
+    #[test]
+    fn rejects_previous_remote_format_version() {
+        let mut envelope = encrypt_fixture();
+        envelope.format_version = 1;
+
+        assert!(matches!(
+            decrypt_vault(&envelope, "correct sync password".into()),
+            Err(SyncCryptoError::InvalidEnvelope(
+                SyncEnvelopeError::UnsupportedFormatVersion(1)
+            ))
+        ));
     }
 
     #[test]
@@ -328,7 +323,6 @@ mod tests {
             &key,
             first.vault_id.clone(),
             first.revision + 1,
-            "2026-07-21T12:00:00Z".into(),
             first.updated_by_device_id.clone(),
             salt,
         )
@@ -349,7 +343,6 @@ mod tests {
             "seven7!".into(),
             uuid::Uuid::new_v4().to_string(),
             1,
-            "2026-07-20T12:00:00Z".into(),
             uuid::Uuid::new_v4().to_string(),
         )
         .unwrap_err();
@@ -360,7 +353,6 @@ mod tests {
             "eight88!".into(),
             uuid::Uuid::new_v4().to_string(),
             1,
-            "2026-07-20T12:00:00Z".into(),
             uuid::Uuid::new_v4().to_string(),
         )
         .unwrap();

@@ -154,6 +154,7 @@ struct GiteeGistSummary {
 #[derive(Deserialize)]
 struct GiteeGistResponse {
     id: String,
+    updated_at: String,
     files: HashMap<String, GiteeGistFile>,
 }
 
@@ -222,6 +223,7 @@ fn document_from_gist(gist: GiteeGistResponse) -> Result<RemoteDocument, GiteeSn
         remote_id: gist.id,
         content_hash: content_hash(&content),
         content,
+        remote_updated_at: gist.updated_at,
     })
 }
 
@@ -274,7 +276,9 @@ mod tests {
     }
 
     fn valid_gist(content: &str) -> String {
-        format!(r#"{{"id":"snippet-id","files":{{"{GIST_FILE_NAME}":{{"content":"{content}"}}}}}}"#)
+        format!(
+            r#"{{"id":"snippet-id","updated_at":"2026-07-20T12:00:00Z","files":{{"{GIST_FILE_NAME}":{{"content":"{content}"}}}}}}"#
+        )
     }
 
     #[tokio::test]
@@ -301,6 +305,7 @@ mod tests {
         let request = request.recv().unwrap();
         assert!(request.starts_with("GET /gists/snippet-id?access_token=secret-token HTTP/1.1"));
         assert_eq!(document.content, "ciphertext");
+        assert_eq!(document.remote_updated_at, "2026-07-20T12:00:00Z");
     }
 
     #[tokio::test]

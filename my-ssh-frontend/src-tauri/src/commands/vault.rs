@@ -13,11 +13,26 @@ use tokio_util::sync::CancellationToken;
 use crate::ssh::SshSession;
 use crate::state::AppState;
 use crate::vault::{
-    CreateKeyRequest, CreateProfileRequest, GenerateSshKeyRequest, GenerateSshKeyResult,
-    SshKeyAlgorithm, SshKeyView, SshProfileView, UpdateProfileRequest,
+    CreateKeyRequest, CreateProfileRequest, CreateSocks5ProxyRequest, GenerateSshKeyRequest,
+    GenerateSshKeyResult, SaveTerminalSettingsRequest, Socks5ProxyView, SshKeyAlgorithm,
+    SshKeyView, SshProfileView, TerminalSettings, UpdateProfileRequest, UpdateSocks5ProxyRequest,
 };
 
 const PROFILE_INFO_COMMAND: &str = "printf '__MYSSH_OS__'; if [ -r /etc/os-release ]; then . /etc/os-release; printf '%s' \"${PRETTY_NAME:-${NAME:-unknown}}\"; else uname -srm; fi; printf '\\n__MYSSH_IPINFO__'; if command -v curl >/dev/null 2>&1; then curl --fail --silent --show-error --max-time 5 https://ipinfo.io/json; elif command -v wget >/dev/null 2>&1; then wget -qO- --timeout=5 https://ipinfo.io/json; fi";
+
+#[tauri::command]
+pub fn list_system_font_families() -> Vec<String> {
+    let mut database = fontdb::Database::new();
+    database.load_system_fonts();
+
+    let mut families = database
+        .faces()
+        .flat_map(|face| face.families.iter().map(|(family, _)| family.clone()))
+        .collect::<Vec<_>>();
+    families.sort_unstable();
+    families.dedup();
+    families
+}
 
 #[derive(Deserialize)]
 struct IpInfoResponse {
@@ -71,6 +86,25 @@ pub async fn init_vault(state: State<'_, AppState>) -> Result<(), String> {
 pub async fn get_vault_md5(state: State<'_, AppState>) -> Result<String, String> {
     let content = fs::read(state.app_dir.join("vault.json")).map_err(|error| error.to_string())?;
     Ok(format!("{:x}", md5::compute(content)))
+}
+
+#[tauri::command]
+pub async fn get_terminal_settings(state: State<'_, AppState>) -> Result<TerminalSettings, String> {
+    state
+        .with_vault(|vault| vault.terminal_settings())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn save_terminal_settings(
+    state: State<'_, AppState>,
+    settings: SaveTerminalSettingsRequest,
+) -> Result<TerminalSettings, String> {
+    state
+        .with_vault(|vault| vault.save_terminal_settings(&settings))
+        .await
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -137,11 +171,17 @@ pub async fn refresh_profile_info(
     state: State<'_, AppState>,
     profile_id: String,
 ) -> Result<SshProfileView, String> {
-    let (profile, credential) = state
+    let (profile, credential, proxy, terminal_settings) = state
         .with_vault(|vault| {
             let profile = vault.get_profile(&profile_id)?;
             let credential = vault.decrypt_credential(&profile)?;
-            Ok((profile, credential))
+            let proxy = profile
+                .proxy_id
+                .as_deref()
+                .map(|proxy_id| vault.get_proxy(proxy_id))
+                .transpose()?;
+            let terminal_settings = vault.terminal_settings()?;
+            Ok((profile, credential, proxy, terminal_settings))
         })
         .await
         .map_err(|error| error.to_string())?;
@@ -160,7 +200,7 @@ pub async fn refresh_profile_info(
     let temporary_session_id = format!("profile-info-{}", uuid::Uuid::new_v4());
     let (progress_tx, _progress_rx) = mpsc::unbounded_channel();
     let (session, _data_rx) = timeout(
-        Duration::from_secs(15),
+        Duration::from_secs(terminal_settings.connect_timeout_seconds.into()),
         SshSession::connect(
             temporary_session_id,
             profile.id.clone(),
@@ -169,6 +209,8 @@ pub async fn refresh_profile_info(
             &profile.username,
             &credential,
             &profile.auth_type,
+            proxy.as_ref(),
+            &terminal_settings,
             expected_host_key,
             progress_tx,
             CancellationToken::new(),
@@ -208,6 +250,8 @@ pub async fn refresh_profile_info(
                     auth_type: None,
                     credential: None,
                     key_id: None,
+                    proxy_id: None,
+                    clear_proxy: false,
                     group_name: None,
                     icon: None,
                     color: None,
@@ -215,6 +259,47 @@ pub async fn refresh_profile_info(
             )?;
             Ok(SshProfileView::from(&updated))
         })
+        .await
+        .map_err(|error| error.to_string())
+}
+
+// ==================== SOCKS5 Proxies ====================
+
+#[tauri::command]
+pub async fn list_proxies(state: State<'_, AppState>) -> Result<Vec<Socks5ProxyView>, String> {
+    state
+        .with_vault(|vault| vault.list_proxies())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn create_proxy(
+    state: State<'_, AppState>,
+    proxy: CreateSocks5ProxyRequest,
+) -> Result<Socks5ProxyView, String> {
+    state
+        .with_vault(|vault| vault.create_proxy(&proxy))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn update_proxy(
+    state: State<'_, AppState>,
+    id: String,
+    proxy: UpdateSocks5ProxyRequest,
+) -> Result<Socks5ProxyView, String> {
+    state
+        .with_vault(|vault| vault.update_proxy(&id, &proxy))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn delete_proxy(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    state
+        .with_vault(|vault| vault.delete_proxy(&id))
         .await
         .map_err(|error| error.to_string())
 }

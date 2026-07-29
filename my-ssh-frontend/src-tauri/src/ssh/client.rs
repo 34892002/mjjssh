@@ -9,11 +9,15 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+use tokio::net::TcpStream;
 use tokio::sync::{broadcast, mpsc, oneshot, Mutex};
 use tokio::time::{sleep, timeout, Duration};
+use tokio_socks::tcp::Socks5Stream;
 use tokio_util::sync::CancellationToken;
 
-use crate::vault::{AuthType, DecryptedCredential};
+use crate::vault::{
+    AuthType, DecryptedCredential, Socks5Proxy, Socks5ProxyAuthType, TerminalSettings,
+};
 
 #[derive(Debug, thiserror::Error)]
 pub enum SshError {
@@ -28,6 +32,8 @@ pub enum SshError {
     Channel(String),
     #[error("SSH IO error: {0}")]
     Io(#[from] std::io::Error),
+    #[error("SOCKS5 proxy error: {0}")]
+    Proxy(String),
     #[error("SSH error: {0}")]
     Ssh(#[from] russh::Error),
     #[error("Host key verification is required for {host}:{port}. Fingerprint: {fingerprint}")]
@@ -372,7 +378,7 @@ impl TerminalDisplayFilter {
 pub struct SshSession {
     pub id: String,
     pub server_key: String,
-    pub handle: client::Handle<SshClientHandler>,
+    pub handle: Arc<client::Handle<SshClientHandler>>,
     terminal_writer_tx: mpsc::Sender<TerminalWriteRequest>,
     terminal_priority_tx: mpsc::Sender<TerminalWriteRequest>,
     terminal_blocked: Arc<AtomicBool>,
@@ -380,6 +386,7 @@ pub struct SshSession {
     terminal_output_tx: broadcast::Sender<Vec<u8>>,
     terminal_display_filter: Mutex<TerminalDisplayFilter>,
     sftp_session: Mutex<Option<Arc<SftpSession>>>,
+    keepalive_cancel: CancellationToken,
 }
 
 impl SshSession {
@@ -391,6 +398,8 @@ impl SshSession {
         username: &str,
         credential: &DecryptedCredential,
         auth_type: &AuthType,
+        proxy: Option<&Socks5Proxy>,
+        terminal_settings: &TerminalSettings,
         expected_host_key: Option<ExpectedHostKey>,
         progress_tx: mpsc::UnboundedSender<ConnectionProgress>,
         cancellation_token: CancellationToken,
@@ -417,9 +426,42 @@ impl SshSession {
         };
 
         let addr = format!("{}:{}", host, port);
+        let connect_timeout = Duration::from_secs(terminal_settings.connect_timeout_seconds.into());
         let connect_result = tokio::select! {
             _ = cancellation_token.cancelled() => return Err(SshError::Cancelled),
-            result = timeout(Duration::from_secs(30), client::connect(config, &addr, handler)) => result,
+            result = timeout(connect_timeout, async {
+                if let Some(proxy) = proxy {
+                    let proxy_addr = format!("{}:{}", proxy.host, proxy.port);
+                    let stream = match proxy.auth_type {
+                        Socks5ProxyAuthType::None => {
+                            Socks5Stream::connect(proxy_addr.as_str(), (host, port)).await
+                        }
+                        Socks5ProxyAuthType::Password => {
+                            let username = proxy.username.as_deref().ok_or_else(|| {
+                                SshError::Proxy("Proxy username is missing".into())
+                            })?;
+                            let password = proxy.password.as_deref().ok_or_else(|| {
+                                SshError::Proxy("Proxy password is missing".into())
+                            })?;
+                            Socks5Stream::connect_with_password(
+                                proxy_addr.as_str(),
+                                (host, port),
+                                username,
+                                password,
+                            )
+                            .await
+                        }
+                    }
+                    .map_err(|error| SshError::Proxy(error.to_string()))?;
+                    client::connect_stream(config, stream, handler).await
+                } else {
+                    let stream = TcpStream::connect(&addr).await.map_err(SshError::from)?;
+                    if config.nodelay {
+                        stream.set_nodelay(true).map_err(SshError::from)?;
+                    }
+                    client::connect_stream(config, stream, handler).await
+                }
+            }) => result,
         };
         let mut handle = match connect_result {
             Ok(Ok(handle)) => handle,
@@ -446,9 +488,10 @@ impl SshSession {
                 return Err(SshError::Connection(error.to_string()));
             }
             Err(_) => {
-                return Err(SshError::Connection(
-                    "Connection timed out after 30 seconds".into(),
-                ))
+                return Err(SshError::Connection(format!(
+                    "Connection timed out after {} seconds",
+                    terminal_settings.connect_timeout_seconds,
+                )))
             }
         };
 
@@ -530,13 +573,23 @@ impl SshSession {
             }
         }
 
+        let handle = Arc::new(handle);
+
         let channel = handle
             .channel_open_session()
             .await
             .map_err(|e| SshError::Channel(e.to_string()))?;
 
         channel
-            .request_pty(false, "xterm-256color", 80, 24, 0, 0, &[(Pty::ECHO, 1)])
+            .request_pty(
+                false,
+                &terminal_settings.terminal_type,
+                80,
+                24,
+                0,
+                0,
+                &[(Pty::ECHO, 1)],
+            )
             .await
             .map_err(|e| SshError::Channel(e.to_string()))?;
 
@@ -560,6 +613,26 @@ impl SshSession {
             terminal_blocked.clone(),
         ));
 
+        let keepalive_cancel = CancellationToken::new();
+        if terminal_settings.keepalive_interval_seconds > 0 {
+            let handle = Arc::clone(&handle);
+            let cancellation = keepalive_cancel.clone();
+            let interval = Duration::from_secs(terminal_settings.keepalive_interval_seconds.into());
+            tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        _ = cancellation.cancelled() => break,
+                        _ = sleep(interval) => {
+                            if let Err(error) = handle.send_keepalive(false).await {
+                                log::debug!("SSH keepalive failed: {}", error);
+                                break;
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
         Ok((
             Self {
                 id: session_id,
@@ -574,6 +647,7 @@ impl SshSession {
                     pending: Vec::new(),
                 }),
                 sftp_session: Mutex::new(None),
+                keepalive_cancel,
             },
             data_rx,
         ))
@@ -892,6 +966,7 @@ impl SshSession {
     }
 
     pub async fn close(&self) -> Result<(), SshError> {
+        self.keepalive_cancel.cancel();
         if let Some(sftp_session) = self.sftp_session.lock().await.take() {
             sftp_session
                 .close()
