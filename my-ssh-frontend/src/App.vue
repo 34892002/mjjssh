@@ -29,6 +29,7 @@ import {
 import { useVaultStore } from './stores/vault'
 import { useSessionStore } from './stores/session'
 import { useTransferStore } from './stores/transfer'
+import { useRemoteEditorStore } from './stores/remoteEditor'
 import { useLocale, type AppLanguage } from './composables/useLocale'
 import EntityCard from './components/EntityCard.vue'
 import almalinuxIcon from './assets/os/almalinux.svg?raw'
@@ -47,6 +48,7 @@ const KeysView = defineAsyncComponent(() => import('./components/KeysView.vue'))
 const ProxiesView = defineAsyncComponent(() => import('./components/ProxiesView.vue'))
 const ScriptsView = defineAsyncComponent(() => import('./components/ScriptsView.vue'))
 const SftpView = defineAsyncComponent(() => import('./components/SftpView.vue'))
+const ExternalEditPanel = defineAsyncComponent(() => import('./components/ExternalEditPanel.vue'))
 const AiChatPanel = defineAsyncComponent(() => import('./components/AiChatPanel.vue'))
 const AiSettings = defineAsyncComponent(() => import('./components/AiSettings.vue'))
 const SyncSettings = defineAsyncComponent(() => import('./components/SyncSettings.vue'))
@@ -54,13 +56,15 @@ const TransferPanel = defineAsyncComponent(() => import('./components/TransferPa
 const ScriptPanel = defineAsyncComponent(() => import('./components/ScriptPanel.vue'))
 const PermissionsDialog = defineAsyncComponent(() => import('./components/PermissionsDialog.vue'))
 const ActionDialog = defineAsyncComponent(() => import('./components/ActionDialog.vue'))
-import type { SshProfileView, CreateProfileRequest, TerminalSettings } from './types'
+const RemoteTextEditor = defineAsyncComponent(() => import('./components/RemoteTextEditor.vue'))
+import type { RemoteEditorLanguage, RemoteTextFileBytes, SshProfileView, CreateProfileRequest, TerminalSettings } from './types'
 import type { LocalShell } from './stores/session'
 import type { DropdownOption } from 'naive-ui'
 
 const vaultStore = useVaultStore()
 const sessionStore = useSessionStore()
 const transferStore = useTransferStore()
+const remoteEditorStore = useRemoteEditorStore()
 const appWindow = getCurrentWindow()
 const { language, languageLabel, naiveLocale, naiveDateLocale, setLanguage, t } = useLocale()
 const languageOptions = computed(() => [
@@ -997,7 +1001,15 @@ function updateTerminalInfo(sessionId: string) {
   }
 }
 
+const visibleRemoteEditorTabId = ref<string | null>(null)
+
+function showRemoteEditor(id: string) {
+  remoteEditorStore.activeTabId = id
+  visibleRemoteEditorTabId.value = id
+}
+
 function handleTabClick(sessionId: string) {
+  visibleRemoteEditorTabId.value = null
   sessionStore.setActiveTab(sessionId)
   updateTerminalInfo(sessionId)
   nextTick(() => {
@@ -1006,6 +1018,7 @@ function handleTabClick(sessionId: string) {
 }
 
 function handleCloseTab(sessionId: string) {
+  remoteEditorStore.closeSession(sessionId)
   clearConnectionDialogForSession(sessionId)
   sftpOpenSessions.value.delete(sessionId)
   sftpOpenSessions.value = new Set(sftpOpenSessions.value)
@@ -1047,10 +1060,10 @@ let panelBeingResized: 'sftp' | 'ai' | null = null
 
 // 当前页签是否打开了 SFTP
 const currentSftpOpen = computed(() => {
-  return !!sessionStore.activeTabId && sftpOpenSessions.value.has(sessionStore.activeTabId)
+  return !visibleRemoteEditorTabId.value && !!sessionStore.activeTabId && sftpOpenSessions.value.has(sessionStore.activeTabId)
 })
 const currentAiOpen = computed(() => {
-  return !!sessionStore.activeTabId && aiOpenSessions.value.has(sessionStore.activeTabId)
+  return !visibleRemoteEditorTabId.value && !!sessionStore.activeTabId && aiOpenSessions.value.has(sessionStore.activeTabId)
 })
 
 function openSftp() {
@@ -1127,6 +1140,47 @@ function requestSftpInput(options: { title: string; initialValue?: string; place
 
 function requestSftpConfirmation(options: { title: string; message: string; confirmText: string; danger?: boolean; onConfirm: () => void }) {
   actionDialogRequest.value = { kind: 'confirm', ...options, onConfirm: () => options.onConfirm() }
+}
+
+function detectRemoteEditorLanguage(path: string): RemoteEditorLanguage {
+  const fileName = path.split('/').pop()?.toLowerCase() ?? ''
+  if (fileName === 'dockerfile' || fileName === 'containerfile') return 'dockerfile'
+  if (fileName === '.bashrc' || fileName === '.profile' || fileName === '.zshrc' || /\.(sh|bash)$/.test(fileName)) return 'shell'
+  if (fileName === 'nginx.conf' || /\.nginx$/.test(fileName)) return 'plain'
+  if (/\.json$/.test(fileName)) return 'json'
+  if (/\.(yaml|yml)$/.test(fileName)) return 'yaml'
+  if (/\.toml$/.test(fileName)) return 'toml'
+  if (/\.(ini|cfg|properties|conf|env)$/.test(fileName) || fileName.startsWith('.env.')) return 'ini'
+  if (/\.xml$/.test(fileName)) return 'xml'
+  if (/\.sql$/.test(fileName)) return 'sql'
+  if (/\.(tf|tfvars)$/.test(fileName)) return 'terraform'
+  if (/\.py$/.test(fileName)) return 'python'
+  if (/\.go$/.test(fileName)) return 'go'
+  if (/\.tsx?$/.test(fileName)) return fileName.endsWith('.ts') || fileName.endsWith('.tsx') ? 'typescript' : 'javascript'
+  if (/\.(java|kt)$/.test(fileName)) return 'java'
+  if (/\.php$/.test(fileName)) return 'php'
+  if (/\.rb$/.test(fileName)) return 'ruby'
+  if (/\.pl$/.test(fileName)) return 'perl'
+  if (/\.lua$/.test(fileName)) return 'lua'
+  if (/\.md$/.test(fileName)) return 'markdown'
+  return 'plain'
+}
+
+function openRemoteTextEditor(file: { sessionId: string; path: string; content: string; containsNul: boolean; version: RemoteTextFileBytes['version'] }) {
+  const tab = remoteEditorStore.openTab({ ...file, encoding: 'utf-8', lineEnding: file.content.includes('\r\n') ? 'crlf' : 'lf', language: detectRemoteEditorLanguage(file.path) })
+  showRemoteEditor(tab.id)
+}
+
+function requestCloseRemoteEditor(id: string) {
+  const tab = remoteEditorStore.tabs.find((item) => item.id === id)
+  if (!tab) return
+  const close = () => {
+    remoteEditorStore.closeTab(id)
+    visibleRemoteEditorTabId.value = remoteEditorStore.activeTabId
+  }
+  if (tab.status === 'dirty') {
+    actionDialogRequest.value = { kind: 'confirm', title: t('remoteEditor.discardChangesTitle'), message: t('remoteEditor.discardChangesMessage', { path: tab.path }), confirmText: t('remoteEditor.discard'), danger: true, onConfirm: close }
+  } else close()
 }
 
 async function confirmActionDialog(value: string) {
@@ -1212,7 +1266,10 @@ function handleVisibilityChange() {
   restartServerStats()
 }
 
-watch(() => sessionStore.activeTabId, restartServerStats)
+watch(() => sessionStore.activeTabId, () => {
+  visibleRemoteEditorTabId.value = null
+  restartServerStats()
+})
 onMounted(() => document.addEventListener('visibilitychange', handleVisibilityChange))
 onBeforeUnmount(() => {
   stopServerStats()
@@ -1306,8 +1363,8 @@ function openSyncSettings() {
           <div class="tabs-container">
             <div
               class="tab home-tab"
-              :class="{ active: !sessionStore.activeTabId }"
-              @click="sessionStore.activeTabId = null; activeTerminalInfo = null"
+              :class="{ active: !sessionStore.activeTabId && !visibleRemoteEditorTabId }"
+              @click="sessionStore.activeTabId = null; remoteEditorStore.activeTabId = null; visibleRemoteEditorTabId = null; activeTerminalInfo = null"
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2 2z"/>
@@ -1319,7 +1376,7 @@ function openSyncSettings() {
               v-for="tab in sessionStore.tabs"
               :key="tab.sessionId"
               class="tab"
-              :class="{ active: sessionStore.activeTabId === tab.sessionId }"
+              :class="{ active: !visibleRemoteEditorTabId && sessionStore.activeTabId === tab.sessionId }"
               @click="handleTabClick(tab.sessionId)"
             >
               <span class="tab-title">{{ tab.profileName }}</span>
@@ -1327,7 +1384,19 @@ function openSyncSettings() {
               <span class="tab-close" @click.stop="handleCloseTab(tab.sessionId)">×</span>
             </div>
 
-            <div class="tab new-tab" :title="t('app.hostList')" :aria-label="t('app.hostList')" @click="sessionStore.activeTabId = null; activeTerminalInfo = null">
+            <div
+              v-for="tab in remoteEditorStore.tabs"
+              :key="tab.id"
+              class="tab"
+              :class="{ active: visibleRemoteEditorTabId === tab.id }"
+              @click="showRemoteEditor(tab.id)"
+            >
+              <span class="tab-title">{{ tab.path.split('/').pop() }}</span>
+              <span v-if="tab.status === 'dirty'" class="tab-dot editor-dirty" :title="t('remoteEditor.unsavedChanges')" />
+              <span class="tab-close" @click.stop="requestCloseRemoteEditor(tab.id)">×</span>
+            </div>
+
+            <div class="tab new-tab" :title="t('app.hostList')" :aria-label="t('app.hostList')" @click="sessionStore.activeTabId = null; remoteEditorStore.activeTabId = null; visibleRemoteEditorTabId = null; activeTerminalInfo = null">
               <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
                 <path d="M12 5v14M5 12h14" />
               </svg>
@@ -1392,7 +1461,7 @@ function openSyncSettings() {
         </header>
 
         <!-- 紧凑连接栏 -->
-        <div v-if="sessionStore.activeTabId && (isLocalTerminal || activeTerminalInfo)" class="terminal-toolbar">
+        <div v-if="!visibleRemoteEditorTabId && sessionStore.activeTabId && (isLocalTerminal || activeTerminalInfo)" class="terminal-toolbar">
           <div class="toolbar-left">
             <span class="toolbar-info">{{ isLocalTerminal ? activeTerminalLabel : `${activeTerminalInfo?.username}@${activeTerminalInfo?.host}:${activeTerminalInfo?.port}` }}</span>
             <span v-if="!isLocalTerminal && serverStats" class="toolbar-stats">
@@ -1424,14 +1493,14 @@ function openSyncSettings() {
         </div>
 
         <div
-          v-if="scriptPanelOpen && sessionStore.activeTabId"
+          v-if="!visibleRemoteEditorTabId && scriptPanelOpen && sessionStore.activeTabId"
           ref="scriptPanelRef"
           class="main-script-panel"
         >
           <ScriptPanel @insert="insertScriptIntoTerminal" />
         </div>
         <div
-          v-if="transferPanelOpen && sessionStore.activeTabId && !isLocalTerminal"
+          v-if="!visibleRemoteEditorTabId && transferPanelOpen && sessionStore.activeTabId && !isLocalTerminal"
           ref="transferPanelRef"
           class="main-transfer-panel"
         >
@@ -1440,12 +1509,21 @@ function openSyncSettings() {
 
         <!-- 内容区域 -->
         <div class="content-area">
+          <RemoteTextEditor
+            v-for="tab in remoteEditorStore.tabs"
+            :key="tab.id"
+            v-show="visibleRemoteEditorTabId === tab.id"
+            :tab="tab"
+            :dark="isDarkTheme"
+            @close="requestCloseRemoteEditor(tab.id)"
+            @request-confirm="requestSftpConfirmation"
+          />
           <!-- 终端内容 - v-show 保持存活 -->
           <div
             v-for="tab in sessionStore.tabs"
             :key="tab.sessionId"
             class="terminal-tab"
-            v-show="sessionStore.activeTabId === tab.sessionId"
+            v-show="!visibleRemoteEditorTabId && sessionStore.activeTabId === tab.sessionId"
           >
             <Terminal
               :ref="(el: any) => { if (el) terminalRefs[tab.sessionId] = el }"
@@ -1478,7 +1556,7 @@ function openSyncSettings() {
           </div>
 
           <!-- 首页内容 - 无页签激活时显示 -->
-          <div v-if="!sessionStore.activeTabId" class="home-content">
+          <div v-if="!sessionStore.activeTabId && !visibleRemoteEditorTabId" class="home-content">
             <div class="home-layout">
               <!-- Sidebar -->
               <div class="sidebar">
@@ -1625,16 +1703,25 @@ function openSyncSettings() {
             <div class="sftp-resize-handle" @mousedown.prevent="startPanelResize('sftp', $event)" />
             <div class="sftp-panel-body">
               <template v-for="tab in sessionStore.tabs" :key="tab.sessionId">
-                <SftpView
+                <div
                   v-if="sftpOpenSessions.has(tab.sessionId)"
                   v-show="sessionStore.activeTabId === tab.sessionId"
-                  :session-id="tab.sessionId"
-                  :dark="isDarkTheme"
-                  @close="closeSftp"
-                  @edit-permissions="openPermissions"
-                  @request-input="requestSftpInput"
-                  @request-confirm="requestSftpConfirmation"
-                />
+                  class="sftp-session-content"
+                >
+                  <SftpView
+                    :session-id="tab.sessionId"
+                    :dark="isDarkTheme"
+                    @close="closeSftp"
+                    @edit-permissions="openPermissions"
+                    @request-input="requestSftpInput"
+                    @request-confirm="requestSftpConfirmation"
+                    @open-remote-text-editor="openRemoteTextEditor"
+                  />
+                  <ExternalEditPanel
+                    :session-id="tab.sessionId"
+                    :visible="sessionStore.activeTabId === tab.sessionId && currentSftpOpen"
+                  />
+                </div>
               </template>
             </div>
           </div>
@@ -2528,6 +2615,16 @@ function openSyncSettings() {
 
 
 
+.sftp-session-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.sftp-session-content > :first-child {
+  flex: 1;
+  min-height: 0;
+}
 .sftp-panel-body {
   flex: 1;
   overflow: hidden;

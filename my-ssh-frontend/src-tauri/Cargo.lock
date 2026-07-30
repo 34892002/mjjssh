@@ -2944,6 +2944,7 @@ dependencies = [
  "async-openai",
  "base64 0.22.1",
  "chrono",
+ "encoding_rs",
  "fontdb",
  "futures-util",
  "getrandom 0.4.3",
@@ -2972,6 +2973,7 @@ dependencies = [
  "tree-sitter",
  "tree-sitter-bash",
  "uuid",
+ "windows-sys 0.61.2",
  "zeroize",
  "zip",
 ]

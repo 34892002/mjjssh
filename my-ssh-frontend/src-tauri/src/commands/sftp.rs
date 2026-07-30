@@ -1,14 +1,123 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 
+use encoding_rs::{Encoding, GB18030, GBK, UTF_8};
 use russh_sftp::client::SftpSession;
-use russh_sftp::protocol::OpenFlags;
-use serde::Serialize;
+use russh_sftp::protocol::{FileAttributes, OpenFlags};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
+use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, BufReader};
+use uuid::Uuid;
 
 use crate::state::AppState;
+
+const LARGE_TEXT_FILE_BYTES: u64 = 2 * 1024 * 1024;
+const MAX_TEXT_FILE_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_TEXT_FILE_BUFFER_BYTES: usize = MAX_TEXT_FILE_BYTES as usize;
+const TEXT_READ_BUFFER_BYTES: usize = 64 * 1024;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetRemoteTextFileRequest {
+    pub session_id: String,
+    pub path: String,
+    pub allow_large_file: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveRemoteTextFileRequest {
+    pub session_id: String,
+    pub path: String,
+    pub content: String,
+    pub encoding: RemoteTextEncoding,
+    pub line_ending: RemoteLineEnding,
+    pub expected_version: RemoteFileVersion,
+    pub force: bool,
+    pub confirm_binary_write: bool,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RemoteTextEncoding {
+    #[serde(rename = "utf-8")]
+    Utf8,
+    Gbk,
+    Gb18030,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RemoteLineEnding {
+    Lf,
+    Crlf,
+}
+
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteFileVersion {
+    pub size: u64,
+    pub modified_at: Option<String>,
+    pub content_hash: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteFileMetadata {
+    pub session_id: String,
+    pub path: String,
+    pub size: u64,
+    pub modified_at: Option<String>,
+    pub is_symlink: bool,
+    pub is_supported_file: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RemoteTextFileBytes {
+    pub bytes: Vec<u8>,
+    pub contains_nul: bool,
+    pub version: RemoteFileVersion,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum SaveRemoteTextFileResult {
+    Saved { version: RemoteFileVersion },
+    Conflict { current_version: RemoteFileVersion },
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalEditSession {
+    pub edit_id: String,
+    pub session_id: String,
+    pub path: String,
+    pub temp_file_name: String,
+    pub local_temp_path: String,
+    pub status: ExternalEditSessionState,
+    pub version: RemoteFileVersion,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ExternalEditSessionState {
+    Clean,
+    PendingUpload,
+    Uploading,
+    Conflict,
+    Error,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum UploadExternalEditResult {
+    Uploaded { version: RemoteFileVersion },
+    Conflict { current_version: RemoteFileVersion },
+}
 
 #[derive(Serialize)]
 pub struct FileInfo {
@@ -109,6 +218,798 @@ async fn open_sftp(
         .sftp_session(session_id)
         .await
         .map_err(|e| e.to_string())
+}
+
+fn validate_remote_text_path(path: &str) -> Result<(), String> {
+    if path.trim().is_empty() {
+        Err("Remote file path must not be empty".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn metadata_modified_at(metadata: &FileAttributes) -> Option<String> {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .and_then(|time| chrono::DateTime::<chrono::Utc>::from_timestamp(time.as_secs() as i64, 0))
+        .map(|time| time.to_rfc3339())
+}
+
+async fn preflight_remote_text_file(
+    sftp: &SftpSession,
+    path: &str,
+) -> Result<FileAttributes, String> {
+    validate_remote_text_path(path)?;
+    let link_metadata = sftp
+        .symlink_metadata(path)
+        .await
+        .map_err(|error| format!("Unable to inspect remote file: {error}"))?;
+    if link_metadata.is_symlink() {
+        return Err("Symbolic links are not supported for remote text editing".to_string());
+    }
+    if link_metadata.is_dir() {
+        return Err("Directories are not supported for remote text editing".to_string());
+    }
+    if !link_metadata.is_regular() {
+        return Err("Only regular files are supported for remote text editing".to_string());
+    }
+
+    // Follow-up stat protects against a path changing into a link after lstat.
+    let metadata = sftp
+        .metadata(path)
+        .await
+        .map_err(|error| format!("Unable to inspect remote file: {error}"))?;
+    if !metadata.is_regular() {
+        return Err("Only regular files are supported for remote text editing".to_string());
+    }
+    Ok(metadata)
+}
+
+async fn read_remote_text_bytes(sftp: &SftpSession, path: &str) -> Result<Vec<u8>, String> {
+    let mut file = sftp
+        .open_with_flags(path, OpenFlags::READ)
+        .await
+        .map_err(|error| format!("Unable to open remote file: {error}"))?;
+    let mut bytes = Vec::new();
+    let mut buffer = [0_u8; TEXT_READ_BUFFER_BYTES];
+
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .await
+            .map_err(|error| format!("Unable to read remote file: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..read]);
+        if bytes.len() > MAX_TEXT_FILE_BUFFER_BYTES {
+            return Err("Remote text file exceeds the 32 MiB editing limit".to_string());
+        }
+    }
+    Ok(bytes)
+}
+
+fn version_for(metadata: &FileAttributes, bytes: &[u8]) -> RemoteFileVersion {
+    let content_hash = format!("{:x}", Sha256::digest(bytes));
+    RemoteFileVersion {
+        size: metadata.len(),
+        modified_at: metadata_modified_at(metadata),
+        content_hash,
+    }
+}
+
+fn encoding_for(encoding: &RemoteTextEncoding) -> &'static Encoding {
+    match encoding {
+        RemoteTextEncoding::Utf8 => UTF_8,
+        RemoteTextEncoding::Gbk => GBK,
+        RemoteTextEncoding::Gb18030 => GB18030,
+    }
+}
+
+fn encode_text(
+    content: &str,
+    encoding: &RemoteTextEncoding,
+    line_ending: &RemoteLineEnding,
+) -> Result<Vec<u8>, String> {
+    let line_ending = match line_ending {
+        RemoteLineEnding::Lf => "\n",
+        RemoteLineEnding::Crlf => "\r\n",
+    };
+    let normalized = content.replace("\r\n", "\n").replace('\r', "\n");
+    let content = if line_ending == "\n" {
+        normalized
+    } else {
+        normalized.replace('\n', line_ending)
+    };
+    let (bytes, _, had_errors) = encoding_for(encoding).encode(&content);
+    if had_errors {
+        return Err(
+            "Text cannot be represented in the selected encoding without replacement".to_string(),
+        );
+    }
+    if bytes.len() > MAX_TEXT_FILE_BUFFER_BYTES {
+        return Err("Encoded text exceeds the 32 MiB editing limit".to_string());
+    }
+    Ok(bytes.into_owned())
+}
+
+fn temp_remote_path(path: &str) -> Result<String, String> {
+    let path = Path::new(path);
+    let directory = path
+        .parent()
+        .ok_or_else(|| "Invalid remote file path".to_string())?;
+    let directory = if directory.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        directory
+    };
+    Ok(directory
+        .join(format!(".mjjssh-{}.tmp", Uuid::new_v4()))
+        .to_string_lossy()
+        .into_owned())
+}
+
+async fn cleanup_remote_temp_file(sftp: &SftpSession, path: &str) {
+    if let Err(error) = sftp.remove_file(path).await {
+        log::warn!("Unable to remove remote text editor temporary file: {error}");
+    }
+}
+
+async fn overwrite_remote_file(sftp: &SftpSession, path: &str, bytes: &[u8]) -> Result<(), String> {
+    let mut file = sftp
+        .open_with_flags(path, OpenFlags::WRITE | OpenFlags::TRUNCATE)
+        .await
+        .map_err(|error| format!("Unable to open remote file for overwrite: {error}"))?;
+    file.write_all(bytes)
+        .await
+        .map_err(|error| format!("Unable to overwrite remote file: {error}"))?;
+    file.shutdown()
+        .await
+        .map_err(|error| format!("Unable to close overwritten remote file: {error}"))
+}
+
+fn external_edit_session_status(
+    record: &crate::state::ExternalEditSessionRecord,
+) -> ExternalEditSessionState {
+    if record.is_uploading {
+        ExternalEditSessionState::Uploading
+    } else if record.has_conflict {
+        ExternalEditSessionState::Conflict
+    } else if record.has_error {
+        ExternalEditSessionState::Error
+    } else if record.current_hash != record.initial_hash {
+        ExternalEditSessionState::PendingUpload
+    } else {
+        ExternalEditSessionState::Clean
+    }
+}
+
+fn external_edit_session_response(
+    edit_id: String,
+    record: &crate::state::ExternalEditSessionRecord,
+) -> ExternalEditSession {
+    ExternalEditSession {
+        edit_id,
+        session_id: record.session_id.clone(),
+        path: record.remote_path.clone(),
+        temp_file_name: record.temp_file_name.clone(),
+        local_temp_path: record.temp_path.to_string_lossy().into_owned(),
+        status: external_edit_session_status(record),
+        version: record.version.clone(),
+    }
+}
+
+fn external_edit_file_name(path: &str) -> Result<String, String> {
+    let file_name = Path::new(path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty() && *name != "." && *name != "..")
+        .ok_or_else(|| "Remote file path must include a valid file name".to_string())?;
+    Ok(file_name.to_string())
+}
+
+fn external_edit_session_component(session_id: &str) -> Result<&str, String> {
+    if session_id.is_empty()
+        || Path::new(session_id).components().count() != 1
+        || session_id == "."
+        || session_id == ".."
+    {
+        return Err("Invalid SSH session identifier".to_string());
+    }
+    Ok(session_id)
+}
+
+async fn remove_external_edit_session(state: &AppState, edit_id: &str) -> Result<(), String> {
+    let temporary_directory = {
+        let sessions = state.external_edit_sessions.lock().await;
+        let record = sessions
+            .get(edit_id)
+            .ok_or_else(|| "External edit session was not found".to_string())?;
+        record
+            .temp_path
+            .parent()
+            .ok_or_else(|| "External edit session has an invalid temporary path".to_string())?
+            .to_path_buf()
+    };
+    fs::remove_dir_all(temporary_directory)
+        .await
+        .map_err(|error| format!("Unable to remove local edit session; close the external application and try again: {error}"))?;
+    state.external_edit_sessions.lock().await.remove(edit_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn clear_external_edit_sessions(state: State<'_, AppState>) -> Result<(), String> {
+    let temporary_root = state.app_dir.join("remote-edit");
+    match fs::remove_dir_all(&temporary_root).await {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "Unable to clear local edit copies; close external applications and try again: {error}"
+            ));
+        }
+    }
+    state.external_edit_sessions.lock().await.clear();
+    Ok(())
+}
+
+#[cfg(windows)]
+fn open_local_file_for_editing(path: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+
+    fn wide(value: &std::ffi::OsStr) -> Vec<u16> {
+        value.encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    let operation = wide(std::ffi::OsStr::new("edit"));
+    let file = wide(path.as_os_str());
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            operation.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            1,
+        )
+    };
+    if result as isize > 32 {
+        return Ok(());
+    }
+
+    std::process::Command::new("notepad.exe")
+        .arg(path)
+        .spawn()
+        .map_err(|error| format!("Unable to open the local edit file: {error}"))
+        .map(|_| ())
+}
+
+#[cfg(not(windows))]
+fn open_local_file_for_editing(path: &Path) -> Result<(), String> {
+    std::process::Command::new("xdg-open")
+        .arg(path)
+        .spawn()
+        .map_err(|error| format!("Unable to open the local edit file: {error}"))
+        .map(|_| ())
+}
+
+async fn stream_remote_to_local(
+    sftp: &SftpSession,
+    remote_path: &str,
+    local_path: &Path,
+) -> Result<String, String> {
+    let mut remote_file = sftp
+        .open_with_flags(remote_path, OpenFlags::READ)
+        .await
+        .map_err(|error| format!("Unable to open remote file: {error}"))?;
+    let mut local_file = fs::File::create(local_path)
+        .await
+        .map_err(|error| format!("Unable to create local edit file: {error}"))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; TEXT_READ_BUFFER_BYTES];
+    loop {
+        let read = remote_file
+            .read(&mut buffer)
+            .await
+            .map_err(|error| format!("Unable to read remote file: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        local_file
+            .write_all(&buffer[..read])
+            .await
+            .map_err(|error| format!("Unable to write local edit file: {error}"))?;
+        digest.update(&buffer[..read]);
+    }
+    local_file
+        .shutdown()
+        .await
+        .map_err(|error| format!("Unable to close local edit file: {error}"))?;
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+async fn hash_local_file(path: &Path) -> Result<String, String> {
+    let mut file = fs::File::open(path).await.map_err(|error| {
+        format!(
+            "Unable to read local edit file; close the external application and try again: {error}"
+        )
+    })?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; TEXT_READ_BUFFER_BYTES];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .await
+            .map_err(|error| format!("Unable to read local edit file; close the external application and try again: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+async fn remote_file_version(sftp: &SftpSession, path: &str) -> Result<RemoteFileVersion, String> {
+    let metadata = preflight_remote_text_file(sftp, path).await?;
+    let mut file = sftp
+        .open_with_flags(path, OpenFlags::READ)
+        .await
+        .map_err(|error| format!("Unable to open remote file: {error}"))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; TEXT_READ_BUFFER_BYTES];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .await
+            .map_err(|error| format!("Unable to read remote file: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(RemoteFileVersion {
+        size: metadata.len(),
+        modified_at: metadata_modified_at(&metadata),
+        content_hash: format!("{:x}", digest.finalize()),
+    })
+}
+
+async fn stream_local_to_remote(
+    local_path: &Path,
+    sftp: &SftpSession,
+    temporary_path: &str,
+) -> Result<String, String> {
+    let mut local_file = fs::File::open(local_path).await.map_err(|error| {
+        format!(
+            "Unable to read local edit file; close the external application and try again: {error}"
+        )
+    })?;
+    let mut remote_file = sftp
+        .open_with_flags(
+            temporary_path,
+            OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE,
+        )
+        .await
+        .map_err(|error| format!("Unable to create remote temporary file: {error}"))?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; TEXT_READ_BUFFER_BYTES];
+    loop {
+        let read = local_file
+            .read(&mut buffer)
+            .await
+            .map_err(|error| format!("Unable to read local edit file; close the external application and try again: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        remote_file
+            .write_all(&buffer[..read])
+            .await
+            .map_err(|error| format!("Unable to write remote temporary file: {error}"))?;
+        digest.update(&buffer[..read]);
+    }
+    remote_file
+        .shutdown()
+        .await
+        .map_err(|error| format!("Unable to close remote temporary file: {error}"))?;
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+#[tauri::command]
+pub async fn get_remote_file_metadata(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+) -> Result<RemoteFileMetadata, String> {
+    validate_remote_text_path(&path)?;
+    let sftp = open_sftp(&state, &session_id).await?;
+    let link_metadata = sftp
+        .symlink_metadata(&path)
+        .await
+        .map_err(|error| format!("Unable to inspect remote file: {error}"))?;
+    let is_symlink = link_metadata.is_symlink();
+    let is_supported_file = !is_symlink && link_metadata.is_regular();
+    if is_symlink {
+        return Err("Symbolic links are not supported for remote text editing".to_string());
+    }
+    if link_metadata.is_dir() {
+        return Err("Directories are not supported for remote text editing".to_string());
+    }
+    if !is_supported_file {
+        return Err("Only regular files are supported for remote text editing".to_string());
+    }
+
+    let metadata = preflight_remote_text_file(&sftp, &path).await?;
+    Ok(RemoteFileMetadata {
+        session_id,
+        path,
+        size: metadata.len(),
+        modified_at: metadata_modified_at(&metadata),
+        is_symlink,
+        is_supported_file,
+    })
+}
+
+#[tauri::command]
+pub async fn get_remote_text_file(
+    state: State<'_, AppState>,
+    request: GetRemoteTextFileRequest,
+) -> Result<RemoteTextFileBytes, String> {
+    validate_remote_text_path(&request.path)?;
+    let sftp = open_sftp(&state, &request.session_id).await?;
+    let metadata = preflight_remote_text_file(&sftp, &request.path).await?;
+    if metadata.len() > LARGE_TEXT_FILE_BYTES && !request.allow_large_file {
+        return Err(
+            "Remote text file is larger than 2 MiB; confirmation is required before reading it"
+                .to_string(),
+        );
+    }
+    if metadata.len() > MAX_TEXT_FILE_BYTES {
+        return Err("Remote text file exceeds the 32 MiB editing limit".to_string());
+    }
+
+    let bytes = read_remote_text_bytes(&sftp, &request.path).await?;
+    Ok(RemoteTextFileBytes {
+        contains_nul: bytes.contains(&0),
+        version: version_for(&metadata, &bytes),
+        bytes,
+    })
+}
+
+#[tauri::command]
+pub async fn save_remote_text_file(
+    state: State<'_, AppState>,
+    request: SaveRemoteTextFileRequest,
+) -> Result<SaveRemoteTextFileResult, String> {
+    validate_remote_text_path(&request.path)?;
+    let sftp = open_sftp(&state, &request.session_id).await?;
+    let metadata = preflight_remote_text_file(&sftp, &request.path).await?;
+    if metadata.len() > MAX_TEXT_FILE_BYTES {
+        return Err("Remote text file exceeds the 32 MiB editing limit".to_string());
+    }
+    let current_bytes = read_remote_text_bytes(&sftp, &request.path).await?;
+    let current_version = version_for(&metadata, &current_bytes);
+    if current_bytes.contains(&0) && !request.confirm_binary_write {
+        return Err("Saving will re-encode the entire file and may corrupt binary content; explicit confirmation is required".to_string());
+    }
+    if !request.force && current_version != request.expected_version {
+        return Ok(SaveRemoteTextFileResult::Conflict { current_version });
+    }
+
+    let bytes = encode_text(&request.content, &request.encoding, &request.line_ending)?;
+    let temporary_path = temp_remote_path(&request.path)?;
+    let mut temporary_file = sftp
+        .open_with_flags(
+            &temporary_path,
+            OpenFlags::CREATE | OpenFlags::EXCLUDE | OpenFlags::WRITE,
+        )
+        .await
+        .map_err(|error| format!("Unable to create remote temporary file: {error}"))?;
+
+    let write_result = async {
+        temporary_file
+            .write_all(&bytes)
+            .await
+            .map_err(|error| format!("Unable to write remote temporary file: {error}"))?;
+        temporary_file
+            .shutdown()
+            .await
+            .map_err(|error| format!("Unable to close remote temporary file: {error}"))
+    }
+    .await;
+    if let Err(error) = write_result {
+        cleanup_remote_temp_file(&sftp, &temporary_path).await;
+        return Err(error);
+    }
+
+    if let Err(rename_error) = sftp.rename(&temporary_path, &request.path).await {
+        cleanup_remote_temp_file(&sftp, &temporary_path).await;
+        // Some SFTP v3 servers reject rename-overwrite. Preserve conflict detection
+        // above, then overwrite the existing file without deleting it as a fallback.
+        overwrite_remote_file(&sftp, &request.path, &bytes)
+            .await
+            .map_err(|overwrite_error| format!(
+                "Unable to replace remote file after rename-overwrite was rejected ({rename_error}): {overwrite_error}"
+            ))?;
+    }
+
+    let saved_metadata = preflight_remote_text_file(&sftp, &request.path).await?;
+    let saved_bytes = read_remote_text_bytes(&sftp, &request.path).await?;
+    Ok(SaveRemoteTextFileResult::Saved {
+        version: version_for(&saved_metadata, &saved_bytes),
+    })
+}
+
+#[tauri::command]
+pub async fn create_external_edit_session(
+    state: State<'_, AppState>,
+    session_id: String,
+    path: String,
+) -> Result<ExternalEditSession, String> {
+    validate_remote_text_path(&path)?;
+    let file_name = external_edit_file_name(&path)?;
+    let session_component = external_edit_session_component(&session_id)?;
+    let sftp = open_sftp(&state, &session_id).await?;
+    let metadata = preflight_remote_text_file(&sftp, &path).await?;
+
+    let edit_id = Uuid::new_v4().to_string();
+    let temporary_directory = state
+        .app_dir
+        .join("remote-edit")
+        .join(session_component)
+        .join(&edit_id);
+    fs::create_dir_all(&temporary_directory)
+        .await
+        .map_err(|error| format!("Unable to create local edit directory: {error}"))?;
+    let temporary_path = temporary_directory.join(&file_name);
+
+    let initial_hash = match stream_remote_to_local(&sftp, &path, &temporary_path).await {
+        Ok(hash) => hash,
+        Err(error) => {
+            let _ = fs::remove_dir_all(&temporary_directory).await;
+            return Err(error);
+        }
+    };
+    let version = RemoteFileVersion {
+        size: metadata.len(),
+        modified_at: metadata_modified_at(&metadata),
+        content_hash: initial_hash.clone(),
+    };
+    let now = SystemTime::now();
+    let record = crate::state::ExternalEditSessionRecord {
+        session_id: session_id.clone(),
+        remote_path: path.clone(),
+        temp_path: temporary_path.clone(),
+        temp_file_name: file_name.clone(),
+        version: version.clone(),
+        initial_hash: initial_hash.clone(),
+        current_hash: initial_hash,
+        created_at: now,
+        last_checked_at: now,
+        is_uploading: false,
+        has_conflict: false,
+        has_error: false,
+    };
+    state
+        .external_edit_sessions
+        .lock()
+        .await
+        .insert(edit_id.clone(), record);
+    Ok(ExternalEditSession {
+        edit_id,
+        session_id,
+        path,
+        temp_file_name: file_name,
+        local_temp_path: temporary_path.to_string_lossy().into_owned(),
+        status: ExternalEditSessionState::Clean,
+        version,
+    })
+}
+
+#[tauri::command]
+pub async fn open_external_edit_session(
+    state: State<'_, AppState>,
+    edit_id: String,
+) -> Result<(), String> {
+    let temporary_path = {
+        let sessions = state.external_edit_sessions.lock().await;
+        sessions
+            .get(&edit_id)
+            .map(|record| record.temp_path.clone())
+            .ok_or_else(|| "External edit session was not found".to_string())?
+    };
+    if !temporary_path.is_file() {
+        return Err("The local temporary edit file no longer exists".to_string());
+    }
+
+    tokio::task::spawn_blocking(move || open_local_file_for_editing(&temporary_path))
+        .await
+        .map_err(|error| format!("Unable to start the default application: {error}"))?
+}
+
+#[tauri::command]
+pub async fn get_external_edit_session_status(
+    state: State<'_, AppState>,
+    edit_id: String,
+) -> Result<ExternalEditSession, String> {
+    let temporary_path = {
+        let sessions = state.external_edit_sessions.lock().await;
+        sessions
+            .get(&edit_id)
+            .map(|record| record.temp_path.clone())
+            .ok_or_else(|| "External edit session was not found".to_string())?
+    };
+
+    let hash_result = hash_local_file(&temporary_path).await;
+    let mut sessions = state.external_edit_sessions.lock().await;
+    let record = sessions
+        .get_mut(&edit_id)
+        .ok_or_else(|| "External edit session was not found".to_string())?;
+    record.last_checked_at = SystemTime::now();
+    match hash_result {
+        Ok(hash) => {
+            record.current_hash = hash;
+            record.has_error = false;
+        }
+        Err(_) => record.has_error = true,
+    }
+    // Status checks poll because default applications do not provide a portable save-complete
+    // callback. They only report a pending upload; they never start one automatically.
+    Ok(external_edit_session_response(edit_id, record))
+}
+
+#[tauri::command]
+pub async fn upload_external_edit_session(
+    state: State<'_, AppState>,
+    edit_id: String,
+    force: bool,
+) -> Result<UploadExternalEditResult, String> {
+    let (session_id, remote_path, temporary_path, expected_version) = {
+        let mut sessions = state.external_edit_sessions.lock().await;
+        let record = sessions
+            .get_mut(&edit_id)
+            .ok_or_else(|| "External edit session was not found".to_string())?;
+        if record.is_uploading {
+            return Err("External edit session is already uploading".to_string());
+        }
+        record.is_uploading = true;
+        record.has_error = false;
+        (
+            record.session_id.clone(),
+            record.remote_path.clone(),
+            record.temp_path.clone(),
+            record.version.clone(),
+        )
+    };
+
+    let result = async {
+        let sftp = open_sftp(&state, &session_id).await?;
+        let current_version = remote_file_version(&sftp, &remote_path).await?;
+        if !force && current_version != expected_version {
+            return Ok(UploadExternalEditResult::Conflict { current_version });
+        }
+
+        let temporary_remote_path = temp_remote_path(&remote_path)?;
+        let local_hash = match stream_local_to_remote(&temporary_path, &sftp, &temporary_remote_path).await {
+            Ok(hash) => hash,
+            Err(error) => {
+                cleanup_remote_temp_file(&sftp, &temporary_remote_path).await;
+                return Err(error);
+            }
+        };
+        if let Err(rename_error) = sftp.rename(&temporary_remote_path, &remote_path).await {
+            cleanup_remote_temp_file(&sftp, &temporary_remote_path).await;
+            let mut local_file = fs::File::open(&temporary_path).await.map_err(|error| {
+                format!("Unable to read local edit file for overwrite: {error}")
+            })?;
+            let mut bytes = Vec::new();
+            local_file.read_to_end(&mut bytes).await.map_err(|error| {
+                format!("Unable to read local edit file for overwrite: {error}")
+            })?;
+            overwrite_remote_file(&sftp, &remote_path, &bytes)
+                .await
+                .map_err(|overwrite_error| format!(
+                    "Unable to replace remote file after rename-overwrite was rejected ({rename_error}): {overwrite_error}"
+                ))?;
+        }
+
+        let saved_version = remote_file_version(&sftp, &remote_path).await?;
+        if saved_version.content_hash != local_hash {
+            return Err("Remote file changed while confirming the upload".to_string());
+        }
+        Ok(UploadExternalEditResult::Uploaded { version: saved_version })
+    }
+    .await;
+
+    let result = match result {
+        Ok(UploadExternalEditResult::Uploaded { version }) => {
+            if let Err(error) = remove_external_edit_session(&state, &edit_id).await {
+                Err(format!(
+                    "Remote file was uploaded, but the local temporary copy could not be removed: {error}"
+                ))
+            } else {
+                Ok(UploadExternalEditResult::Uploaded { version })
+            }
+        }
+        result => result,
+    };
+
+    let current_hash = match &result {
+        Ok(UploadExternalEditResult::Uploaded { .. }) => {
+            hash_local_file(&temporary_path).await.ok()
+        }
+        _ => None,
+    };
+    let mut sessions = state.external_edit_sessions.lock().await;
+    if let Some(record) = sessions.get_mut(&edit_id) {
+        record.is_uploading = false;
+        record.last_checked_at = SystemTime::now();
+        match &result {
+            Ok(UploadExternalEditResult::Uploaded { version }) => {
+                record.version = version.clone();
+                record.initial_hash = version.content_hash.clone();
+                record.current_hash = current_hash.unwrap_or_else(|| record.initial_hash.clone());
+                record.has_conflict = false;
+                record.has_error = false;
+            }
+            Ok(UploadExternalEditResult::Conflict { .. }) => record.has_conflict = true,
+            Err(_) => record.has_error = true,
+        }
+    }
+    result
+}
+
+#[tauri::command]
+pub async fn reload_external_edit_session(
+    state: State<'_, AppState>,
+    edit_id: String,
+) -> Result<ExternalEditSession, String> {
+    let (session_id, remote_path, temporary_path) = {
+        let sessions = state.external_edit_sessions.lock().await;
+        let record = sessions
+            .get(&edit_id)
+            .ok_or_else(|| "External edit session was not found".to_string())?;
+        if record.is_uploading {
+            return Err("External edit session is currently uploading".to_string());
+        }
+        (
+            record.session_id.clone(),
+            record.remote_path.clone(),
+            record.temp_path.clone(),
+        )
+    };
+
+    let sftp = open_sftp(&state, &session_id).await?;
+    let metadata = preflight_remote_text_file(&sftp, &remote_path).await?;
+    let hash = stream_remote_to_local(&sftp, &remote_path, &temporary_path).await?;
+    let version = RemoteFileVersion {
+        size: metadata.len(),
+        modified_at: metadata_modified_at(&metadata),
+        content_hash: hash.clone(),
+    };
+
+    let mut sessions = state.external_edit_sessions.lock().await;
+    let record = sessions
+        .get_mut(&edit_id)
+        .ok_or_else(|| "External edit session was not found".to_string())?;
+    record.version = version;
+    record.initial_hash = hash.clone();
+    record.current_hash = hash;
+    record.last_checked_at = SystemTime::now();
+    record.has_conflict = false;
+    record.has_error = false;
+    Ok(external_edit_session_response(edit_id, record))
+}
+
+#[tauri::command]
+pub async fn discard_external_edit_session(
+    state: State<'_, AppState>,
+    edit_id: String,
+) -> Result<(), String> {
+    remove_external_edit_session(&state, &edit_id).await
 }
 
 #[tauri::command]

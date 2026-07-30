@@ -1,5 +1,63 @@
 export * from './scripts'
 
+export type RemoteTextEncoding = 'utf-8' | 'gbk' | 'gb18030'
+export type RemoteTextLineEnding = 'lf' | 'crlf'
+export type RemoteEditorLanguage = 'plain' | 'shell' | 'json' | 'yaml' | 'toml' | 'ini' | 'xml' | 'dockerfile' | 'sql' | 'terraform' | 'python' | 'go' | 'javascript' | 'typescript' | 'java' | 'kotlin' | 'php' | 'ruby' | 'perl' | 'lua' | 'markdown'
+
+export interface RemoteFileMetadata {
+  sessionId: string
+  path: string
+  size: number
+  modifiedAt: string | null
+  isSymlink: boolean
+  isSupportedFile: boolean
+}
+
+export interface RemoteFileVersion {
+  size: number
+  modifiedAt: string | null
+  contentHash: string
+}
+
+export interface RemoteTextFileBytes {
+  bytes: number[]
+  containsNul: boolean
+  version: RemoteFileVersion
+}
+
+export interface OpenRemoteTextFileRequest {
+  sessionId: string
+  path: string
+  allowLargeFile: boolean
+}
+
+export interface ExternalEditSession {
+  editId: string
+  sessionId: string
+  path: string
+  tempFileName: string
+  localTempPath: string
+  status: 'clean' | 'pending-upload' | 'uploading' | 'conflict' | 'error'
+  version: RemoteFileVersion
+}
+
+export type ExternalEditSessionStatus = ExternalEditSession
+
+export type UploadExternalEditResult =
+  | { kind: 'uploaded'; version: RemoteFileVersion }
+  | { kind: 'conflict'; currentVersion: RemoteFileVersion }
+
+export interface SaveRemoteTextFileRequest {
+  sessionId: string
+  path: string
+  content: string
+  encoding: RemoteTextEncoding
+  lineEnding: RemoteTextLineEnding
+  expectedVersion: RemoteFileVersion
+  force: boolean
+  confirmBinaryWrite: boolean
+}
+
 export type AuthType = 'password' | 'key' | 'certificate'
 
 export interface SshProfileView {

@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Instant, SystemTime};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
 use crate::ai::risk_confirmation::RiskConfirmationStore;
 use crate::ai::service::{AiTaskManager, SshSafetyContext};
+use crate::commands::sftp::RemoteFileVersion;
 use crate::local_terminal::LocalTerminalManager;
 use crate::ssh::{known_hosts::KnownHosts, SessionManager};
 use crate::vault::{Vault, VaultError};
@@ -17,6 +18,21 @@ pub struct ServerStatsSample {
     pub net_received: u64,
     pub net_transmitted: u64,
     pub captured_at: Instant,
+}
+
+pub struct ExternalEditSessionRecord {
+    pub session_id: String,
+    pub remote_path: String,
+    pub temp_path: PathBuf,
+    pub temp_file_name: String,
+    pub version: RemoteFileVersion,
+    pub initial_hash: String,
+    pub current_hash: String,
+    pub created_at: SystemTime,
+    pub last_checked_at: SystemTime,
+    pub is_uploading: bool,
+    pub has_conflict: bool,
+    pub has_error: bool,
 }
 
 pub struct AppState {
@@ -30,6 +46,7 @@ pub struct AppState {
     pub risk_confirmations: RiskConfirmationStore,
     pub ssh_safety_contexts: Arc<Mutex<HashMap<String, SshSafetyContext>>>,
     pub server_stats_samples: Mutex<HashMap<String, ServerStatsSample>>,
+    pub external_edit_sessions: Mutex<HashMap<String, ExternalEditSessionRecord>>,
     pub minimize_to_tray_on_close: Mutex<bool>,
 }
 
@@ -49,6 +66,7 @@ impl AppState {
             risk_confirmations: RiskConfirmationStore::default(),
             ssh_safety_contexts: Arc::new(Mutex::new(HashMap::new())),
             server_stats_samples: Mutex::new(HashMap::new()),
+            external_edit_sessions: Mutex::new(HashMap::new()),
             minimize_to_tray_on_close: Mutex::new(false),
         }
     }

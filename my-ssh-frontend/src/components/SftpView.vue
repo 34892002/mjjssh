@@ -5,7 +5,9 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import { Archive, ChevronLeft, Copy, Download, File, Folder, FolderPlus, FolderTree, Pencil, RefreshCw, Shield, Trash2, Upload, X } from '@lucide/vue'
 import { useTransferStore } from '../stores/transfer'
+import { useExternalEditorStore } from '../stores/externalEditor'
 import { useLocale } from '../composables/useLocale'
+import type { OpenRemoteTextFileRequest, RemoteFileMetadata, RemoteTextFileBytes } from '../types'
 
 type FileInfo = { name: string; is_dir: boolean; size: number; modified: string; mode: number }
 type SortKey = 'name' | 'modified' | 'size'
@@ -13,10 +15,12 @@ type SortKey = 'name' | 'modified' | 'size'
 const props = defineProps<{ sessionId: string; dark: boolean }>()
 const { t } = useLocale()
 const transferStore = useTransferStore()
+const externalEditorStore = useExternalEditorStore()
 const emit = defineEmits<{
   editPermissions: [file: FileInfo, path: string]
   requestInput: [options: { title: string; initialValue?: string; placeholder?: string; onConfirm: (value: string) => void }]
   requestConfirm: [options: { title: string; message: string; confirmText: string; danger?: boolean; onConfirm: () => void }]
+  openRemoteTextEditor: [file: { sessionId: string; path: string; content: string; containsNul: boolean; version: RemoteTextFileBytes['version'] }]
   close: []
 }>()
 const currentPath = ref('/')
@@ -156,6 +160,54 @@ function deleteFile(file: FileInfo) {
   })
 }
 async function copyPath(file: FileInfo) { await navigator.clipboard.writeText(joinPath(currentPath.value, file.name)); closeMenu() }
+const REMOTE_TEXT_WARN_BYTES = 2 * 1024 * 1024
+
+async function openWithDefaultApplication(file: FileInfo) {
+  closeMenu()
+  error.value = ''
+  try {
+    await externalEditorStore.createAndOpen(props.sessionId, joinPath(currentPath.value, file.name))
+  } catch (cause) {
+    error.value = t('sftp.openDefaultApplicationFailed', { error: String(cause) })
+  }
+}
+
+async function openTextEditor(file: FileInfo, allowLargeFile = false) {
+  const path = joinPath(currentPath.value, file.name)
+  closeMenu()
+  error.value = ''
+  try {
+    const metadata = await invoke<RemoteFileMetadata>('get_remote_file_metadata', { sessionId: props.sessionId, path })
+    if (metadata.isSymlink) throw new Error(t('sftp.symbolicLinksUnsupported'))
+    if (!metadata.isSupportedFile) throw new Error(t('sftp.unsupportedTextFile'))
+    if (metadata.size > REMOTE_TEXT_WARN_BYTES && !allowLargeFile) {
+      emit('requestConfirm', {
+        title: t('sftp.openLargeFileTitle'),
+        message: t('sftp.openLargeFileMessage', { size: (metadata.size / (1024 * 1024)).toFixed(1) }),
+        confirmText: t('sftp.openFile'),
+        danger: true,
+        onConfirm: () => { void openTextEditor(file, true) },
+      })
+      return
+    }
+    const request: OpenRemoteTextFileRequest = { sessionId: props.sessionId, path, allowLargeFile }
+    const remoteFile = await invoke<RemoteTextFileBytes>('get_remote_text_file', { request })
+    const content = new TextDecoder('utf-8', { fatal: true }).decode(new Uint8Array(remoteFile.bytes))
+    const open = () => emit('openRemoteTextEditor', { sessionId: props.sessionId, path, content, containsNul: remoteFile.containsNul, version: remoteFile.version })
+    if (remoteFile.containsNul) {
+      emit('requestConfirm', {
+        title: t('sftp.binaryContentDetectedTitle'),
+        message: t('sftp.binaryContentDetectedMessage'),
+        confirmText: t('sftp.openAnyway'),
+        danger: true,
+        onConfirm: open,
+      })
+    } else open()
+  } catch (cause) {
+    error.value = t('sftp.openTextEditorFailed', { error: String(cause) })
+  }
+}
+
 function isTarGz(file: FileInfo) { return /\.(tar\.gz|tgz)$/i.test(file.name) }
 function openPermissions(file: FileInfo) { emit('editPermissions', file, joinPath(currentPath.value, file.name)); closeMenu() }
 async function downloadFile(file: FileInfo) {
@@ -264,6 +316,8 @@ onBeforeUnmount(() => {
         <template v-else-if="menu.file">
           <button @click="downloadFile(menu.file)"><Download :size="15" />{{ t('sftp.download') }}</button>
           <button @click="copyPath(menu.file)"><Copy :size="15" />{{ t('sftp.copyFilePath') }}</button>
+          <button @click="openTextEditor(menu.file)"><File :size="15" />{{ t('sftp.editText') }}</button>
+          <button @click="openWithDefaultApplication(menu.file)"><File :size="15" />{{ t('sftp.editWithDefaultApplication') }}</button>
           <hr>
           <button @click="openPermissions(menu.file)"><Shield :size="15" />{{ t('sftp.editPermissions') }}</button>
           <button v-if="isTarGz(menu.file)" @click="extractFile(menu.file)"><Archive :size="15" />{{ t('sftp.extractHere') }}</button>

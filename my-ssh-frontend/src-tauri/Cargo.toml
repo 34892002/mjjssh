@@ -53,6 +53,7 @@ argon2 = "0.6.0-rc.8"
 base64 = "0.22"
 sha2 = "0.10"
 md5 = "0.7"
+encoding_rs = "0.8"
 
 # Local terminal PTY
 portable-pty = "0.8"
@@ -73,6 +74,9 @@ anyhow = "1"
 zeroize = { version = "1", features = ["derive"] }
 zip = { version = "2", default-features = false, features = ["deflate"] }
 keyring = { version = "3", features = ["windows-native", "apple-native"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell"] }
 
 [profile.release]
 lto = "thin"
