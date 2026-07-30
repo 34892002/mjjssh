@@ -42,6 +42,13 @@ impl Default for TerminalSettings {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct AppSettings {
+    #[serde(default)]
+    pub minimize_to_tray_on_close: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ScriptRiskLevel {
@@ -402,6 +409,12 @@ pub struct SaveTerminalSettingsRequest {
     pub alt_sends_escape: bool,
     pub connect_timeout_seconds: u32,
     pub keepalive_interval_seconds: u32,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveAppSettingsRequest {
+    pub minimize_to_tray_on_close: bool,
 }
 
 #[derive(Debug, Zeroize)]

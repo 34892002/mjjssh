@@ -13,9 +13,10 @@ use tokio_util::sync::CancellationToken;
 use crate::ssh::SshSession;
 use crate::state::AppState;
 use crate::vault::{
-    CreateKeyRequest, CreateProfileRequest, CreateSocks5ProxyRequest, GenerateSshKeyRequest,
-    GenerateSshKeyResult, SaveTerminalSettingsRequest, Socks5ProxyView, SshKeyAlgorithm,
-    SshKeyView, SshProfileView, TerminalSettings, UpdateProfileRequest, UpdateSocks5ProxyRequest,
+    AppSettings, CreateKeyRequest, CreateProfileRequest, CreateSocks5ProxyRequest,
+    GenerateSshKeyRequest, GenerateSshKeyResult, SaveAppSettingsRequest,
+    SaveTerminalSettingsRequest, Socks5ProxyView, SshKeyAlgorithm, SshKeyView, SshProfileView,
+    TerminalSettings, UpdateProfileRequest, UpdateSocks5ProxyRequest,
 };
 
 const PROFILE_INFO_COMMAND: &str = "printf '__MYSSH_OS__'; if [ -r /etc/os-release ]; then . /etc/os-release; printf '%s' \"${PRETTY_NAME:-${NAME:-unknown}}\"; else uname -srm; fi; printf '\\n__MYSSH_IPINFO__'; if command -v curl >/dev/null 2>&1; then curl --fail --silent --show-error --max-time 5 https://ipinfo.io/json; elif command -v wget >/dev/null 2>&1; then wget -qO- --timeout=5 https://ipinfo.io/json; fi";
@@ -86,6 +87,33 @@ pub async fn init_vault(state: State<'_, AppState>) -> Result<(), String> {
 pub async fn get_vault_md5(state: State<'_, AppState>) -> Result<String, String> {
     let content = fs::read(state.app_dir.join("vault.json")).map_err(|error| error.to_string())?;
     Ok(format!("{:x}", md5::compute(content)))
+}
+
+#[tauri::command]
+pub async fn get_app_settings(state: State<'_, AppState>) -> Result<AppSettings, String> {
+    let settings = state
+        .with_vault(|vault| vault.app_settings())
+        .await
+        .map_err(|error| error.to_string())?;
+    state
+        .set_minimize_to_tray_on_close(settings.minimize_to_tray_on_close)
+        .await;
+    Ok(settings)
+}
+
+#[tauri::command]
+pub async fn save_app_settings(
+    state: State<'_, AppState>,
+    settings: SaveAppSettingsRequest,
+) -> Result<AppSettings, String> {
+    let saved = state
+        .with_vault(|vault| vault.save_app_settings(&settings))
+        .await
+        .map_err(|error| error.to_string())?;
+    state
+        .set_minimize_to_tray_on_close(saved.minimize_to_tray_on_close)
+        .await;
+    Ok(saved)
 }
 
 #[tauri::command]

@@ -16,9 +16,10 @@ tauri-build = { version = "2.6.3", features = [] }
 
 [dependencies]
 # Tauri
-tauri = { version = "2.11.3", features = [] }
+tauri = { version = "2.11.3", features = ["tray-icon"] }
 tauri-plugin-log = "2"
 tauri-plugin-clipboard-manager = "2"
+tauri-plugin-shell = "2"
 
 # Serialization
 serde_json = "1.0"

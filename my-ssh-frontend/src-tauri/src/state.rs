@@ -30,6 +30,7 @@ pub struct AppState {
     pub risk_confirmations: RiskConfirmationStore,
     pub ssh_safety_contexts: Arc<Mutex<HashMap<String, SshSafetyContext>>>,
     pub server_stats_samples: Mutex<HashMap<String, ServerStatsSample>>,
+    pub minimize_to_tray_on_close: Mutex<bool>,
 }
 
 impl AppState {
@@ -48,6 +49,7 @@ impl AppState {
             risk_confirmations: RiskConfirmationStore::default(),
             ssh_safety_contexts: Arc::new(Mutex::new(HashMap::new())),
             server_stats_samples: Mutex::new(HashMap::new()),
+            minimize_to_tray_on_close: Mutex::new(false),
         }
     }
 
@@ -67,6 +69,14 @@ impl AppState {
 
     pub async fn is_unlocked(&self) -> bool {
         self.vault.lock().await.is_some()
+    }
+
+    pub async fn set_minimize_to_tray_on_close(&self, value: bool) {
+        *self.minimize_to_tray_on_close.lock().await = value;
+    }
+
+    pub async fn minimize_to_tray_on_close(&self) -> bool {
+        *self.minimize_to_tray_on_close.lock().await
     }
 
     pub async fn with_vault<F, R>(&self, f: F) -> Result<R, VaultError>

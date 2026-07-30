@@ -3,6 +3,7 @@ import { defineAsyncComponent, ref, computed, onBeforeUnmount, onMounted, nextTi
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
+import { open } from '@tauri-apps/plugin-shell'
 import { Archive, Box, Cloud, CloudCog, Code2, Container, Copy, Cpu, Database, Download, EthernetPort, FileCode2, Globe2, HardDrive, Languages, Layers3, ListFilter, MemoryStick, MonitorCog, Moon, Network, Plus, RadioTower, RefreshCw, Router, Server, ServerCog, Settings, ShieldCheck, Sparkles, Square, Sun, TerminalSquare, Upload, Waypoints, Workflow, X, Zap } from '@lucide/vue'
 import {
   darkTheme,
@@ -17,6 +18,7 @@ import {
   NInputNumber,
   NSelect,
   NSpace,
+  NSwitch,
   NPopconfirm,
   NPopover,
   NDropdown,
@@ -70,6 +72,10 @@ const dateLocale = computed(() => language.value === 'zh-CN' ? 'zh-CN' : 'en-US'
 function formatDate(value: string) {
   return new Date(value).toLocaleString(dateLocale.value)
 }
+
+function openProjectRepository() {
+  void open('https://github.com/34892002/mjjssh')
+}
 const savedTheme = localStorage.getItem('my-ssh-theme')
 const isDarkTheme = ref(savedTheme !== 'light')
 const naiveTheme = computed(() => isDarkTheme.value ? darkTheme : null)
@@ -109,6 +115,10 @@ const darkThemeOverrides: GlobalThemeOverrides = {
 }
 
 const naiveThemeOverrides = computed(() => isDarkTheme.value ? darkThemeOverrides : lightThemeOverrides)
+type AppSettings = {
+  minimizeToTrayOnClose: boolean
+}
+
 type SyncStatus = {
   configured: boolean
   provider: string | null
@@ -328,6 +338,8 @@ function defaultTerminalSettings(): TerminalSettings {
   }
 }
 
+const appSettings = ref<AppSettings>({ minimizeToTrayOnClose: false })
+const appSettingsSaving = ref(false)
 const terminalSettingsDraft = ref<TerminalSettings>(defaultTerminalSettings())
 const terminalSettingsSaving = ref(false)
 const terminalSettingsError = ref<string | null>(null)
@@ -337,6 +349,17 @@ const terminalTypeOptions = [
   { label: 'vt100', value: 'vt100' },
 ]
 const fontFamilyOptions = ref<Array<{ label: string; value: string }>>([])
+
+async function updateMinimizeToTrayOnClose(value: boolean) {
+  appSettingsSaving.value = true
+  try {
+    appSettings.value = await invoke<AppSettings>('save_app_settings', {
+      settings: { minimizeToTrayOnClose: value },
+    })
+  } finally {
+    appSettingsSaving.value = false
+  }
+}
 
 async function loadSystemFontFamilies() {
   try {
@@ -568,14 +591,16 @@ async function startLocalTerminal(key: string | number) {
 onMounted(async () => {
   isMaximized.value = await appWindow.isMaximized()
   await vaultStore.init()
-  const [, shells] = await Promise.all([
+  const [, shells, , settings] = await Promise.all([
     transferStore.initialize(),
     invoke<LocalShellInfo[]>('list_local_shells'),
     sessionStore.loadTerminalSettings(),
+    invoke<AppSettings>('get_app_settings'),
     loadSystemFontFamilies(),
     loadSyncStatus(),
   ])
   terminalSettingsDraft.value = { ...sessionStore.terminalSettings }
+  appSettings.value = settings
   localShells.value = shells
   vaultMd5 = await readVaultMd5()
   vaultMd5Timer = setInterval(() => { void checkVaultMd5() }, 10_000)
@@ -1772,6 +1797,8 @@ function openSyncSettings() {
                   <h3>{{ t('settings.system') }}</h3>
                   <div class="settings-panel">
                     <div class="settings-row"><div><strong>MJJSSH</strong><p>{{ t('settings.appDescription') }}</p></div><span class="settings-value">v0.2.1</span></div>
+                    <div class="settings-row"><div><strong>{{ t('settings.repository') }}</strong><p>https://github.com/34892002/mjjssh</p></div><button class="settings-link" type="button" @click="openProjectRepository">GitHub</button></div>
+                    <div class="settings-row"><div><strong>{{ t('settings.minimizeToTrayOnClose') }}</strong><p>{{ t('settings.minimizeToTrayOnCloseDescription') }}</p></div><n-switch :value="appSettings.minimizeToTrayOnClose" :loading="appSettingsSaving" @update:value="updateMinimizeToTrayOnClose" /></div>
                     <div class="settings-row"><div><strong>{{ t('settings.theme') }}</strong><p>{{ t('settings.themeDescription', { theme: isDarkTheme ? t('settings.dark') : t('settings.light') }) }}</p></div><span class="settings-value">{{ isDarkTheme ? t('settings.dark') : t('settings.light') }}</span></div>
                   </div>
                   <h3>{{ t('diagnostics.title') }}</h3>
@@ -2648,6 +2675,8 @@ function openSyncSettings() {
 .settings-row strong, .sync-intro strong, .empty-settings strong { font-size: 14px; color: var(--app-text); }
 .settings-row p, .sync-intro p, .empty-settings p { margin: 4px 0 0; font-size: 12px; color: var(--app-muted); }
 .settings-value { flex-shrink: 0; font-size: 12px; color: var(--app-accent); }
+.settings-link { flex: 0 0 auto; padding: 0; color: var(--app-accent); font-size: 12px; line-height: inherit; background: transparent; border: 0; cursor: pointer; }
+.settings-link:hover { text-decoration: underline; }
 .terminal-settings-panel :deep(.n-select),
 .terminal-settings-panel :deep(.n-input-number) { width: 180px; flex: 0 0 auto; }
 .diagnostic-export-confirmation { display: grid; gap: 8px; }

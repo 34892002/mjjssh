@@ -13,6 +13,8 @@ pub mod vault;
 
 use log::LevelFilter;
 use state::AppState;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
 use tauri_plugin_log::{RotationStrategy, Target, TargetKind};
 
@@ -49,11 +51,55 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_shell::init())
         .setup(move |app| {
+            let show = MenuItem::with_id(app, "show", "显示 MJJSSH", true, None::<&str>)?;
+            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show, &quit])?;
+            TrayIconBuilder::with_id("main")
+                .icon(app.default_window_icon().unwrap().clone())
+                .menu(&menu)
+                .show_menu_on_left_click(false)
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        if let Some(window) = tray.app_handle().get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                })
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "show" => {
+                        if let Some(window) = app.get_webview_window("main") {
+                            let _ = window.show();
+                            let _ = window.set_focus();
+                        }
+                    }
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .build(app)?;
+
             let app_state = AppState::new(app_dir);
             app.manage(app_state);
 
             Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let app_state = window.state::<AppState>();
+                let should_minimize =
+                    tauri::async_runtime::block_on(app_state.minimize_to_tray_on_close());
+                if should_minimize {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::diagnostics::record_frontend_crash,
@@ -72,6 +118,8 @@ pub fn run() {
             commands::ai::cancel_ai_task,
             commands::vault::init_vault,
             commands::vault::get_vault_md5,
+            commands::vault::get_app_settings,
+            commands::vault::save_app_settings,
             commands::vault::get_terminal_settings,
             commands::vault::save_terminal_settings,
             commands::vault::list_system_font_families,

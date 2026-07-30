@@ -13,12 +13,12 @@ use crate::local_security::{
 };
 
 use super::models::{
-    AiAgentConfig, AiModelConfig, AiProviderConfigSecret, AiProviderConfigView, AuthType,
-    CreateKeyRequest, CreateProfileRequest, CreateScriptRequest, CreateSocks5ProxyRequest,
-    DecryptedCredential, SaveAiAgentConfigRequest, SaveAiProviderConfigRequest,
-    SaveTerminalSettingsRequest, Script, Socks5Proxy, Socks5ProxyAuthType, Socks5ProxyView, SshKey,
-    SshKeyView, SshProfile, TerminalSettings, UpdateProfileRequest, UpdateScriptRequest,
-    UpdateSocks5ProxyRequest,
+    AiAgentConfig, AiModelConfig, AiProviderConfigSecret, AiProviderConfigView, AppSettings,
+    AuthType, CreateKeyRequest, CreateProfileRequest, CreateScriptRequest,
+    CreateSocks5ProxyRequest, DecryptedCredential, SaveAiAgentConfigRequest,
+    SaveAiProviderConfigRequest, SaveAppSettingsRequest, SaveTerminalSettingsRequest, Script,
+    Socks5Proxy, Socks5ProxyAuthType, Socks5ProxyView, SshKey, SshKeyView, SshProfile,
+    TerminalSettings, UpdateProfileRequest, UpdateScriptRequest, UpdateSocks5ProxyRequest,
 };
 
 const VAULT_FILE_NAME: &str = "vault.json";
@@ -91,6 +91,8 @@ struct VaultDocument {
     scripts: Vec<Script>,
     #[serde(default)]
     terminal_settings: TerminalSettings,
+    #[serde(default)]
+    app_settings: AppSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,6 +202,7 @@ impl Vault {
             ai_executable_grants: Vec::new(),
             scripts: Vec::new(),
             terminal_settings: TerminalSettings::default(),
+            app_settings: AppSettings::default(),
         }
     }
 
@@ -505,6 +508,23 @@ impl Vault {
 
     pub fn terminal_settings(&self) -> Result<TerminalSettings, VaultError> {
         self.read(|document| Ok(document.terminal_settings.clone()))
+    }
+
+    pub fn app_settings(&self) -> Result<AppSettings, VaultError> {
+        self.read(|document| Ok(document.app_settings.clone()))
+    }
+
+    pub fn save_app_settings(
+        &self,
+        request: &SaveAppSettingsRequest,
+    ) -> Result<AppSettings, VaultError> {
+        let settings = AppSettings {
+            minimize_to_tray_on_close: request.minimize_to_tray_on_close,
+        };
+        self.mutate(|document| {
+            document.app_settings = settings.clone();
+            Ok(settings)
+        })
     }
 
     pub fn save_terminal_settings(
@@ -1628,6 +1648,25 @@ mod tests {
 
         let reopened = Vault::open_for_test(&directory).unwrap();
         assert_eq!(reopened.terminal_settings().unwrap().font_size, 16);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn persists_minimize_to_tray_preference() {
+        let directory = test_dir();
+        let vault = Vault::open_for_test(&directory).unwrap();
+        assert!(!vault.app_settings().unwrap().minimize_to_tray_on_close);
+
+        let settings = vault
+            .save_app_settings(&SaveAppSettingsRequest {
+                minimize_to_tray_on_close: true,
+            })
+            .unwrap();
+        assert!(settings.minimize_to_tray_on_close);
+        drop(vault);
+
+        let reopened = Vault::open_for_test(&directory).unwrap();
+        assert!(reopened.app_settings().unwrap().minimize_to_tray_on_close);
         fs::remove_dir_all(directory).unwrap();
     }
 
