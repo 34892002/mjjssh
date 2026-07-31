@@ -84,18 +84,13 @@ pub async fn export_archive(state: &AppState) -> Result<PathBuf, String> {
             options,
         )?;
     }
-    let reports_dir = state.app_dir.join("crash-reports");
+    let reports_dir = state.app_dir.join("logs");
     if let Ok(entries) = fs::read_dir(reports_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|extension| extension.to_str()) == Some("txt") {
                 if let Some(name) = path.file_name().and_then(|name| name.to_str()) {
-                    add_file_if_exists(
-                        &mut archive,
-                        &path,
-                        &format!("crash-reports/{name}"),
-                        options,
-                    )?;
+                    add_file_if_exists(&mut archive, &path, &format!("safe-logs/{name}"), options)?;
                 }
             }
         }

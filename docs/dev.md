@@ -309,6 +309,21 @@ npm run tauri build
 输出：
 - `src-tauri/target/release/` 按照平台生成对应安装文件
 
+### Release 编译规则与启动崩溃记录
+
+#### 编译规则
+
+- `my-ssh-frontend/src-tauri/Cargo.toml` 的 release profile 必须保持 `lto = false`、`codegen-units = 16`；不要恢复 `lto = "thin"` 与 `codegen-units = 1` 的组合。
+- 正式桌面包必须使用 `npm run tauri -- build`（或 `npm run tauri build`）构建，确保生产前端资源被嵌入；不得用裸 `cargo build --release` 作为安装版验证。
+- Windows 发布验证必须先卸载旧版再安装新包，至少观察进程运行 10 秒，并检查 `<exe目录>/data/logs/startup.log` 与 Windows WER。
+- 仅 debug 运行、裸 `cargo build --release` 或观察 5 秒，都不能作为 release 安装版通过的依据。
+- GitHub Actions、Windows、macOS 和 Linux 的正式构建都使用上述 Cargo release profile，不得为单个平台恢复高风险优化组合。
+
+#### 事故记录
+
+- `v0.2.2` Windows 安装版曾在启动阶段退出，Windows WER 异常代码为 `0xc00000fd`（栈溢出）。
+- 对照验证表明：`lto = "thin"`、`codegen-units = 1` 会触发该问题；改为 `lto = false`、`codegen-units = 16` 后，带生产前端和系统托盘的 NSIS 安装版在 `D:\\soft\\MJJSSH` 启动并持续运行超过 10 秒。
+
 ### 更新版本
 
 发布新版本时，将以下文件中的版本号统一更新为目标版本（配置文件使用不带 `v` 的版本号，设置页显示使用带 `v` 的版本号）：

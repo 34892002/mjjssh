@@ -3,7 +3,6 @@ import { defineAsyncComponent, ref, computed, onBeforeUnmount, onMounted, nextTi
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { open } from '@tauri-apps/plugin-shell'
 import { Archive, Box, Cloud, CloudCog, Code2, Container, Copy, Cpu, Database, Download, EthernetPort, FileCode2, Globe2, HardDrive, Languages, Layers3, ListFilter, MemoryStick, MonitorCog, Moon, Network, Plus, RadioTower, RefreshCw, Router, Server, ServerCog, Settings, ShieldCheck, Sparkles, Square, Sun, TerminalSquare, Upload, Waypoints, Workflow, X, Zap } from '@lucide/vue'
 import {
   darkTheme,
@@ -78,7 +77,7 @@ function formatDate(value: string) {
 }
 
 function openProjectRepository() {
-  void open('https://github.com/34892002/mjjssh')
+  void invoke('open_project_repository')
 }
 const savedTheme = localStorage.getItem('my-ssh-theme')
 const isDarkTheme = ref(savedTheme !== 'light')

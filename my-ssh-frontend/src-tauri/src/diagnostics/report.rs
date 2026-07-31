@@ -48,6 +48,16 @@ pub fn write_frontend_report(
     );
 }
 
+pub fn write_backend_report(crash_reports_dir: &Path, kind: &str, message: &str) {
+    write_report(
+        crash_reports_dir,
+        kind,
+        "backend",
+        message,
+        Backtrace::force_capture().to_string(),
+    );
+}
+
 fn write_report(crash_reports_dir: &Path, kind: &str, source: &str, message: &str, stack: String) {
     if fs::create_dir_all(crash_reports_dir).is_err() {
         return;

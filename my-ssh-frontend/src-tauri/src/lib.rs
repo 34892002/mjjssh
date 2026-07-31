@@ -31,9 +31,19 @@ pub fn run() {
     std::fs::create_dir_all(&log_dir).expect("Failed to create log dir");
     ai::log::initialize(log_dir.join("ai.log"));
     diagnostics::install_panic_hook(app_dir.clone());
+    let startup_report_dir = app_dir.clone();
+    diagnostics::record_startup_progress(&app_dir, "startup initialized");
     log::info!("MJJSSH {} started", env!("CARGO_PKG_VERSION"));
 
+    diagnostics::record_startup_progress(&app_dir, "building Tauri application");
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level(LevelFilter::Info)
@@ -51,43 +61,56 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_clipboard_manager::init())
-        .plugin(tauri_plugin_shell::init())
         .setup(move |app| {
-            let show = MenuItem::with_id(app, "show", "显示 MJJSSH", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
-            TrayIconBuilder::with_id("main")
-                .icon(app.default_window_icon().unwrap().clone())
-                .menu(&menu)
-                .show_menu_on_left_click(false)
-                .on_tray_icon_event(|tray, event| {
-                    if let TrayIconEvent::Click {
-                        button: MouseButton::Left,
-                        button_state: MouseButtonState::Up,
-                        ..
-                    } = event
-                    {
-                        if let Some(window) = tray.app_handle().get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
+            diagnostics::record_startup_progress(&app_dir, "Tauri setup started");
+            let tray_result = (|| -> tauri::Result<()> {
+                let show = MenuItem::with_id(app, "show", "显示 MJJSSH", true, None::<&str>)?;
+                let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+                let menu = Menu::with_items(app, &[&show, &quit])?;
+                let icon = app
+                    .default_window_icon()
+                    .ok_or_else(|| tauri::Error::AssetNotFound("default window icon".into()))?
+                    .clone();
+                TrayIconBuilder::with_id("main")
+                    .icon(icon)
+                    .menu(&menu)
+                    .show_menu_on_left_click(false)
+                    .on_tray_icon_event(|tray, event| {
+                        if let TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
+                            if let Some(window) = tray.app_handle().get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
                         }
-                    }
-                })
-                .on_menu_event(|app, event| match event.id.as_ref() {
-                    "show" => {
-                        if let Some(window) = app.get_webview_window("main") {
-                            let _ = window.show();
-                            let _ = window.set_focus();
+                    })
+                    .on_menu_event(|app, event| match event.id.as_ref() {
+                        "show" => {
+                            if let Some(window) = app.get_webview_window("main") {
+                                let _ = window.show();
+                                let _ = window.set_focus();
+                            }
                         }
-                    }
-                    "quit" => app.exit(0),
-                    _ => {}
-                })
-                .build(app)?;
+                        "quit" => app.exit(0),
+                        _ => {}
+                    })
+                    .build(app)?;
+                Ok(())
+            })();
+            if let Err(error) = tray_result {
+                diagnostics::record_startup_progress(&app_dir, "system tray unavailable");
+                log::warn!("System tray is unavailable; continuing without it: {error}");
+            } else {
+                diagnostics::record_startup_progress(&app_dir, "system tray initialized");
+            }
 
-            let app_state = AppState::new(app_dir);
+            let app_state = AppState::new(app_dir.clone());
             app.manage(app_state);
-
+            diagnostics::record_startup_progress(&app_dir, "application state registered");
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -104,6 +127,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::diagnostics::record_frontend_crash,
             commands::diagnostics::export_diagnostic_bundle,
+            commands::diagnostics::open_project_repository,
             commands::ai::get_ai_config_status,
             commands::ai::save_ai_config,
             commands::ai::discover_ai_models,
@@ -201,5 +225,11 @@ pub fn run() {
             commands::sftp::get_server_stats,
         ])
         .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .unwrap_or_else(|error| {
+            diagnostics::record_backend_startup_error(&startup_report_dir, &error.to_string());
+            diagnostics::record_startup_progress(
+                &startup_report_dir,
+                "Tauri event loop returned an error",
+            );
+        });
 }

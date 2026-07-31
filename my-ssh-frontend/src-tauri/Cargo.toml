@@ -19,7 +19,7 @@ tauri-build = { version = "2.6.3", features = [] }
 tauri = { version = "2.11.3", features = ["tray-icon"] }
 tauri-plugin-log = "2"
 tauri-plugin-clipboard-manager = "2"
-tauri-plugin-shell = "2"
+tauri-plugin-single-instance = "2.4.3"
 
 # Serialization
 serde_json = "1.0"
@@ -79,6 +79,7 @@ keyring = { version = "3", features = ["windows-native", "apple-native"] }
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Shell"] }
 
 [profile.release]
-lto = "thin"
-codegen-units = 1
+# Avoid the Windows release startup stack overflow seen with thin LTO and one codegen unit.
+lto = false
+codegen-units = 16
 strip = true
