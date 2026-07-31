@@ -125,6 +125,33 @@ pub async fn get_terminal_settings(state: State<'_, AppState>) -> Result<Termina
 }
 
 #[tauri::command]
+pub async fn list_command_history(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    state
+        .with_vault(|vault| vault.command_history())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn record_command_history(
+    state: State<'_, AppState>,
+    command: String,
+) -> Result<Vec<String>, String> {
+    state
+        .with_vault(|vault| vault.record_command_history(&command))
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn clear_command_history(state: State<'_, AppState>) -> Result<(), String> {
+    state
+        .with_vault(|vault| vault.clear_command_history())
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn save_terminal_settings(
     state: State<'_, AppState>,
     settings: SaveTerminalSettingsRequest,

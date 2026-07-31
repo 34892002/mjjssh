@@ -26,6 +26,7 @@ const BACKUP_FILE_NAME: &str = "vault.json.bak";
 const FORMAT_VERSION: u32 = 2;
 const DEFAULT_AGENT_ID: &str = "mjj-agent";
 const DEFAULT_AGENT_NAME: &str = "MJJ Agent";
+const COMMAND_HISTORY_LIMIT: usize = 500;
 const DEFAULT_AGENT_PROMPT: &str = r#"# Role: MJJ Agent (高级远程运维专家 & SSH 智能助手)
 
 ## 角色定位与核心能力
@@ -93,6 +94,8 @@ struct VaultDocument {
     terminal_settings: TerminalSettings,
     #[serde(default)]
     app_settings: AppSettings,
+    #[serde(default)]
+    command_history: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -203,6 +206,7 @@ impl Vault {
             scripts: Vec::new(),
             terminal_settings: TerminalSettings::default(),
             app_settings: AppSettings::default(),
+            command_history: Vec::new(),
         }
     }
 
@@ -508,6 +512,36 @@ impl Vault {
 
     pub fn terminal_settings(&self) -> Result<TerminalSettings, VaultError> {
         self.read(|document| Ok(document.terminal_settings.clone()))
+    }
+
+    pub fn command_history(&self) -> Result<Vec<String>, VaultError> {
+        self.read(|document| Ok(document.command_history.clone()))
+    }
+
+    pub fn record_command_history(&self, command: &str) -> Result<Vec<String>, VaultError> {
+        let command = command.trim();
+        if command.is_empty() {
+            return self.command_history();
+        }
+        if command.len() > 32 * 1024 {
+            return Err(VaultError::InvalidScript(
+                "command must not exceed 32 KiB".into(),
+            ));
+        }
+
+        self.mutate(|document| {
+            document.command_history.retain(|entry| entry != command);
+            document.command_history.insert(0, command.into());
+            document.command_history.truncate(COMMAND_HISTORY_LIMIT);
+            Ok(document.command_history.clone())
+        })
+    }
+
+    pub fn clear_command_history(&self) -> Result<(), VaultError> {
+        self.mutate(|document| {
+            document.command_history.clear();
+            Ok(())
+        })
     }
 
     pub fn app_settings(&self) -> Result<AppSettings, VaultError> {

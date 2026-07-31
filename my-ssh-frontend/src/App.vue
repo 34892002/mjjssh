@@ -952,6 +952,20 @@ async function handleRetry(sessionId: string) {
   if (connection) await handleConnect(connection.profile, sessionId, connection.reconnecting)
 }
 
+async function handleTerminalReconnect(sessionId: string) {
+  const tab = sessionStore.tabs.find((item) => item.sessionId === sessionId)
+  if (tab?.kind !== 'ssh' || !tab.profileId) return
+  const profile = vaultStore.profiles.find((item) => item.id === tab.profileId)
+  if (!profile) return
+  try {
+    await invoke('disconnect_ssh', { sessionId })
+  } catch {
+    // A disconnected session has nothing to close and can be reconnected directly.
+  }
+  await handleConnect(profile, sessionId, true)
+}
+
+
 async function handleTerminalDisconnected(sessionId: string, reason: string) {
   const tab = sessionStore.tabs.find((item) => item.sessionId === sessionId)
   const profile = tab?.kind === 'ssh' && tab.profileId
@@ -1532,6 +1546,7 @@ function openSyncSettings() {
               :settings="tab.terminalSettings"
               :reconnect-version="reconnectVersions[tab.sessionId]"
               @disconnected="handleTerminalDisconnected(tab.sessionId, $event)"
+              @reconnect="handleTerminalReconnect(tab.sessionId)"
             />
             <ConnectionDialog
               v-if="connectionStates[tab.sessionId]"
