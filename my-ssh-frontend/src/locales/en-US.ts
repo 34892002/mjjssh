@@ -390,7 +390,7 @@ const enUSMessages = {
   'sftp.binaryContentDetectedTitle': 'Binary content detected',
   'sftp.binaryContentDetectedMessage': 'This file contains NUL bytes. Its content may not parse or save correctly.',
   'sftp.openAnyway': 'Open anyway',
-  'sftp.openDefaultApplicationFailed': 'Unable to open with the default application: {error}',
+  'sftp.openDefaultApplicationFailed': 'Unable to start the default editor: {error}',
   'sftp.openTextEditorFailed': 'Unable to open text editor: {error}',
   'remoteEditor.saved': 'Saved',
   'remoteEditor.unsavedChanges': 'Unsaved changes',

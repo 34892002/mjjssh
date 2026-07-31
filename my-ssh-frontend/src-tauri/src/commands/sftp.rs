@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
+#[cfg(any(windows, unix))]
+use std::process::Command;
 use std::time::{Instant, SystemTime};
 
 use encoding_rs::{Encoding, GB18030, GBK, UTF_8};
@@ -242,25 +244,16 @@ async fn preflight_remote_text_file(
     path: &str,
 ) -> Result<FileAttributes, String> {
     validate_remote_text_path(path)?;
-    let link_metadata = sftp
-        .symlink_metadata(path)
-        .await
-        .map_err(|error| format!("Unable to inspect remote file: {error}"))?;
-    if link_metadata.is_symlink() {
-        return Err("Symbolic links are not supported for remote text editing".to_string());
-    }
-    if link_metadata.is_dir() {
-        return Err("Directories are not supported for remote text editing".to_string());
-    }
-    if !link_metadata.is_regular() {
-        return Err("Only regular files are supported for remote text editing".to_string());
-    }
 
-    // Follow-up stat protects against a path changing into a link after lstat.
+    // Some SFTP servers close the subsystem when handling lstat requests. Use stat,
+    // which is the operation already used by the existing file-management workflow.
     let metadata = sftp
         .metadata(path)
         .await
         .map_err(|error| format!("Unable to inspect remote file: {error}"))?;
+    if metadata.is_dir() {
+        return Err("Directories are not supported for remote text editing".to_string());
+    }
     if !metadata.is_regular() {
         return Err("Only regular files are supported for remote text editing".to_string());
     }
@@ -442,7 +435,7 @@ async fn remove_external_edit_session(state: &AppState, edit_id: &str) -> Result
 
 #[tauri::command]
 pub async fn clear_external_edit_sessions(state: State<'_, AppState>) -> Result<(), String> {
-    let temporary_root = state.app_dir.join("remote-edit");
+    let temporary_root = state.external_edit_dir.clone();
     match fs::remove_dir_all(&temporary_root).await {
         Ok(()) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -456,45 +449,78 @@ pub async fn clear_external_edit_sessions(state: State<'_, AppState>) -> Result<
     Ok(())
 }
 
-#[cfg(windows)]
-fn open_local_file_for_editing(path: &Path) -> Result<(), String> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+fn edit_local_file(path: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::UI::Shell::ShellExecuteW;
 
-    fn wide(value: &std::ffi::OsStr) -> Vec<u16> {
-        value.encode_wide().chain(std::iter::once(0)).collect()
+        let operation = std::ffi::OsStr::new("edit")
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let file = path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        let result = unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                operation.as_ptr(),
+                file.as_ptr(),
+                std::ptr::null(),
+                std::ptr::null(),
+                1,
+            )
+        };
+        if result as isize > 32 {
+            return Ok(());
+        }
+
+        // Many extensions, including .sh, have an `open` association but no `edit` verb.
+        // Fall back only to Windows Notepad, never to the `open` association.
+        Command::new("notepad.exe")
+            .arg(path)
+            .spawn()
+            .map_err(|error| {
+                format!(
+                    "Windows could not start an editor for {} (the registered edit action failed with code {} and Notepad could not be started: {})",
+                    path.display(),
+                    result as isize,
+                    error
+                )
+            })?;
+        Ok(())
     }
 
-    let operation = wide(std::ffi::OsStr::new("edit"));
-    let file = wide(path.as_os_str());
-    let result = unsafe {
-        ShellExecuteW(
-            std::ptr::null_mut(),
-            operation.as_ptr(),
-            file.as_ptr(),
-            std::ptr::null(),
-            std::ptr::null(),
-            1,
-        )
-    };
-    if result as isize > 32 {
-        return Ok(());
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg("-t")
+            .arg(path)
+            .spawn()
+            .map_err(|error| format!("Unable to start the macOS text editor: {error}"))?;
+        Ok(())
     }
 
-    std::process::Command::new("notepad.exe")
-        .arg(path)
-        .spawn()
-        .map_err(|error| format!("Unable to open the local edit file: {error}"))
-        .map(|_| ())
-}
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let editor = std::env::var_os("VISUAL")
+            .or_else(|| std::env::var_os("EDITOR"))
+            .ok_or_else(|| "No editor is configured; set VISUAL or EDITOR".to_string())?;
+        Command::new(editor)
+            .arg(path)
+            .spawn()
+            .map_err(|error| format!("Unable to start the configured editor: {error}"))?;
+        Ok(())
+    }
 
-#[cfg(not(windows))]
-fn open_local_file_for_editing(path: &Path) -> Result<(), String> {
-    std::process::Command::new("xdg-open")
-        .arg(path)
-        .spawn()
-        .map_err(|error| format!("Unable to open the local edit file: {error}"))
-        .map(|_| ())
+    #[cfg(not(any(windows, target_os = "macos", unix)))]
+    {
+        let _ = path;
+        Err("Default editor support is unavailable on this platform".to_string())
+    }
 }
 
 async fn stream_remote_to_local(
@@ -626,30 +652,16 @@ pub async fn get_remote_file_metadata(
 ) -> Result<RemoteFileMetadata, String> {
     validate_remote_text_path(&path)?;
     let sftp = open_sftp(&state, &session_id).await?;
-    let link_metadata = sftp
-        .symlink_metadata(&path)
-        .await
-        .map_err(|error| format!("Unable to inspect remote file: {error}"))?;
-    let is_symlink = link_metadata.is_symlink();
-    let is_supported_file = !is_symlink && link_metadata.is_regular();
-    if is_symlink {
-        return Err("Symbolic links are not supported for remote text editing".to_string());
-    }
-    if link_metadata.is_dir() {
-        return Err("Directories are not supported for remote text editing".to_string());
-    }
-    if !is_supported_file {
-        return Err("Only regular files are supported for remote text editing".to_string());
-    }
-
     let metadata = preflight_remote_text_file(&sftp, &path).await?;
     Ok(RemoteFileMetadata {
         session_id,
         path,
         size: metadata.len(),
         modified_at: metadata_modified_at(&metadata),
-        is_symlink,
-        is_supported_file,
+        // SFTP stat follows links. Do not issue lstat here because some servers
+        // terminate the SFTP subsystem for that request.
+        is_symlink: false,
+        is_supported_file: true,
     })
 }
 
@@ -757,8 +769,7 @@ pub async fn create_external_edit_session(
 
     let edit_id = Uuid::new_v4().to_string();
     let temporary_directory = state
-        .app_dir
-        .join("remote-edit")
+        .external_edit_dir
         .join(session_component)
         .join(&edit_id);
     fs::create_dir_all(&temporary_directory)
@@ -810,7 +821,7 @@ pub async fn create_external_edit_session(
 }
 
 #[tauri::command]
-pub async fn open_external_edit_session(
+pub async fn edit_external_edit_session(
     state: State<'_, AppState>,
     edit_id: String,
 ) -> Result<(), String> {
@@ -825,9 +836,9 @@ pub async fn open_external_edit_session(
         return Err("The local temporary edit file no longer exists".to_string());
     }
 
-    tokio::task::spawn_blocking(move || open_local_file_for_editing(&temporary_path))
+    tokio::task::spawn_blocking(move || edit_local_file(&temporary_path))
         .await
-        .map_err(|error| format!("Unable to start the default application: {error}"))?
+        .map_err(|error| format!("Unable to start the default editor: {error}"))?
 }
 
 #[tauri::command]
@@ -856,7 +867,7 @@ pub async fn get_external_edit_session_status(
         }
         Err(_) => record.has_error = true,
     }
-    // Status checks poll because default applications do not provide a portable save-complete
+    // Status checks poll because external editors do not provide a portable save-complete
     // callback. They only report a pending upload; they never start one automatically.
     Ok(external_edit_session_response(edit_id, record))
 }

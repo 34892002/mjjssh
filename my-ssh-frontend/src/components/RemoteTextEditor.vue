@@ -169,10 +169,26 @@ async function save(force = false, confirmBinaryWrite = false) {
   }
 }
 
-onMounted(() => { void createEditor() })
+async function initializeEditor() {
+  try {
+    await createEditor()
+  } catch (error) {
+    store.updateTab(props.tab.id, { status: 'error', error: String(error) })
+  }
+}
+
+async function recreateEditor() {
+  try {
+    await rebuildEditor()
+  } catch (error) {
+    store.updateTab(props.tab.id, { status: 'error', error: String(error) })
+  }
+}
+
+onMounted(() => { void initializeEditor() })
 onBeforeUnmount(() => { view?.destroy(); view = null })
-watch(() => props.tab.id, () => { void rebuildEditor() })
-watch(() => props.dark, () => { void rebuildEditor() })
+watch(() => props.tab.id, () => { void recreateEditor() })
+watch(() => props.dark, () => { void recreateEditor() })
 </script>
 
 <template>

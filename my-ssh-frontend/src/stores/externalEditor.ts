@@ -32,11 +32,15 @@ export const useExternalEditorStore = defineStore('externalEditor', () => {
     errors.value = next
   }
 
+  async function openLocalCopy(session: ExternalEditSession) {
+    await invoke('edit_external_edit_session', { editId: session.editId })
+  }
+
   async function createAndOpen(sessionId: string, path: string) {
     const session = await invoke<ExternalEditSession>('create_external_edit_session', { sessionId, path })
     replaceSession(session)
     try {
-      await invoke('open_external_edit_session', { editId: session.editId })
+      await openLocalCopy(session)
     } catch (error) {
       setError(session.editId, error)
       throw error
@@ -45,9 +49,11 @@ export const useExternalEditorStore = defineStore('externalEditor', () => {
   }
 
   async function open(editId: string) {
+    const session = sessionsById.value.get(editId)
+    if (!session) throw new Error('External edit session was not found')
     setLoading(editId, true)
     try {
-      await invoke('open_external_edit_session', { editId })
+      await openLocalCopy(session)
       setError(editId)
     } catch (error) {
       setError(editId, error)

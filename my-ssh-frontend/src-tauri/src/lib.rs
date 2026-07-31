@@ -108,7 +108,14 @@ pub fn run() {
                 diagnostics::record_startup_progress(&app_dir, "system tray initialized");
             }
 
-            let app_state = AppState::new(app_dir.clone());
+            let external_edit_dir = app
+                .path()
+                .app_local_data_dir()
+                .map_err(|error| tauri::Error::Io(std::io::Error::other(error)))?
+                .join("remote-edit");
+            std::fs::create_dir_all(&external_edit_dir)?;
+
+            let app_state = AppState::new(app_dir.clone(), external_edit_dir);
             app.manage(app_state);
             diagnostics::record_startup_progress(&app_dir, "application state registered");
             Ok(())
@@ -204,7 +211,7 @@ pub fn run() {
             commands::sftp::get_remote_text_file,
             commands::sftp::save_remote_text_file,
             commands::sftp::create_external_edit_session,
-            commands::sftp::open_external_edit_session,
+            commands::sftp::edit_external_edit_session,
             commands::sftp::get_external_edit_session_status,
             commands::sftp::reload_external_edit_session,
             commands::sftp::upload_external_edit_session,

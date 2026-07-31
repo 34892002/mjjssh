@@ -388,7 +388,7 @@ const zhCNMessages = {
   'sftp.binaryContentDetectedTitle': '检测到二进制内容',
   'sftp.binaryContentDetectedMessage': '此文件包含 NUL 字节，内容可能无法正确解析或保存。',
   'sftp.openAnyway': '仍要打开',
-  'sftp.openDefaultApplicationFailed': '无法使用默认应用打开：{error}',
+  'sftp.openDefaultApplicationFailed': '无法启动默认编辑器：{error}',
   'sftp.openTextEditorFailed': '无法打开文本编辑器：{error}',
   'remoteEditor.saved': '已保存',
   'remoteEditor.unsavedChanges': '未保存的更改',

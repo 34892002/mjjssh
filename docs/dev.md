@@ -318,11 +318,15 @@ npm run tauri build
 - Windows 发布验证必须先卸载旧版再安装新包，至少观察进程运行 10 秒，并检查 `<exe目录>/data/logs/startup.log` 与 Windows WER。
 - 仅 debug 运行、裸 `cargo build --release` 或观察 5 秒，都不能作为 release 安装版通过的依据。
 - GitHub Actions、Windows、macOS 和 Linux 的正式构建都使用上述 Cargo release profile，不得为单个平台恢复高风险优化组合。
+- Windows 可执行文件必须在 `src-tauri/build.rs` 保持 `/STACK:8388608` 链接参数。构建后用 `llvm-objdump --private-headers src-tauri/target/release/mjj-ssh.exe` 确认 `SizeOfStackReserve` 为 `0x800000`（8 MiB）；不得回退为默认的 1 MiB。
+- SFTP 的“使用默认应用编辑”必须启动编辑器，而非按文件关联执行“打开”。临时副本目录由 `app.path().app_local_data_dir().join("remote-edit")` 解析，这是 Windows、macOS 和 Linux 共用的 Tauri 应用本地数据目录；不得使用 `$EXE`（Windows 不支持）或 `$RESOURCE`（各平台路径语义不同）。Windows 优先使用 `ShellExecuteW` 的 `edit` 动词；若扩展名未注册该动词，则直接启动 `notepad.exe`，不得回退到 `open`。macOS 使用 `open -t`；Linux 使用 `VISUAL`，未设置时使用 `EDITOR`，两者均未设置时显示配置编辑器的错误。不得使用 `tauri-plugin-opener`、`open` 动词或 `xdg-open` 回退。
 
 #### 事故记录
 
 - `v0.2.2` Windows 安装版曾在启动阶段退出，Windows WER 异常代码为 `0xc00000fd`（栈溢出）。
 - 对照验证表明：`lto = "thin"`、`codegen-units = 1` 会触发该问题；改为 `lto = false`、`codegen-units = 16` 后，带生产前端和系统托盘的 NSIS 安装版在 `D:\\soft\\MJJSSH` 启动并持续运行超过 10 秒。
+- 2026-07-31，SFTP 的“编辑文本”和“使用默认应用编辑”在 release exe 中均触发 Windows WER `APPCRASH`：异常码 `0xc00000fd`，崩溃偏移从 `0x000000000103a937` 变为 `0x00000000010363f7`。后者位于 `mjj-ssh.exe` 的入口点 `0x0000000001036390` 附近，证实为主线程栈耗尽，而非 SFTP、CodeMirror 或 ShellExecute 的可捕获错误。通过 `build.rs` 的 `/STACK:8388608` 将 PE `SizeOfStackReserve` 从 1 MiB 提高到 8 MiB 后，两个入口不再使进程退出。
+- “使用默认应用编辑”不依赖 opener capability 或本地路径打开权限。若系统未配置可用编辑器，必须保留临时副本并显示明确错误；Windows 在缺少 `edit` 动词时仅可回退到 `notepad.exe`，不得回退到 `open`；Linux 不得回退到 `xdg-open`。
 
 ### 更新版本
 

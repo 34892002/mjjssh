@@ -38,6 +38,7 @@ pub struct ExternalEditSessionRecord {
 pub struct AppState {
     pub vault: Arc<Mutex<Option<Vault>>>,
     pub app_dir: PathBuf,
+    pub external_edit_dir: PathBuf,
     pub sessions: Arc<SessionManager>,
     pub local_terminals: Arc<LocalTerminalManager>,
     pub pending_ssh_connections: Arc<Mutex<HashMap<String, CancellationToken>>>,
@@ -51,10 +52,11 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(app_dir: PathBuf) -> Self {
+    pub fn new(app_dir: PathBuf, external_edit_dir: PathBuf) -> Self {
         Self {
             vault: Arc::new(Mutex::new(None)),
             app_dir: app_dir.clone(),
+            external_edit_dir,
             sessions: Arc::new(SessionManager::new()),
             local_terminals: Arc::new(LocalTerminalManager::default()),
             pending_ssh_connections: Arc::new(Mutex::new(HashMap::new())),
