@@ -1,11 +1,12 @@
 <script setup lang="ts">
 import { ref, watch, type Component } from 'vue'
-import { Fingerprint, KeyRound, Plug } from '@lucide/vue'
+import { ChevronDown, ChevronRight, Fingerprint, KeyRound, Plug } from '@lucide/vue'
 import { NButton } from 'naive-ui'
 import { useLocale } from '../composables/useLocale'
 
 type ConnectionStatus = 'connecting' | 'verifying' | 'authenticating' | 'success' | 'error' | 'host-key-confirm' | 'host-key-changed'
 type StepState = 'pending' | 'active' | 'done' | 'error'
+type ConnectionStep = { label: string; state: StepState; kind?: 'algorithms' }
 
 const props = defineProps<{
   show: boolean
@@ -45,7 +46,8 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useLocale()
-const steps = ref<{ label: string; state: StepState }[]>([])
+const steps = ref<ConnectionStep[]>([])
+const algorithmsExpanded = ref(false)
 
 function proxyLabel() {
   return props.proxy ? `${props.proxy.name} (${props.proxy.host}:${props.proxy.port})` : ''
@@ -55,17 +57,39 @@ function fingerprintLabel() {
   return props.hostKey ? `${props.hostKey.algorithm}  ${props.hostKey.fingerprint}` : t('connection.verifyingFingerprint')
 }
 
-function negotiatedAlgorithmsLabel() {
+function algorithmSummary(value: string) {
+  const normalized = value.toLowerCase()
+  if (normalized.includes('mlkem')) return 'ML-KEM'
+  if (normalized.includes('curve25519') || normalized.includes('x25519')) return 'X25519'
+  if (normalized.includes('ed25519')) return 'Ed25519'
+  if (normalized.includes('chacha20')) return 'ChaCha20'
+  if (normalized.includes('aes')) return 'AES'
+  return value
+}
+
+function negotiatedAlgorithmsSummary() {
   const algorithms = props.negotiatedAlgorithms
-  return algorithms
-    ? t('connection.negotiatedAlgorithms', {
-      kex: algorithms.kex,
-      hostKey: algorithms.host_key,
-      cipher: algorithms.cipher,
+  if (!algorithms) return ''
+  return t('connection.negotiatedAlgorithmsSummary', {
+    kex: algorithmSummary(algorithms.kex),
+    hostKey: algorithmSummary(algorithms.host_key),
+    cipher: algorithmSummary(algorithms.cipher),
+  })
+}
+
+function hasNegotiatedAlgorithms() {
+  return Boolean(props.negotiatedAlgorithms)
+}
+
+function macLabel() {
+  const algorithms = props.negotiatedAlgorithms
+  if (!algorithms) return ''
+  return algorithms.client_mac === algorithms.server_mac
+    ? t('connection.negotiatedAlgorithmsMacBidirectional', { mac: algorithms.client_mac })
+    : t('connection.negotiatedAlgorithmsMacDirectional', {
       clientMac: algorithms.client_mac,
       serverMac: algorithms.server_mac,
     })
-    : null
 }
 
 watch([() => props.status, () => props.negotiatedAlgorithms], ([status]) => {
@@ -86,7 +110,7 @@ watch([() => props.status, () => props.negotiatedAlgorithms], ([status]) => {
     steps.value = [
       ...(proxyTunnel ? [proxyTunnel] : []),
       secureChannel,
-      ...(negotiatedAlgorithmsLabel() ? [{ label: negotiatedAlgorithmsLabel()!, state: 'done' as StepState }] : []),
+      ...(hasNegotiatedAlgorithms() ? [{ label: negotiatedAlgorithmsSummary(), state: 'done' as StepState, kind: 'algorithms' as const }] : []),
       { label: fingerprintLabel(), state: 'active' },
     ]
   } else if (status === 'host-key-confirm') {
@@ -97,7 +121,7 @@ watch([() => props.status, () => props.negotiatedAlgorithms], ([status]) => {
     steps.value = [
       ...(proxyTunnel ? [proxyTunnel] : []),
       secureChannel,
-      ...(negotiatedAlgorithmsLabel() ? [{ label: negotiatedAlgorithmsLabel()!, state: 'done' as StepState }] : []),
+      ...(hasNegotiatedAlgorithms() ? [{ label: negotiatedAlgorithmsSummary(), state: 'done' as StepState, kind: 'algorithms' as const }] : []),
       { label: fingerprintLabel(), state: 'done' },
       { label: t('connection.authenticating'), state: 'active' },
     ]
@@ -105,7 +129,7 @@ watch([() => props.status, () => props.negotiatedAlgorithms], ([status]) => {
     steps.value = [
       ...(proxyTunnel ? [proxyTunnel] : []),
       secureChannel,
-      ...(negotiatedAlgorithmsLabel() ? [{ label: negotiatedAlgorithmsLabel()!, state: 'done' as StepState }] : []),
+      ...(hasNegotiatedAlgorithms() ? [{ label: negotiatedAlgorithmsSummary(), state: 'done' as StepState, kind: 'algorithms' as const }] : []),
       { label: fingerprintLabel(), state: 'done' },
       { label: t('connection.authenticated'), state: 'done' },
     ]
@@ -140,7 +164,39 @@ watch([() => props.status, () => props.negotiatedAlgorithms], ([status]) => {
       <div class="conn-steps">
         <div v-for="(step, index) in steps" :key="index" class="step" :class="step.state">
           <span class="step-dot" />
-          <span class="step-label">{{ step.label }}</span>
+          <template v-if="step.kind === 'algorithms' && negotiatedAlgorithms">
+            <div class="algorithm-step">
+              <button
+                type="button"
+                class="algorithm-toggle"
+                :aria-expanded="algorithmsExpanded"
+                @click="algorithmsExpanded = !algorithmsExpanded"
+              >
+                <ChevronDown v-if="algorithmsExpanded" :size="14" />
+                <ChevronRight v-else :size="14" />
+                <span>{{ step.label }}</span>
+              </button>
+              <dl v-if="algorithmsExpanded" class="algorithm-details">
+                <div>
+                  <dt>{{ t('connection.algorithmKex') }}</dt>
+                  <dd>{{ negotiatedAlgorithms.kex }}</dd>
+                </div>
+                <div>
+                  <dt>{{ t('connection.algorithmHostKey') }}</dt>
+                  <dd>{{ negotiatedAlgorithms.host_key }}</dd>
+                </div>
+                <div>
+                  <dt>{{ t('connection.algorithmCipher') }}</dt>
+                  <dd>{{ negotiatedAlgorithms.cipher }}</dd>
+                </div>
+                <div>
+                  <dt>{{ t('connection.algorithmMac') }}</dt>
+                  <dd>{{ macLabel() }}</dd>
+                </div>
+              </dl>
+            </div>
+          </template>
+          <span v-else class="step-label">{{ step.label }}</span>
         </div>
       </div>
 
@@ -206,9 +262,19 @@ watch([() => props.status, () => props.negotiatedAlgorithms], ([status]) => {
 .connection-rail.error .connection-node { color: var(--app-accent); background: color-mix(in srgb, var(--app-accent) 18%, var(--app-panel)); }
 @keyframes node-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .62; } }
 .conn-steps { display: flex; flex-direction: column; gap: 8px; margin-bottom: 16px; }
-.step { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; min-width: 0; }
-.step-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; margin-top: 5px; }
+.step { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; line-height: 18px; min-width: 0; }
+.step-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; margin-top: 6px; }
 .step-label { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+.algorithm-step { min-width: 0; flex: 1; }
+.algorithm-toggle { display: flex; align-items: center; gap: 4px; width: 100%; min-width: 0; padding: 0; border: 0; background: transparent; color: var(--app-muted); font: inherit; line-height: inherit; text-align: left; cursor: pointer; }
+.algorithm-toggle:hover { color: var(--app-text); }
+.algorithm-toggle:focus-visible { outline: 2px solid var(--app-accent); outline-offset: 2px; border-radius: 2px; }
+.algorithm-toggle span { min-width: 0; overflow-wrap: anywhere; }
+.algorithm-toggle svg { flex-shrink: 0; }
+.algorithm-details { display: grid; gap: 5px; margin: 7px 0 0; padding: 8px 10px; border-left: 2px solid var(--app-border); background: color-mix(in srgb, var(--app-hover) 58%, transparent); }
+.algorithm-details div { display: grid; grid-template-columns: 66px minmax(0, 1fr); gap: 8px; }
+.algorithm-details dt { color: var(--app-muted); }
+.algorithm-details dd { min-width: 0; margin: 0; overflow-wrap: anywhere; word-break: break-word; color: var(--app-text); font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace; font-size: 11px; }
 .step.pending .step-dot { background: var(--app-border); }.step.pending .step-label { color: var(--app-muted); }
 .step.active .step-dot { background: var(--app-accent); animation: dot-pulse 1s ease-in-out infinite; }.step.active .step-label { color: var(--app-text); }
 .step.done .step-dot { background: #15803d; }.step.done .step-label { color: var(--app-muted); }
