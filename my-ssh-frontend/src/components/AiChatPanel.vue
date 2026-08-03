@@ -18,6 +18,7 @@ const aiStore = useAiStore()
 const sessionStore = useSessionStore()
 const { language, t } = useLocale()
 const draft = ref('')
+const composerInput = ref<HTMLTextAreaElement | null>(null)
 const pendingImages = ref<AiImageInput[]>([])
 const attachmentInput = ref<HTMLInputElement | null>(null)
 const pendingTerminalSelection = ref<AiTerminalSelection | null>(null)
@@ -122,6 +123,12 @@ const conversationHistory = computed(() => aiStore.getConversationHistory(props.
 const selectedAgent = computed(() => aiStore.agents.find((agent) => agent.id === aiStore.selectedAgentId) ?? null)
 const activeModel = computed(() => aiStore.config.models?.find((model) => model.id === aiStore.config.activeModelId) ?? null)
 const activeModelLabel = computed(() => activeModel.value?.name ?? aiStore.config.model ?? t('ai.modelNotConfigured'))
+const suggestedPrompts = computed(() => [
+  t('ai.suggestedPrompt.securityAudit'),
+  t('ai.suggestedPrompt.resourceAnalysis'),
+  t('ai.suggestedPrompt.serviceAudit'),
+  t('ai.suggestedPrompt.logAnalysis'),
+])
 const canSend = computed(() => Boolean(draft.value.trim() || pendingImages.value.length || pendingTerminalSelection.value) && aiStore.config.configured && selectedAgent.value && activeModel.value)
 const isWaitingForResponse = computed(() =>
   Boolean(requestId.value) && messages.value.at(-1)?.role !== 'assistant',
@@ -282,6 +289,11 @@ function toggleActionDetails(bubble: ActionBubble) {
 }
 
 
+
+function useSuggestedPrompt(prompt: string) {
+  draft.value = prompt
+  void nextTick(() => composerInput.value?.focus())
+}
 
 async function sendMessage() {
   const content = draft.value.trim()
@@ -724,8 +736,13 @@ onBeforeUnmount(() => {
 
       <div v-else-if="!messages.length" class="ai-empty-state">
         <template v-if="aiStore.loading"><p>{{ t('ai.loadingConfiguration') }}</p></template>
-        <p v-if="!aiStore.config.configured">{{ t('ai.configurationRequired') }}</p>
-        <p v-else>{{ t('ai.emptyStateDescription') }}</p>
+        <p v-else-if="!aiStore.config.configured">{{ t('ai.configurationRequired') }}</p>
+        <template v-else>
+          <p>{{ t('ai.emptyStateDescription') }}</p>
+          <section class="suggested-prompts" :aria-label="t('ai.suggestedPrompts')">
+            <button v-for="prompt in suggestedPrompts" :key="prompt" type="button" @click="useSuggestedPrompt(prompt)">{{ prompt }}</button>
+          </section>
+        </template>
       </div>
       <div v-else class="ai-messages">
         <template v-for="message in timelineMessages" :key="message.id">
@@ -888,7 +905,7 @@ onBeforeUnmount(() => {
             <button type="button" class="remove-image-button" :title="t('ai.removeImage')" :aria-label="t('ai.removeImage')" @click="removePendingImage(index)"><X :size="10" /></button>
           </div>
         </div>
-        <textarea v-model="draft" :placeholder="t('ai.messagePlaceholder', { agent: selectedAgent?.name ?? t('ai.agentFallback') })" rows="3" @keydown.enter.exact.prevent="sendMessage" @paste="handlePaste" />
+        <textarea ref="composerInput" v-model="draft" :placeholder="t('ai.messagePlaceholder', { agent: selectedAgent?.name ?? t('ai.agentFallback') })" rows="3" @keydown.enter.exact.prevent="sendMessage" @paste="handlePaste" />
       </div>
       <footer class="composer-footer">
         <input ref="attachmentInput" class="attachment-input" type="file" accept="image/*" multiple @change="handleAttachmentSelection" />
@@ -1049,11 +1066,7 @@ onBeforeUnmount(() => {
 .action-progress svg { color: #8fb2ee; }
 .action-result { max-height: 8.7em; margin: 9px 0 0; overflow-y: auto; padding: 8px 4px 0 0; border-top: 1px solid #334054; color: #9ddbc4; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
 .ai-action-card.awaiting_risk_confirmation .action-result, .ai-action-card.failed .action-result, .ai-action-card.unconfirmed .action-result, .ai-action-card.terminal_blocked .action-result, .ai-action-card.recovery_failed .action-result, .ai-action-card.rejected .action-result { color: #e4c080; }
-.ai-body, .action-output, .action-result, .message-content :deep(pre), .action-output > code { scrollbar-width: thin; scrollbar-color: #55627b transparent; }
-.ai-body::-webkit-scrollbar, .action-output::-webkit-scrollbar, .action-result::-webkit-scrollbar, .message-content :deep(pre::-webkit-scrollbar), .action-output > code::-webkit-scrollbar { width: 6px; height: 6px; }
-.ai-body::-webkit-scrollbar-track, .action-output::-webkit-scrollbar-track, .action-result::-webkit-scrollbar-track, .message-content :deep(pre::-webkit-scrollbar-track), .action-output > code::-webkit-scrollbar-track { background: transparent; }
-.ai-body::-webkit-scrollbar-thumb, .action-output::-webkit-scrollbar-thumb, .action-result::-webkit-scrollbar-thumb, .message-content :deep(pre::-webkit-scrollbar-thumb), .action-output > code::-webkit-scrollbar-thumb { border-radius: 3px; background: #55627b; }
-.ai-body::-webkit-scrollbar-thumb:hover, .action-output::-webkit-scrollbar-thumb:hover, .action-result::-webkit-scrollbar-thumb:hover, .message-content :deep(pre::-webkit-scrollbar-thumb:hover), .action-output > code::-webkit-scrollbar-thumb:hover { background: #71809c; }
+
 .execution-mode { display: inline-flex; align-items: center; gap: 4px; height: 25px; padding: 0 5px; border: 1px solid #3a465d; border-radius: 4px; background: #202938; color: #c7d5e9; cursor: pointer; font: inherit; white-space: nowrap; }
 .execution-mode svg:first-child { color: var(--execution-mode-tone); }
 .execution-mode svg:last-child { color: #70809a; pointer-events: none; }
@@ -1072,6 +1085,11 @@ onBeforeUnmount(() => {
 	.task-inline-action:focus-visible { outline: 1px solid #8db8ff; outline-offset: 2px; }
 	.stop-task-button { background: #d8323f !important; color: #fff !important; }
 	.stop-task-button:hover { background: #ef4652 !important; color: #fff !important; }
+
+.suggested-prompts { display: flex; flex-direction: column; align-items: center; width: min(100%, 430px); margin-top: 16px; gap: 7px; }
+
+.suggested-prompts button { width: 100%; padding: 8px 10px; border: 1px solid var(--app-border); border-radius: 5px; background: var(--app-surface); color: var(--app-text); cursor: pointer; font: inherit; line-height: 1.45; text-align: left; transition: border-color .15s, background-color .15s; }
+.suggested-prompts button:hover, .suggested-prompts button:focus-visible { border-color: var(--app-accent); background: var(--app-hover); outline: none; }
 
 .ai-chat-panel { background: var(--app-panel); color: var(--app-text); }
 .ai-header { border-bottom-color: var(--app-border); }

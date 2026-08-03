@@ -10,6 +10,7 @@ import { SearchAddon } from '@xterm/addon-search'
 import { Unicode11Addon } from '@xterm/addon-unicode11'
 import '@xterm/xterm/css/xterm.css'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { useLocale } from '../composables/useLocale'
 import { useSessionStore } from '../stores/session'
 import type { TerminalSettings } from '../types'
 
@@ -33,6 +34,7 @@ const searchQuery = ref('')
 const searchCaseSensitive = ref(false)
 const searchRegex = ref(false)
 const sessionStore = useSessionStore()
+const { t } = useLocale()
 const commandInputRef = ref<HTMLInputElement | null>(null)
 const commandDraft = ref('')
 const commandBarVisible = ref(true)
@@ -42,6 +44,7 @@ const historyIndex = ref(-1)
 const historyDraft = ref('')
 const hasSelection = ref(false)
 const isSsh = computed(() => props.kind === 'ssh')
+const historyEntries = computed(() => [...commandHistory.value].reverse())
 
 
 let terminal: Terminal
@@ -233,11 +236,12 @@ function toggleHistory() {
   }
 }
 
-function selectHistory(offset: number) {
-  if (!commandHistory.value.length) return
-  const nextIndex = Math.max(-1, Math.min(commandHistory.value.length - 1, historyIndex.value + offset))
-  historyIndex.value = nextIndex
-  commandDraft.value = nextIndex === -1 ? historyDraft.value : commandHistory.value[nextIndex]
+function selectHistory(direction: -1 | 1) {
+  if (!historyEntries.value.length) return
+  const currentIndex = historyIndex.value === -1 ? historyEntries.value.length : historyIndex.value
+  const nextIndex = Math.max(0, Math.min(historyEntries.value.length, currentIndex + direction))
+  historyIndex.value = nextIndex === historyEntries.value.length ? -1 : nextIndex
+  commandDraft.value = historyIndex.value === -1 ? historyDraft.value : historyEntries.value[historyIndex.value]
 }
 
 function useHistoryEntry(entry: string) {
@@ -264,16 +268,28 @@ async function submitCommand() {
 }
 
 function handleCommandInputKeydown(event: KeyboardEvent) {
-  if (event.key === 'ArrowUp') {
+  if (event.key === 'Alt') {
+    altPending = true
     event.preventDefault()
-    selectHistory(1)
-  } else if (event.key === 'ArrowDown') {
+  } else if (event.key === 'ArrowUp') {
     event.preventDefault()
     selectHistory(-1)
+  } else if (event.key === 'ArrowDown') {
+    event.preventDefault()
+    selectHistory(1)
   } else if (event.key === 'Escape') {
     event.preventDefault()
     historyVisible.value = false
+  } else if (altPending) {
+    altPending = false
   }
+}
+
+function handleCommandInputKeyup(event: KeyboardEvent) {
+  if (event.key !== 'Alt') return
+  if (altPending) toggleHistory()
+  altPending = false
+  event.preventDefault()
 }
 
 onMounted(async () => {
@@ -342,13 +358,16 @@ onMounted(async () => {
       return true
     }
     if (event.type === 'keydown' && event.key === 'Alt') {
+      // Suppress the Windows WebView system menu for an independent Alt press.
       altPending = true
-      return true
+      event.preventDefault()
+      return false
     }
     if (event.type === 'keyup' && event.key === 'Alt') {
       if (altPending) toggleHistory()
       altPending = false
-      return true
+      event.preventDefault()
+      return false
     }
     if (event.type === 'keydown' && (leftControlPending || altPending)) {
       leftControlPending = false
@@ -479,22 +498,22 @@ defineExpose({ focus, triggerResize })
       </form>
     </div>
     <div v-if="commandBarVisible" class="command-bar">
-      <div v-if="historyVisible" class="command-history" role="listbox" aria-label="Command history">
+      <div v-if="historyVisible" class="command-history" role="listbox" :aria-label="t('terminal.commandBar.historyLabel')">
         <div class="command-history-list">
           <button
-            v-for="(entry, index) in commandHistory"
+            v-for="(entry, index) in historyEntries"
             :key="`${index}-${entry}`"
             type="button"
             :class="{ selected: index === historyIndex }"
             @click="useHistoryEntry(entry)"
           >{{ entry }}</button>
-          <span v-if="!commandHistory.length" class="command-history-empty">No command history</span>
+          <span v-if="!commandHistory.length" class="command-history-empty">{{ t('terminal.commandBar.emptyHistory') }}</span>
         </div>
         <footer>
-          <span>Use Up/Down to select</span>
-          <n-popconfirm positive-text="Clear" negative-text="Cancel" @positive-click="clearHistory">
-            <template #trigger><button type="button">Clear history</button></template>
-            Clear all command history?
+          <span>{{ t('terminal.commandBar.historyHint') }}</span>
+          <n-popconfirm :positive-text="t('terminal.commandBar.clear')" :negative-text="t('terminal.commandBar.cancel')" @positive-click="clearHistory">
+            <template #trigger><button type="button">{{ t('terminal.commandBar.clearHistory') }}</button></template>
+            {{ t('terminal.commandBar.clearHistoryConfirm') }}
           </n-popconfirm>
         </footer>
       </div>
@@ -505,18 +524,19 @@ defineExpose({ focus, triggerResize })
           type="text"
           spellcheck="false"
           autocomplete="off"
-          placeholder="Enter command"
+          :placeholder="t('terminal.commandBar.placeholder')"
           @keydown="handleCommandInputKeydown"
+          @keyup="handleCommandInputKeyup"
         >
       </form>
       <div class="command-actions">
-        <button type="button" title="AI recognition" aria-label="AI recognition" disabled>AI recognition</button>
-        <button type="button" title="Command history" aria-label="Command history" :class="{ active: historyVisible }" @click="toggleHistory"><History :size="16" /></button>
-        <button v-if="isSsh" type="button" title="Reconnect" aria-label="Reconnect" @click="emit('reconnect')"><Zap :size="16" /></button>
-        <button type="button" title="Close command input" aria-label="Close command input" @click="closeCommandBar"><X :size="16" /></button>
+        <button type="button" :title="t('terminal.commandBar.aiRecognition')" :aria-label="t('terminal.commandBar.aiRecognition')" disabled>{{ t('terminal.commandBar.aiRecognition') }}</button>
+        <button type="button" :title="t('terminal.commandBar.historyLabel')" :aria-label="t('terminal.commandBar.historyLabel')" :class="{ active: historyVisible }" @click="toggleHistory"><History :size="16" /></button>
+        <button v-if="isSsh" type="button" :title="t('terminal.commandBar.reconnect')" :aria-label="t('terminal.commandBar.reconnect')" @click="emit('reconnect')"><Zap :size="16" /></button>
+        <button type="button" :title="t('terminal.commandBar.close')" :aria-label="t('terminal.commandBar.close')" @click="closeCommandBar"><X :size="16" /></button>
       </div>
     </div>
-    <button v-else type="button" class="command-bar-open" title="Open command input" aria-label="Open command input" @click="openCommandBar()"><PanelBottomOpen :size="17" /></button>
+    <button v-else type="button" class="command-bar-open" :title="t('terminal.commandBar.open')" :aria-label="t('terminal.commandBar.open')" @click="openCommandBar()"><PanelBottomOpen :size="17" /></button>
   </section>
 </template>
 
@@ -707,7 +727,7 @@ defineExpose({ focus, triggerResize })
 .command-bar-open {
   position: absolute;
   z-index: 3;
-  right: 12px;
+  right: 28px;
   bottom: 12px;
   display: inline-flex;
   align-items: center;
