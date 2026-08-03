@@ -1897,7 +1897,7 @@ function openSyncSettings() {
                 <template v-else>
                   <h3>{{ t('settings.system') }}</h3>
                   <div class="settings-panel">
-                    <div class="settings-row"><div><strong>MJJSSH</strong><p>{{ t('settings.appDescription') }}</p></div><span class="settings-value">v0.2.2</span></div>
+                    <div class="settings-row"><div><strong>MJJSSH</strong><p>{{ t('settings.appDescription') }}</p></div><span class="settings-value">v0.2.3</span></div>
                     <div class="settings-row"><div><strong>{{ t('settings.repository') }}</strong><p>https://github.com/34892002/mjjssh</p></div><button class="settings-link" type="button" @click="openProjectRepository">GitHub</button></div>
                     <div class="settings-row"><div><strong>{{ t('settings.minimizeToTrayOnClose') }}</strong><p>{{ t('settings.minimizeToTrayOnCloseDescription') }}</p></div><n-switch :value="appSettings.minimizeToTrayOnClose" :loading="appSettingsSaving" @update:value="updateMinimizeToTrayOnClose" /></div>
                     <div class="settings-row"><div><strong>{{ t('settings.theme') }}</strong><p>{{ t('settings.themeDescription', { theme: isDarkTheme ? t('settings.dark') : t('settings.light') }) }}</p></div><span class="settings-value">{{ isDarkTheme ? t('settings.dark') : t('settings.light') }}</span></div>

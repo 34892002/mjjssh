@@ -1,6 +1,6 @@
 [package]
 name = "mjj-ssh"
-version = "0.2.2"
+version = "0.2.3"
 description = "A multi-window SSH client with optional encrypted cloud sync"
 authors = ["you"]
 license = "MIT"

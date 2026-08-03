@@ -1066,7 +1066,11 @@ onBeforeUnmount(() => {
 .action-progress svg { color: #8fb2ee; }
 .action-result { max-height: 8.7em; margin: 9px 0 0; overflow-y: auto; padding: 8px 4px 0 0; border-top: 1px solid #334054; color: #9ddbc4; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
 .ai-action-card.awaiting_risk_confirmation .action-result, .ai-action-card.failed .action-result, .ai-action-card.unconfirmed .action-result, .ai-action-card.terminal_blocked .action-result, .ai-action-card.recovery_failed .action-result, .ai-action-card.rejected .action-result { color: #e4c080; }
-
+.ai-body, .action-output, .action-result, .message-content :deep(pre), .action-output > code { scrollbar-width: thin; scrollbar-color: #55627b transparent; }
+.ai-body::-webkit-scrollbar, .action-output::-webkit-scrollbar, .action-result::-webkit-scrollbar, .message-content :deep(pre::-webkit-scrollbar), .action-output > code::-webkit-scrollbar { width: 6px; height: 6px; }
+.ai-body::-webkit-scrollbar-track, .action-output::-webkit-scrollbar-track, .action-result::-webkit-scrollbar-track, .message-content :deep(pre::-webkit-scrollbar-track), .action-output > code::-webkit-scrollbar-track { background: transparent; }
+.ai-body::-webkit-scrollbar-thumb, .action-output::-webkit-scrollbar-thumb, .action-result::-webkit-scrollbar-thumb, .message-content :deep(pre::-webkit-scrollbar-thumb), .action-output > code::-webkit-scrollbar-thumb { border-radius: 3px; background: #55627b; }
+.ai-body::-webkit-scrollbar-thumb:hover, .action-output::-webkit-scrollbar-thumb:hover, .action-result::-webkit-scrollbar-thumb:hover, .message-content :deep(pre::-webkit-scrollbar-thumb:hover), .action-output > code::-webkit-scrollbar-thumb:hover { background: #71809c; }
 .execution-mode { display: inline-flex; align-items: center; gap: 4px; height: 25px; padding: 0 5px; border: 1px solid #3a465d; border-radius: 4px; background: #202938; color: #c7d5e9; cursor: pointer; font: inherit; white-space: nowrap; }
 .execution-mode svg:first-child { color: var(--execution-mode-tone); }
 .execution-mode svg:last-child { color: #70809a; pointer-events: none; }
@@ -1086,6 +1090,7 @@ onBeforeUnmount(() => {
 	.stop-task-button { background: #d8323f !important; color: #fff !important; }
 	.stop-task-button:hover { background: #ef4652 !important; color: #fff !important; }
 
+.ai-empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; }
 .suggested-prompts { display: flex; flex-direction: column; align-items: center; width: min(100%, 430px); margin-top: 16px; gap: 7px; }
 
 .suggested-prompts button { width: 100%; padding: 8px 10px; border: 1px solid var(--app-border); border-radius: 5px; background: var(--app-surface); color: var(--app-text); cursor: pointer; font: inherit; line-height: 1.45; text-align: left; transition: border-color .15s, background-color .15s; }
