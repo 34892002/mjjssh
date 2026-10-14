@@ -214,6 +214,7 @@ watch([() => props.status, () => props.negotiatedAlgorithms], ([status]) => {
         <n-button v-if="status === 'host-key-confirm'" size="small" quaternary @click="emit('close')">{{ t('connection.cancel') }}</n-button>
         <n-button v-if="status === 'host-key-confirm'" size="small" type="primary" @click="emit('trust-host-key')">{{ t('connection.confirmAndTrust') }}</n-button>
         <n-button v-if="status === 'error' || status === 'host-key-changed'" size="small" quaternary @click="emit('close')">{{ t('connection.closeSession') }}</n-button>
+        <n-button v-if="status === 'host-key-changed'" size="small" type="warning" @click="emit('trust-host-key')">{{ t('connection.updateFingerprintAndTrust') }}</n-button>
         <n-button v-if="status === 'error'" size="small" type="primary" @click="emit('retry')">{{ t('connection.restart') }}</n-button>
       </div>
     </section>

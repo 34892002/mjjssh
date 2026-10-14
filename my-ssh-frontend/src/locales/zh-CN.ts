@@ -295,6 +295,7 @@ const zhCNMessages = {
   'connection.currentFingerprint': '当前指纹',
   'connection.cancel': '取消',
   'connection.confirmAndTrust': '确认并信任',
+  'connection.updateFingerprintAndTrust': '更新指纹并信任',
   'connection.closeSession': '关闭会话',
   'connection.restart': '重新连接',
   'keys.title': 'SSH 密钥',

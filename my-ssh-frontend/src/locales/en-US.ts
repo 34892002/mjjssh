@@ -309,6 +309,7 @@ const enUSMessages = {
   'connection.currentFingerprint': 'Current fingerprint',
   'connection.cancel': 'Cancel',
   'connection.confirmAndTrust': 'Confirm and trust',
+  'connection.updateFingerprintAndTrust': 'Update fingerprint and trust',
   'connection.closeSession': 'Close session',
   'connection.restart': 'Reconnect',
   'keys.title': 'SSH keys',
