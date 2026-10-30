@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import {
   NButton,
   NButtonGroup,
@@ -17,13 +18,14 @@ import {
   NCheckbox,
   NCheckboxGroup,
 } from 'naive-ui'
-import { Plus, RefreshCw, Sparkles } from '@lucide/vue'
+import { Bot, Plus, RefreshCw } from '@lucide/vue'
 import FloatingPanel from './FloatingPanel.vue'
 import { useAiStore } from '../stores/ai'
 import type { AiAgentConfig, AiConnectionTestResult, AiModelConfig } from '../types/ai'
 import { useLocale } from '../composables/useLocale'
 
 const aiStore = useAiStore()
+const { agents: agentList, selectedAgentId } = storeToRefs(aiStore)
 const { t } = useLocale()
 const message = useMessage()
 const themeVars = useThemeVars()
@@ -100,6 +102,10 @@ function syncConfigForm() {
   discoveredModelIds.value = []
   selectedDiscoveredModelIds.value = []
   showModelPicker.value = false
+}
+
+function selectAgent(agentId: string) {
+  aiStore.selectAgent(agentId)
 }
 
 function selectModel(modelId: string | null) {
@@ -336,7 +342,7 @@ async function deleteAgent(agent: AiAgentConfig) {
             </div>
             <div v-if="configForm.models.length" class="model-list">
               <article v-for="model in configForm.models" :key="model.id" class="model-card" :class="{ selected: model.id === configForm.activeModelId }">
-                <div class="model-card-main"><Sparkles :size="16" /><div><strong>{{ model.name }}</strong><p><code>{{ model.id }}</code> · {{ model.protocol === 'responses' ? 'Responses API' : 'Chat Completions' }}</p></div></div>
+                <div class="model-card-main"><Bot :size="16" /><div><strong>{{ model.name }}</strong><p><code>{{ model.id }}</code> · {{ model.protocol === 'responses' ? 'Responses API' : 'Chat Completions' }}</p></div></div>
                 <div class="model-actions"><n-button size="tiny" :disabled="model.id === configForm.activeModelId" @click="selectModel(model.id)">{{ model.id === configForm.activeModelId ? t('ai.default') : t('ai.setDefault') }}</n-button><n-button size="tiny" @click="openEditModel(model)">{{ t('ai.edit') }}</n-button><n-popconfirm v-if="model.id !== configForm.activeModelId" placement="left" :positive-text="t('ai.delete')" :negative-text="t('ai.cancel')" :style="{ maxWidth: '280px' }" @positive-click="removeModel(model)"><template #trigger><n-button size="tiny" type="error">{{ t('ai.delete') }}</n-button></template><span class="delete-confirm-text">{{ t('ai.deleteModelConfirm', { name: model.name }) }}</span></n-popconfirm></div>
               </article>
             </div>
@@ -382,9 +388,9 @@ async function deleteAgent(agent: AiAgentConfig) {
             <n-button size="small" @click="openNewAgent"><template #icon><Plus :size="15" /></template>{{ t('ai.newAgent') }}</n-button>
           </div>
           <div class="agent-list">
-            <article v-for="agent in aiStore.agents" :key="agent.id" class="agent-card" :class="{ selected: agent.id === aiStore.selectedAgentId }">
-              <div class="agent-card-main"><Sparkles :size="16" /><div><strong>{{ agent.name }}</strong><p>{{ agent.isDefault ? t('ai.defaultAgent') : t('ai.customAgent') }}</p></div></div>
-              <div class="agent-actions"><n-button size="tiny" @click="aiStore.selectAgent(agent.id)">{{ t('ai.use') }}</n-button><n-button size="tiny" @click="openEditAgent(agent)">{{ t('ai.edit') }}</n-button><n-popconfirm v-if="!agent.isDefault" :positive-text="t('ai.delete')" :negative-text="t('ai.cancel')" @positive-click="deleteAgent(agent)"><template #trigger><n-button size="tiny" type="error">{{ t('ai.delete') }}</n-button></template>{{ t('ai.deleteAgentConfirm', { name: agent.name }) }}</n-popconfirm></div>
+            <article v-for="agent in agentList" :key="agent.id" class="agent-card" :class="{ selected: agent.id === selectedAgentId }">
+              <div class="agent-card-main"><Bot :size="16" /><div><strong>{{ agent.name }}</strong><p>{{ agent.isDefault ? t('ai.defaultAgent') : t('ai.customAgent') }}</p></div></div>
+              <div class="agent-actions"><n-button size="tiny" @click="selectAgent(agent.id)">{{ t('ai.use') }}</n-button><n-button size="tiny" @click="openEditAgent(agent)">{{ t('ai.edit') }}</n-button><n-popconfirm v-if="!agent.isDefault" :positive-text="t('ai.delete')" :negative-text="t('ai.cancel')" @positive-click="deleteAgent(agent)"><template #trigger><n-button size="tiny" type="error">{{ t('ai.delete') }}</n-button></template>{{ t('ai.deleteAgentConfirm', { name: agent.name }) }}</n-popconfirm></div>
             </article>
           </div>
           <form v-if="showAgentEditor" class="agent-editor" @submit.prevent="saveAgent">
@@ -395,7 +401,7 @@ async function deleteAgent(agent: AiAgentConfig) {
         </section>
       </n-tab-pane>
 
-      <n-tab-pane name="tools" :tab="t('ai.toolsTab')"><section class="coming-soon"><Sparkles :size="22" /><strong>{{ t('ai.toolsComingSoon') }}</strong><p>{{ t('ai.toolsComingSoonDescription') }}</p></section></n-tab-pane>
+      <n-tab-pane name="tools" :tab="t('ai.toolsTab')"><section class="coming-soon"><Bot :size="22" /><strong>{{ t('ai.toolsComingSoon') }}</strong><p>{{ t('ai.toolsComingSoonDescription') }}</p></section></n-tab-pane>
       <n-tab-pane name="web-search" :tab="t('ai.webSearchTab')"><section class="coming-soon"><strong>{{ t('ai.webSearchComingSoon') }}</strong><p>{{ t('ai.webSearchComingSoonDescription') }}</p></section></n-tab-pane>
 
     </n-tabs>

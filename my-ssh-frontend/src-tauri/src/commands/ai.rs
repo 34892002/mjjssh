@@ -734,6 +734,10 @@ async fn run_autonomous_task(context: &AiTaskRunContext<'_>) -> Result<(), AiCli
                     cancellation_token.clone(),
                 )
                 .await;
+            let execution_cancelled = matches!(
+                &execution,
+                Err(SshError::Channel(message)) if message == "Interactive command cancelled"
+            );
             let (output, exit_code, status, terminal_error, timed_out) = match execution {
                 Ok(InteractiveCommandResult::Completed { output, exit_code }) => (
                     clean_interactive_output(&output, &action.command, &marker),
@@ -768,7 +772,8 @@ async fn run_autonomous_task(context: &AiTaskRunContext<'_>) -> Result<(), AiCli
                     false,
                 ),
             };
-            if !task_manager.is_active(request_id).await {
+            if execution_cancelled || !task_manager.is_active(request_id).await {
+                emit_cancelled_action(app, event_name, request_id, &action);
                 return Err(AiClientError::Cancelled);
             }
             let output_for_model = truncate_output(&output);
@@ -830,14 +835,18 @@ async fn run_autonomous_task(context: &AiTaskRunContext<'_>) -> Result<(), AiCli
             );
             if timed_out {
                 let recovery_marker = format!("__MYSSH_AI_RECOVERED_{}__", Uuid::new_v4().simple());
-                let recovered = sessions
+                let recovery = sessions
                     .recover_interactive_terminal(
                         &session_id,
                         &recovery_marker,
                         cancellation_token.clone(),
                     )
-                    .await
-                    .unwrap_or(false);
+                    .await;
+                if !task_manager.is_active(request_id).await {
+                    emit_cancelled_action(app, event_name, request_id, &action);
+                    return Err(AiClientError::Cancelled);
+                }
+                let recovered = recovery.unwrap_or(false);
                 let recovery_result = if recovered {
                     "The command was interrupted with Ctrl-C and terminal recovery was confirmed. You may issue another command in the next response."
                 } else {
@@ -1186,6 +1195,10 @@ async fn run_approval_task(context: &AiTaskRunContext<'_>) -> Result<(), AiClien
             cancellation_token.clone(),
         )
         .await;
+    let execution_cancelled = matches!(
+        &execution,
+        Err(SshError::Channel(message)) if message == "Interactive command cancelled"
+    );
     let timed_out = matches!(execution, Ok(InteractiveCommandResult::TimedOut { .. }));
     let (output, exit_code, status, completion_confirmed) = match execution {
         Ok(InteractiveCommandResult::Completed { output, exit_code }) => (
@@ -1218,12 +1231,20 @@ async fn run_approval_task(context: &AiTaskRunContext<'_>) -> Result<(), AiClien
             false,
         ),
     };
+    if execution_cancelled || !task_manager.is_active(request_id).await {
+        emit_cancelled_action(app, event_name, request_id, &action);
+        return Err(AiClientError::Cancelled);
+    }
     if timed_out {
         let recovery_marker = format!("__MYSSH_AI_RECOVERED_{}__", Uuid::new_v4().simple());
-        let recovered = sessions
+        let recovery = sessions
             .recover_interactive_terminal(&session_id, &recovery_marker, cancellation_token.clone())
-            .await
-            .unwrap_or(false);
+            .await;
+        if !task_manager.is_active(request_id).await {
+            emit_cancelled_action(app, event_name, request_id, &action);
+            return Err(AiClientError::Cancelled);
+        }
+        let recovered = recovery.unwrap_or(false);
         if !recovered {
             disconnect_unresponsive_terminal(
                 app,
@@ -1233,11 +1254,23 @@ async fn run_approval_task(context: &AiTaskRunContext<'_>) -> Result<(), AiClien
                 &session_id,
             )
             .await;
+            emit_event(
+                app,
+                event_name,
+                request_id,
+                AiStreamEventType::ActionCompleted,
+                None,
+                None,
+                Some(AiActionResult {
+                    action_id: action.action_id.clone(),
+                    status: "recovery_failed".into(),
+                    summary:
+                        "命令完成未确认，且 Ctrl-C 后未确认 SSH 终端恢复；请重新连接后再执行命令。"
+                            .into(),
+                }),
+            );
             return Err(AiClientError::Cancelled);
         }
-    }
-    if !task_manager.is_active(request_id).await {
-        return Err(AiClientError::Cancelled);
     }
     emit_task_status(
         app,
@@ -1358,6 +1391,27 @@ fn emit_task_status(app: &AppHandle, event_name: &str, request_id: &str, status:
         Some(status.into()),
         None,
         None,
+    );
+}
+
+fn emit_cancelled_action(
+    app: &AppHandle,
+    event_name: &str,
+    request_id: &str,
+    action: &AiPendingAction,
+) {
+    emit_event(
+        app,
+        event_name,
+        request_id,
+        AiStreamEventType::ActionCompleted,
+        None,
+        None,
+        Some(AiActionResult {
+            action_id: action.action_id.clone(),
+            status: "cancelled".into(),
+            summary: "Execution stopped at the user's request.".into(),
+        }),
     );
 }
 

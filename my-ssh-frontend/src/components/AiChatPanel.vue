@@ -5,7 +5,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 import { NDropdown, NNumberAnimation, type DropdownOption } from 'naive-ui'
-import { AlertCircle, ArrowUp, CheckCircle2, ChevronDown, Command, Download, History, LoaderCircle, Plus, Sparkles, Square, X, XCircle } from '@lucide/vue'
+import { AlertCircle, ArrowUp, Bot, CheckCircle2, ChevronDown, Command, Download, History, LoaderCircle, Plus, Square, X, XCircle } from '@lucide/vue'
 import { useAiStore, type AiActionRecord } from '../stores/ai'
 import { useSessionStore } from '../stores/session'
 import { useLocale } from '../composables/useLocale'
@@ -92,6 +92,7 @@ function renderModelLabel(option: DropdownOption) {
   ])
 }
 const requestId = ref<string | null>(null)
+const cancelling = ref(false)
 const taskError = ref<string | null>(null)
 const pendingActionPlan = ref<string | null>(null)
 const pendingAction = ref<AiPendingAction | null>(null)
@@ -169,6 +170,7 @@ const autoRetryStatus = computed(() => {
   return attempt ? t('ai.autoRetrying', { attempt, total: 3 }) : null
 })
 const displayedTaskStatus = computed(() => {
+  if (cancelling.value) return t('ai.stopping')
   if (autoRetryStatus.value) return autoRetryStatus.value
   if (actionBubble.value?.status === 'executing') return t('ai.commandSentAwaitingSshExit')
   return taskStatus.value ? t('ai.taskInProgress') : t('ai.analyzing')
@@ -239,6 +241,7 @@ function actionStatusLabel(status: ActionBubble['status']) {
     terminal_blocked: t('ai.actionStatus.terminalBlocked'),
     recovery_failed: t('ai.actionStatus.recoveryFailed'),
     rejected: t('ai.actionStatus.rejected'),
+    cancelled: t('ai.actionStatus.cancelled'),
   }[status]
 }
 
@@ -261,7 +264,27 @@ function riskLevelLabel(riskLevel: ActionBubble['action']['riskLevel']) {
 }
 
 function isCompletedActionStatus(status: ActionBubble['status']) {
-  return status === 'completed' || status === 'failed' || status === 'unconfirmed' || status === 'terminal_blocked' || status === 'recovery_failed' || status === 'rejected'
+  return status === 'completed' || status === 'failed' || status === 'unconfirmed' || status === 'terminal_blocked' || status === 'recovery_failed' || status === 'rejected' || status === 'cancelled'
+}
+
+function markExecutingActionsCancelled() {
+  for (const bubble of actionHistory.value) {
+    if (bubble.status === 'executing' || bubble.status === 'awaiting_authorization' || bubble.status === 'awaiting_risk_confirmation') {
+      bubble.status = 'cancelled'
+      bubble.finishedAt = Date.now()
+      bubble.collapsed = true
+      bubble.phase = undefined
+      bubble.result = {
+        actionId: bubble.action.actionId,
+        status: 'cancelled',
+        summary: t('ai.actionCancelled'),
+      }
+    }
+  }
+  pendingAction.value = null
+  decidingAction.value = false
+  executableDecisions.value = {}
+  taskStatus.value = t('ai.stopping')
 }
 
 function truncateEvidence(value: string, limit: number) {
@@ -435,12 +458,15 @@ async function startTask(
     if (payload.eventType === 'action_completed' && payload.actionResult) {
       pendingAction.value = null
       decidingAction.value = false
-      const bubble = actionHistory.value.find((entry) => entry.action.actionId === payload.actionResult?.actionId)
+      const result = payload.actionResult.status === 'cancelled'
+        ? { ...payload.actionResult, summary: t('ai.actionCancelled') }
+        : payload.actionResult
+      const bubble = actionHistory.value.find((entry) => entry.action.actionId === result.actionId)
       if (bubble) {
-        bubble.status = payload.actionResult.status
+        bubble.status = result.status
         bubble.finishedAt = Date.now()
         bubble.collapsed = true
-        bubble.result = payload.actionResult
+        bubble.result = result
         bubble.phase = undefined
         actionBubble.value = bubble
       }
@@ -451,7 +477,11 @@ async function startTask(
     if (payload.eventType === 'error') {
       taskError.value = payload.content ?? t('ai.requestFailed')
     }
+    if (payload.eventType === 'cancelled') {
+      markExecutingActionsCancelled()
+    }
     if (payload.eventType === 'completed' || payload.eventType === 'cancelled' || payload.eventType === 'error' || payload.eventType === 'policy_rejected') {
+      cancelling.value = false
       requestId.value = null
       decidingAction.value = false
       unlistenTask?.()
@@ -498,8 +528,15 @@ function selectAgent(agentId: string) {
 
 
 async function cancelTask() {
-  if (!requestId.value) return
-  await invoke('cancel_ai_task', { requestId: requestId.value })
+  if (!requestId.value || cancelling.value) return
+  cancelling.value = true
+  markExecutingActionsCancelled()
+  try {
+    await invoke('cancel_ai_task', { requestId: requestId.value })
+  } catch (error) {
+    cancelling.value = false
+    taskError.value = String(error)
+  }
 }
 
 function setExecutableDecision(executable: string, grant: AiExecutableGrant) {
@@ -699,7 +736,7 @@ onBeforeUnmount(() => {
     <header class="ai-header">
       <div class="agent-menu-wrap">
         <button class="agent-selector" :title="t('ai.selectAssistant')" @click="showAgentMenu = !showAgentMenu">
-          <Sparkles :size="15" />
+          <Bot :size="15" />
           <strong>{{ selectedAgent?.name ?? t('ai.selectAgent') }}</strong>
           <ChevronDown :size="14" />
         </button>
@@ -866,7 +903,7 @@ onBeforeUnmount(() => {
               <animate attributeName="y" values="0;0;0;5;10;10;10;5;0" dur=".48s" begin="-.18s" repeatCount="indefinite" calcMode="discrete" />
             </rect>
           </svg>
-          <span v-if="autoRetryStatus" class="thinking-label">{{ autoRetryStatus }}<button type="button" class="task-inline-action" @click="cancelTask">{{ t('ai.stop') }}</button></span>
+          <span v-if="autoRetryStatus" class="thinking-label">{{ autoRetryStatus }}<button type="button" class="task-inline-action" :disabled="cancelling" @click="cancelTask">{{ t('ai.stop') }}</button></span>
           <span v-else class="thinking-label">{{ displayedTaskStatus }}</span>
         </div>
         <section v-if="taskErrorMessage" class="task-error-card">
@@ -960,7 +997,7 @@ onBeforeUnmount(() => {
             </button>
           </n-dropdown>
         </div>
-        <button v-if="requestId" class="send-button stop-task-button" type="button" :title="t('ai.stopTask')" :aria-label="t('ai.stopTask')" @click="cancelTask"><Square :size="11" :stroke-width="3" fill="currentColor" /></button>
+        <button v-if="requestId" class="send-button stop-task-button" type="button" :disabled="cancelling" :title="t('ai.stopTask')" :aria-label="t('ai.stopTask')" @click="cancelTask"><Square :size="11" :stroke-width="3" fill="currentColor" /></button>
         <button v-else class="send-button" :disabled="!canSend" :title="t('ai.send')"><ArrowUp :size="17" /></button>
       </footer>
     </form>
@@ -1116,7 +1153,7 @@ onBeforeUnmount(() => {
 .composer-options > button, .model-selector, .execution-mode, .bulk-grant-select { color: var(--app-muted); }
 .send-button { background: var(--app-hover); color: var(--app-text); }
 .ai-plan, .ai-action-card { border-color: var(--app-border); background: var(--app-surface); color: var(--app-text); }
-.ai-action-card.awaiting_risk_confirmation, .ai-action-card.completed, .ai-action-card.failed, .ai-action-card.unconfirmed, .ai-action-card.terminal_blocked, .ai-action-card.recovery_failed, .ai-action-card.rejected { border-color: var(--app-border); background: var(--app-panel); }
+.ai-action-card.awaiting_risk_confirmation, .ai-action-card.completed, .ai-action-card.failed, .ai-action-card.unconfirmed, .ai-action-card.terminal_blocked, .ai-action-card.recovery_failed, .ai-action-card.rejected, .ai-action-card.cancelled { border-color: var(--app-border); background: var(--app-panel); }
 .action-card-heading, .ai-plan strong, .action-plan, .ai-action-card dd, .completed-action-row code { color: var(--app-text); }
 .action-card-heading span, .action-card-meta, .ai-action-card dt, .completed-action-row, .completed-action-row span, .bulk-grant-select { color: var(--app-muted); }
 .grant-options button, .action-card-buttons button, .bulk-grant-select select, .execution-mode { border-color: var(--app-border); background: var(--app-hover); color: var(--app-text); }

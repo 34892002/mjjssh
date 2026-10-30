@@ -9,6 +9,7 @@ Vault 的唯一业务数据格式为 JSON，存储位置：`<程序目录>/data/
 - 本地 `vault.json` 和 `vault.json.bak` 均是 AES-256-GCM 加密信封；首次创建时生成随机 32 字节数据密钥。
 - 本地数据密钥保存于 Windows Credential Manager 或 macOS Keychain，服务名为 `com.mjjssh.app`；不创建可复制的 `local.key` 文件。
 - 启用云同步后，上传至 GitHub Gist 或 Gitee 私有片段的副本继续使用同步密码整体加密。同步 Token 和派生同步密钥只保存于系统凭据管理器，不写入 `sync.json`。
+- 终端命令历史保存在 `<程序目录>/data/command-history.json`，使用本地 Vault 数据密钥加密，不进入 Vault，也不参与云同步。旧版 Vault 内的 `commandHistory` 会在首次打开时迁移到该文件并从 Vault 中清除。
 - 操作系统凭据库可减少离线文件复制、备份泄露和其他用户读取的风险，但不能阻止以当前登录用户身份运行的恶意程序。
 
 本地与云端只有一个业务数据模型，不使用 SQLite 与 JSON 双写，也不使用 JSONL。

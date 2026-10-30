@@ -12,6 +12,7 @@ use crate::local_security::{
     LocalEncryptedVault, LocalSecurityError,
 };
 
+use super::command_history::{CommandHistoryError, CommandHistoryStore};
 use super::models::{
     AiAgentConfig, AiModelConfig, AiProviderConfigSecret, AiProviderConfigView, AppSettings,
     AuthType, CreateKeyRequest, CreateProfileRequest, CreateScriptRequest,
@@ -26,7 +27,6 @@ const BACKUP_FILE_NAME: &str = "vault.json.bak";
 const FORMAT_VERSION: u32 = 2;
 const DEFAULT_AGENT_ID: &str = "mjj-agent";
 const DEFAULT_AGENT_NAME: &str = "MJJ Agent";
-const COMMAND_HISTORY_LIMIT: usize = 500;
 const DEFAULT_AGENT_PROMPT: &str = r#"# Role: MJJ Agent (高级远程运维专家 & SSH 智能助手)
 
 ## 角色定位与核心能力
@@ -41,6 +41,8 @@ pub enum VaultError {
     NotInitialized,
     #[error("Vault storage error: {0}")]
     Storage(String),
+    #[error("Command history storage error: {0}")]
+    CommandHistory(#[from] CommandHistoryError),
     #[error("Vault local encryption error: {0}")]
     LocalSecurity(#[from] LocalSecurityError),
     #[error("Vault encryption key is unavailable in the system credential store")]
@@ -94,8 +96,12 @@ struct VaultDocument {
     terminal_settings: TerminalSettings,
     #[serde(default)]
     app_settings: AppSettings,
-    #[serde(default)]
-    command_history: Vec<String>,
+    #[serde(
+        default,
+        rename = "commandHistory",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    legacy_command_history: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -132,6 +138,7 @@ pub struct Vault {
     path: PathBuf,
     local_key: [u8; crate::local_security::LOCAL_KEY_LENGTH],
     document: Mutex<VaultDocument>,
+    command_history: CommandHistoryStore,
 }
 
 impl Vault {
@@ -152,7 +159,7 @@ impl Vault {
     ) -> Result<Self, VaultError> {
         fs::create_dir_all(app_dir).map_err(io_error)?;
         let path = app_dir.join(VAULT_FILE_NAME);
-        let document = if path.exists() {
+        let mut document = if path.exists() {
             match Self::load_document(&path, &local_key) {
                 Ok(document) => document,
                 Err(primary_error) => {
@@ -171,10 +178,28 @@ impl Vault {
             document
         };
         Self::validate_document(&document)?;
+
+        let command_history = CommandHistoryStore::new(app_dir, local_key);
+        if !document.legacy_command_history.is_empty() {
+            let legacy = std::mem::take(&mut document.legacy_command_history);
+            match command_history.import_legacy(&legacy) {
+                Ok(()) => {
+                    if let Err(error) = Self::write_document(&path, &document, &local_key) {
+                        log::warn!("Could not persist command history migration: {error}");
+                    }
+                }
+                Err(error) => {
+                    log::warn!("Could not migrate legacy command history: {error}");
+                    document.legacy_command_history = legacy;
+                }
+            }
+        }
+
         Ok(Self {
             path,
             local_key,
             document: Mutex::new(document),
+            command_history,
         })
     }
 
@@ -206,7 +231,7 @@ impl Vault {
             scripts: Vec::new(),
             terminal_settings: TerminalSettings::default(),
             app_settings: AppSettings::default(),
-            command_history: Vec::new(),
+            legacy_command_history: Vec::new(),
         }
     }
 
@@ -382,7 +407,10 @@ impl Vault {
 
     pub fn sync_snapshot(&self) -> Result<VaultSyncSnapshot, VaultError> {
         self.read(|document| {
-            let content = serde_json::to_vec(document)
+            // Command history is local-only and must never be uploaded.
+            let mut sync_document = document.clone();
+            sync_document.legacy_command_history.clear();
+            let content = serde_json::to_vec(&sync_document)
                 .map_err(|error| VaultError::Storage(error.to_string()))?;
             Ok(VaultSyncSnapshot {
                 content,
@@ -393,8 +421,10 @@ impl Vault {
     }
 
     pub fn replace_from_sync(&self, content: &[u8]) -> Result<(), VaultError> {
-        let document: VaultDocument = serde_json::from_slice(content)
+        let mut document: VaultDocument = serde_json::from_slice(content)
             .map_err(|error| VaultError::InvalidFormat(error.to_string()))?;
+        // Command history is local-only; never import it from a remote Vault.
+        document.legacy_command_history.clear();
         Self::validate_document(&document)?;
         Self::write_document(&self.path, &document, &self.local_key)?;
         let mut current = self
@@ -515,7 +545,7 @@ impl Vault {
     }
 
     pub fn command_history(&self) -> Result<Vec<String>, VaultError> {
-        self.read(|document| Ok(document.command_history.clone()))
+        Ok(self.command_history.load()?)
     }
 
     pub fn record_command_history(&self, command: &str) -> Result<Vec<String>, VaultError> {
@@ -529,19 +559,12 @@ impl Vault {
             ));
         }
 
-        self.mutate(|document| {
-            document.command_history.retain(|entry| entry != command);
-            document.command_history.insert(0, command.into());
-            document.command_history.truncate(COMMAND_HISTORY_LIMIT);
-            Ok(document.command_history.clone())
-        })
+        Ok(self.command_history.record(command)?)
     }
 
     pub fn clear_command_history(&self) -> Result<(), VaultError> {
-        self.mutate(|document| {
-            document.command_history.clear();
-            Ok(())
-        })
+        self.command_history.clear()?;
+        Ok(())
     }
 
     pub fn app_settings(&self) -> Result<AppSettings, VaultError> {
@@ -1603,6 +1626,25 @@ mod tests {
 
     fn test_dir() -> PathBuf {
         std::env::temp_dir().join(format!("mjj-ssh-vault-{}", uuid::Uuid::new_v4()))
+    }
+
+    #[test]
+    fn command_history_does_not_change_the_sync_revision() {
+        let directory = test_dir();
+        let vault = Vault::open_for_test(&directory).unwrap();
+        let revision = vault.sync_snapshot().unwrap().revision;
+        let vault_bytes = fs::read(directory.join(VAULT_FILE_NAME)).unwrap();
+
+        let history = vault.record_command_history("ls -la").unwrap();
+
+        assert_eq!(history, vec!["ls -la"]);
+        assert_eq!(vault.sync_snapshot().unwrap().revision, revision);
+        assert_eq!(
+            fs::read(directory.join(VAULT_FILE_NAME)).unwrap(),
+            vault_bytes
+        );
+        assert!(directory.join("command-history.json").exists());
+        fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

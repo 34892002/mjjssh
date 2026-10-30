@@ -131,7 +131,7 @@ export interface AiPendingAction {
 
 export interface AiActionResult {
   actionId: string
-  status: 'completed' | 'failed' | 'unconfirmed' | 'terminal_blocked' | 'recovery_failed' | 'rejected' | 'awaiting_risk_confirmation'
+  status: 'completed' | 'failed' | 'unconfirmed' | 'terminal_blocked' | 'recovery_failed' | 'rejected' | 'awaiting_risk_confirmation' | 'cancelled'
   summary: string
 }
 

@@ -12,6 +12,7 @@ const LOCAL_NONCE_LENGTH: usize = 12;
 const LOCAL_FORMAT_VERSION: u32 = 1;
 const LOCAL_VAULT_AAD: &[u8] = b"mjjssh-local-vault-v1";
 const LOCAL_KNOWN_HOSTS_AAD: &[u8] = b"mjjssh-local-known-hosts-v1";
+const LOCAL_COMMAND_HISTORY_AAD: &[u8] = b"mjjssh-local-command-history-v1";
 const SERVICE_NAME: &str = "com.mjjssh.app";
 const VAULT_KEY_ACCOUNT: &str = "local-vault-key-v1";
 
@@ -82,6 +83,13 @@ pub fn encrypt_known_hosts(
     encrypt_local_data(plaintext, key, LOCAL_KNOWN_HOSTS_AAD)
 }
 
+pub fn encrypt_command_history(
+    plaintext: &[u8],
+    key: &[u8; LOCAL_KEY_LENGTH],
+) -> Result<LocalEncryptedVault, LocalSecurityError> {
+    encrypt_local_data(plaintext, key, LOCAL_COMMAND_HISTORY_AAD)
+}
+
 fn encrypt_local_data(
     plaintext: &[u8],
     key: &[u8; LOCAL_KEY_LENGTH],
@@ -121,6 +129,13 @@ pub fn decrypt_known_hosts(
     key: &[u8; LOCAL_KEY_LENGTH],
 ) -> Result<Vec<u8>, LocalSecurityError> {
     decrypt_local_data(envelope, key, LOCAL_KNOWN_HOSTS_AAD)
+}
+
+pub fn decrypt_command_history(
+    envelope: &LocalEncryptedVault,
+    key: &[u8; LOCAL_KEY_LENGTH],
+) -> Result<Vec<u8>, LocalSecurityError> {
+    decrypt_local_data(envelope, key, LOCAL_COMMAND_HISTORY_AAD)
 }
 
 fn decrypt_local_data(

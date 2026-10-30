@@ -3,7 +3,6 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { Cloud, Download, Upload } from '@lucide/vue'
 import { NAlert, NButton, NInput, NPopconfirm, NSpace, NSwitch, useMessage } from 'naive-ui'
-import { useVaultStore } from '../stores/vault'
 import { useLocale } from '../composables/useLocale'
 
 type SyncProvider = 'github_gist' | 'gitee_snippet' | 'webdav'
@@ -29,7 +28,6 @@ type SyncDiscovery = {
   remoteExists: boolean
 }
 
-const vaultStore = useVaultStore()
 const { t } = useLocale()
 const message = useMessage()
 const status = ref<SyncStatus | null>(null)
@@ -84,7 +82,7 @@ async function run(
   try {
     const result = await operation()
     applyStatus('sync' in result ? result.sync : result)
-    if (refreshVault) await vaultStore.refreshAfterSync()
+    if (refreshVault) window.dispatchEvent(new Event('vault-synced'))
     message.success(success)
     return true
   } catch (reason) {

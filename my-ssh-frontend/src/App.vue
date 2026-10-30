@@ -3,7 +3,7 @@ import { defineAsyncComponent, ref, computed, onBeforeUnmount, onMounted, nextTi
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { Archive, Box, Cloud, CloudCog, Code2, Container, Copy, Cpu, Database, Download, EthernetPort, FileCode2, Globe2, HardDrive, Languages, Layers3, ListFilter, MemoryStick, MonitorCog, Moon, Network, Plus, RadioTower, RefreshCw, Router, Server, ServerCog, Settings, ShieldCheck, Sparkles, Square, Sun, TerminalSquare, Upload, Waypoints, Workflow, X, Zap } from '@lucide/vue'
+import { Archive, Bot, Box, Cloud, CloudCog, Code2, Container, Copy, Cpu, Database, Download, EthernetPort, FileCode2, Globe2, HardDrive, Languages, Layers3, ListFilter, MemoryStick, MonitorCog, Moon, Network, Plus, RadioTower, RefreshCw, Router, Server, ServerCog, Settings, ShieldCheck, Square, Sun, TerminalSquare, Upload, Waypoints, Workflow, X, Zap } from '@lucide/vue'
 import {
   darkTheme,
   NConfigProvider,
@@ -29,6 +29,8 @@ import { useVaultStore } from './stores/vault'
 import { useSessionStore } from './stores/session'
 import { useTransferStore } from './stores/transfer'
 import { useRemoteEditorStore } from './stores/remoteEditor'
+import { useScriptStore } from './stores/scripts'
+import { useAiStore } from './stores/ai'
 import { useLocale, type AppLanguage } from './composables/useLocale'
 import EntityCard from './components/EntityCard.vue'
 import almalinuxIcon from './assets/os/almalinux.svg?raw'
@@ -64,6 +66,8 @@ const vaultStore = useVaultStore()
 const sessionStore = useSessionStore()
 const transferStore = useTransferStore()
 const remoteEditorStore = useRemoteEditorStore()
+const scriptStore = useScriptStore()
+const aiStore = useAiStore()
 const appWindow = getCurrentWindow()
 const { language, languageLabel, naiveLocale, naiveDateLocale, setLanguage, t } = useLocale()
 const languageOptions = computed(() => [
@@ -136,7 +140,7 @@ type SyncStatus = {
 }
 
 type SyncOperationResult = {
-  status: 'uploaded' | 'downloaded' | 'unchanged'
+  status: 'uploaded' | 'downloaded' | 'unchanged' | 'conflict_kept_local' | 'conflict_accepted_remote' | 'password_changed'
   sync: SyncStatus
 }
 
@@ -147,6 +151,12 @@ type RemoteSyncStatus = {
   lastSyncedVaultRevision: number
   remoteUpdatedAt: string
 }
+
+const VAULT_MD5_POLL_MS = 5_000
+const AUTO_SYNC_DEBOUNCE_MS = 8_000
+const REMOTE_SYNC_POLL_MS = 3 * 60_000
+const SYNC_WAKEUP_THROTTLE_MS = 30_000
+const CLOSE_SYNC_WAIT_MS = 3_000
 
 const isMaximized = ref(false)
 const syncPopoverVisible = ref(false)
@@ -160,9 +170,15 @@ const autoSyncState = ref<'idle' | 'pending' | 'syncing' | 'success' | 'conflict
 const autoSyncDueAt = ref<number | null>(null)
 const autoSyncNow = ref(Date.now())
 let autoSyncTimer: ReturnType<typeof setTimeout> | null = null
+let autoSyncSuccessTimer: ReturnType<typeof setTimeout> | null = null
 let autoSyncCountdownTimer: ReturnType<typeof setInterval> | null = null
 let vaultMd5: string | null = null
 let vaultMd5Timer: ReturnType<typeof setInterval> | null = null
+let syncRemotePollTimer: ReturnType<typeof setInterval> | null = null
+let unlistenCloseRequested: UnlistenFn | null = null
+let lastRemoteCheckAt = 0
+let syncWakeupInFlight = false
+let allowWindowClose = false
 const transferPanelRef = ref<HTMLElement | null>(null)
 const transferButtonRef = ref<HTMLButtonElement | null>(null)
 const scriptPanelRef = ref<HTMLElement | null>(null)
@@ -193,6 +209,8 @@ const remoteSyncAction = computed(() => {
   }[state]
 })
 
+const syncConflict = computed(() => Boolean(syncStatus.value?.configured) && (remoteSyncStatus.value?.state === 'conflict' || autoSyncState.value === 'conflict'))
+
 function formatQuickSyncError(reason: unknown): string {
   const message = String(reason)
   const normalized = message.toLowerCase()
@@ -204,6 +222,38 @@ function formatQuickSyncError(reason: unknown): string {
   return message
 }
 
+function delay(ms: number) {
+  return new Promise<void>((resolve) => setTimeout(resolve, ms))
+}
+
+async function waitForSyncIdle(timeoutMs: number) {
+  const startedAt = Date.now()
+  while ((syncLoading.value || remoteSyncLoading.value) && Date.now() - startedAt < timeoutMs) {
+    await delay(100)
+  }
+}
+
+async function refreshAfterRemoteSync() {
+  const results = await Promise.allSettled([
+    vaultStore.refreshAfterSync(),
+    scriptStore.loadScripts(),
+    scriptStore.loadSubscriptions(),
+    aiStore.loadConfigStatus(),
+    aiStore.loadAgents(),
+    sessionStore.loadTerminalSettings(),
+  ])
+  for (const result of results) {
+    if (result.status === 'rejected') console.warn('Could not refresh store after sync:', result.reason)
+  }
+  try {
+    const settings = await invoke<AppSettings>('get_app_settings')
+    appSettings.value = settings
+    terminalSettingsDraft.value = { ...sessionStore.terminalSettings }
+  } catch (error) {
+    console.warn('Could not refresh app settings after sync:', error)
+  }
+}
+
 async function loadSyncStatus() {
   try {
     syncStatus.value = await invoke<SyncStatus>('get_sync_status')
@@ -212,14 +262,19 @@ async function loadSyncStatus() {
   }
 }
 
-async function checkRemoteSyncStatus() {
+async function checkRemoteSyncStatus(background = false) {
   if (!syncStatus.value?.configured || remoteSyncLoading.value) return
   remoteSyncLoading.value = true
   try {
     remoteSyncStatus.value = await invoke<RemoteSyncStatus>('check_remote_sync_status')
+    lastRemoteCheckAt = Date.now()
   } catch (reason) {
-    remoteSyncStatus.value = null
-    syncError.value = formatQuickSyncError(reason)
+    if (!background) {
+      remoteSyncStatus.value = null
+      syncError.value = formatQuickSyncError(reason)
+    } else {
+      console.warn('Background sync status check failed:', reason)
+    }
   } finally {
     remoteSyncLoading.value = false
   }
@@ -228,16 +283,31 @@ async function checkRemoteSyncStatus() {
 async function handleSyncPopoverShow(visible: boolean) {
   syncPopoverVisible.value = visible
   if (!visible) return
-  if (['success', 'conflict', 'error'].includes(autoSyncState.value)) {
-    autoSyncState.value = 'idle'
-  }
-  syncError.value = null
+  // Keep the last error visible; only stale success notices are cleared.
   syncNotice.value = null
   await loadSyncStatus()
   await checkRemoteSyncStatus()
 }
 
-async function syncNow(automatic = false) {
+function markSyncSuccess(automatic: boolean) {
+  if (autoSyncTimer) {
+    clearTimeout(autoSyncTimer)
+    autoSyncTimer = null
+  }
+  autoSyncDueAt.value = null
+  if (automatic) {
+    autoSyncState.value = 'success'
+    if (autoSyncSuccessTimer) clearTimeout(autoSyncSuccessTimer)
+    autoSyncSuccessTimer = setTimeout(() => {
+      autoSyncSuccessTimer = null
+      if (autoSyncState.value === 'success') autoSyncState.value = 'idle'
+    }, 10_000)
+  } else {
+    autoSyncState.value = 'idle'
+  }
+}
+
+async function syncNow(automatic = false, background = false) {
   if (!syncStatus.value?.configured || syncLoading.value) return
   syncError.value = null
   syncNotice.value = null
@@ -250,20 +320,51 @@ async function syncNow(automatic = false) {
     const download = await invoke<SyncOperationResult>('download_sync_vault')
     syncStatus.value = download.sync
     if (download.status === 'downloaded') {
-      await vaultStore.refreshAfterSync()
+      await refreshAfterRemoteSync()
       syncNotice.value = t('sync.downloaded')
     } else {
       const upload = await invoke<SyncOperationResult>('upload_sync_vault')
       syncStatus.value = upload.sync
       syncNotice.value = upload.status === 'uploaded' ? t('sync.uploaded') : t('sync.upToDate')
     }
-    if (automatic) autoSyncState.value = 'success'
+    markSyncSuccess(automatic)
     vaultMd5 = await readVaultMd5()
     await loadSyncStatus()
+    if (syncStatus.value?.configured && syncStatus.value.localVaultRevision !== syncStatus.value.lastSyncedVaultRevision) {
+      scheduleAutoSync()
+    }
+    await checkRemoteSyncStatus(background)
+  } catch (reason) {
+    const message = formatQuickSyncError(reason)
+    if (!background || message === t('sync.quickConflictError')) syncError.value = message
+    if (automatic) autoSyncState.value = message === t('sync.quickConflictError') ? 'conflict' : 'error'
+  } finally {
+    syncLoading.value = false
+  }
+}
+
+async function resolveSyncConflict(resolution: 'keep_local' | 'accept_remote') {
+  if (!syncStatus.value?.configured || syncLoading.value) return
+  if (remoteSyncLoading.value) await waitForSyncIdle(2_000)
+  if (syncLoading.value) return
+  syncError.value = null
+  syncNotice.value = null
+  syncLoading.value = true
+  try {
+    const result = await invoke<SyncOperationResult>('resolve_sync_conflict', { resolution })
+    syncStatus.value = result.sync
+    if (resolution === 'accept_remote') await refreshAfterRemoteSync()
+    syncNotice.value = resolution === 'keep_local' ? t('sync.keptLocalAndBackedUp') : t('sync.acceptedRemoteAndBackedUp')
+    markSyncSuccess(false)
+    vaultMd5 = await readVaultMd5()
+    await loadSyncStatus()
+    if (syncStatus.value?.configured && syncStatus.value.localVaultRevision !== syncStatus.value.lastSyncedVaultRevision) {
+      scheduleAutoSync()
+    }
     await checkRemoteSyncStatus()
   } catch (reason) {
     syncError.value = formatQuickSyncError(reason)
-    if (automatic) autoSyncState.value = syncError.value === t('sync.quickConflictError') ? 'conflict' : 'error'
+    autoSyncState.value = 'error'
   } finally {
     syncLoading.value = false
   }
@@ -278,6 +379,7 @@ async function readVaultMd5(): Promise<string | null> {
 }
 
 async function checkVaultMd5() {
+  if (!syncStatus.value?.configured) return
   const nextMd5 = await readVaultMd5()
   if (!nextMd5) return
   if (vaultMd5 === null) {
@@ -292,23 +394,91 @@ async function checkVaultMd5() {
 function scheduleAutoSync() {
   if (!syncStatus.value?.configured || !syncStatus.value.autoSync) return
   if (autoSyncTimer) clearTimeout(autoSyncTimer)
-  autoSyncDueAt.value = Date.now() + 60_000
+  autoSyncDueAt.value = Date.now() + AUTO_SYNC_DEBOUNCE_MS
   autoSyncNow.value = Date.now()
   autoSyncState.value = 'pending'
   autoSyncTimer = setTimeout(() => {
     autoSyncTimer = null
+    if (syncLoading.value) {
+      scheduleAutoSync()
+      return
+    }
     void syncNow(true)
-  }, 60_000)
+  }, AUTO_SYNC_DEBOUNCE_MS)
+}
+
+async function handleSyncWakeup() {
+  if (!syncStatus.value?.configured || !syncStatus.value.autoSync) return
+  if (syncWakeupInFlight || syncLoading.value || remoteSyncLoading.value) return
+  if (Date.now() - lastRemoteCheckAt < SYNC_WAKEUP_THROTTLE_MS) return
+  syncWakeupInFlight = true
+  try {
+    await loadSyncStatus()
+    if (!syncStatus.value?.configured || !syncStatus.value.autoSync) return
+    await checkRemoteSyncStatus(true)
+    const state = remoteSyncStatus.value?.state
+    if (state === 'remote_ahead' || state === 'local_ahead') {
+      await syncNow(true, true)
+    } else if (state === 'conflict') {
+      autoSyncState.value = 'conflict'
+    }
+  } finally {
+    syncWakeupInFlight = false
+  }
+}
+
+function handleWindowFocus() {
+  void handleSyncWakeup()
+}
+
+function handleVaultSynced() {
+  void refreshAfterRemoteSync().catch((error) => console.warn('Could not refresh after sync:', error))
+}
+
+async function handleCloseRequested(event: { preventDefault: () => void }) {
+  if (allowWindowClose || appSettings.value.minimizeToTrayOnClose) return
+  if (!syncStatus.value?.configured || !syncStatus.value.autoSync) return
+
+  event.preventDefault()
+  allowWindowClose = true
+  try {
+    await waitForSyncIdle(1_000)
+    if (syncLoading.value || remoteSyncLoading.value) return
+    const status = await Promise.race([
+      invoke<SyncStatus>('get_sync_status'),
+      delay(1_000).then(() => null),
+    ])
+    if (!status || status.localVaultRevision === status.lastSyncedVaultRevision) return
+    await Promise.race([
+      invoke<SyncOperationResult>('upload_sync_vault'),
+      delay(CLOSE_SYNC_WAIT_MS),
+    ])
+  } catch (reason) {
+    console.warn('Could not flush sync before closing:', reason)
+  } finally {
+    try {
+      await appWindow.close()
+    } catch (error) {
+      console.error('Failed to close window:', error)
+    } finally {
+      window.setTimeout(() => { allowWindowClose = false }, 1_000)
+    }
+  }
 }
 
 function handleSyncConfigurationChanged() {
   void loadSyncStatus().then(() => {
-    if (!syncStatus.value?.autoSync && autoSyncTimer) {
-      clearTimeout(autoSyncTimer)
-      autoSyncTimer = null
+    if (!syncStatus.value?.autoSync) {
+      if (autoSyncTimer) {
+        clearTimeout(autoSyncTimer)
+        autoSyncTimer = null
+      }
       autoSyncDueAt.value = null
-      autoSyncState.value = 'idle'
+      if (autoSyncState.value === 'pending' || autoSyncState.value === 'syncing') autoSyncState.value = 'idle'
+      return
     }
+    lastRemoteCheckAt = 0
+    void handleSyncWakeup()
   })
 }
 
@@ -606,10 +776,19 @@ onMounted(async () => {
   appSettings.value = settings
   localShells.value = shells
   vaultMd5 = await readVaultMd5()
-  vaultMd5Timer = setInterval(() => { void checkVaultMd5() }, 10_000)
+  vaultMd5Timer = setInterval(() => { void checkVaultMd5() }, VAULT_MD5_POLL_MS)
+  syncRemotePollTimer = setInterval(() => { void handleSyncWakeup() }, REMOTE_SYNC_POLL_MS)
   window.addEventListener('sync-configuration-changed', handleSyncConfigurationChanged)
+  window.addEventListener('vault-synced', handleVaultSynced)
+  window.addEventListener('focus', handleWindowFocus)
   autoSyncCountdownTimer = setInterval(() => { autoSyncNow.value = Date.now() }, 1_000)
   document.addEventListener('pointerdown', closeTerminalPopoversOnOutsideClick)
+  try {
+    unlistenCloseRequested = await appWindow.onCloseRequested(handleCloseRequested)
+  } catch (error) {
+    console.warn('Could not register close-time sync handler:', error)
+  }
+  void handleSyncWakeup()
 })
 
 watch(activeView, (view) => {
@@ -1279,6 +1458,7 @@ function restartServerStats() {
 
 function handleVisibilityChange() {
   restartServerStats()
+  if (!document.hidden) void handleSyncWakeup()
 }
 
 watch(() => sessionStore.activeTabId, () => {
@@ -1291,9 +1471,14 @@ onBeforeUnmount(() => {
   transferStore.dispose()
   if (transferNoticeTimer) clearTimeout(transferNoticeTimer)
   if (autoSyncTimer) clearTimeout(autoSyncTimer)
+  if (autoSyncSuccessTimer) clearTimeout(autoSyncSuccessTimer)
   if (autoSyncCountdownTimer) clearInterval(autoSyncCountdownTimer)
   if (vaultMd5Timer) clearInterval(vaultMd5Timer)
+  if (syncRemotePollTimer) clearInterval(syncRemotePollTimer)
+  if (unlistenCloseRequested) unlistenCloseRequested()
   window.removeEventListener('sync-configuration-changed', handleSyncConfigurationChanged)
+  window.removeEventListener('vault-synced', handleVaultSynced)
+  window.removeEventListener('focus', handleWindowFocus)
   document.removeEventListener('visibilitychange', handleVisibilityChange)
   document.removeEventListener('pointerdown', closeTerminalPopoversOnOutsideClick)
   window.removeEventListener('error', handleWindowError)
@@ -1455,8 +1640,12 @@ function openSyncSettings() {
                   <n-alert v-if="remoteSyncAction" type="info" :show-icon="false">{{ remoteSyncAction }}</n-alert>
                   <n-alert v-if="syncError" type="error" :show-icon="false">{{ syncError }}</n-alert>
                   <n-alert v-if="syncNotice" type="success" :show-icon="false">{{ syncNotice }}</n-alert>
-                  <div class="quick-sync-actions">
-                    <n-button secondary :loading="remoteSyncLoading" @click="checkRemoteSyncStatus">{{ t('sync.check') }}</n-button>
+                  <div v-if="syncConflict" class="quick-sync-actions">
+                    <n-button type="warning" :loading="syncLoading" @click="resolveSyncConflict('keep_local')">{{ t('sync.keepLocalShort') }}</n-button>
+                    <n-button :loading="syncLoading" @click="resolveSyncConflict('accept_remote')">{{ t('sync.acceptRemoteShort') }}</n-button>
+                  </div>
+                  <div v-else class="quick-sync-actions">
+                    <n-button secondary :loading="remoteSyncLoading" @click="checkRemoteSyncStatus()">{{ t('sync.check') }}</n-button>
                     <n-button type="primary" :loading="syncLoading" @click="syncNow()">{{ t('sync.now') }}</n-button>
                   </div>
                 </template>
@@ -1489,7 +1678,7 @@ function openSyncSettings() {
             </span>
           </div>
           <div class="toolbar-right">
-            <button v-if="!isLocalTerminal" class="toolbar-btn" :class="{ active: currentAiOpen }" :title="t('toolbar.aiChat')" @click="openAiChat"><Sparkles :size="16" /></button>
+            <button v-if="!isLocalTerminal" class="toolbar-btn" :class="{ active: currentAiOpen }" :title="t('toolbar.aiChat')" @click="openAiChat"><Bot :size="16" /></button>
             <button ref="scriptButtonRef" class="toolbar-btn" :class="{ active: scriptPanelOpen }" :title="t('toolbar.scripts')" :aria-label="t('toolbar.scripts')" @click="openScripts"><FileCode2 :size="16" /></button>
             <div v-if="!isLocalTerminal" class="transfer-control">
               <button ref="transferButtonRef" class="toolbar-btn transfer-button" :class="{ active: transferPanelOpen, unread: hasUnreadTransfers }" :title="t('toolbar.transferTasks')" @click="openTransfers"><Download :size="16" /><span v-if="hasUnreadTransfers" class="transfer-badge" /></button>
@@ -1869,7 +2058,7 @@ function openSyncSettings() {
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="15" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></svg>
                   {{ t('settings.terminal') }}
                 </button>
-                <button :class="{ active: settingsSection === 'ai' }" @click="selectSettingsSection('ai')"><Sparkles :size="16" />AI</button>
+                <button :class="{ active: settingsSection === 'ai' }" @click="selectSettingsSection('ai')"><Bot :size="16" />AI</button>
                 <button :class="{ active: settingsSection === 'sync' }" @click="selectSettingsSection('sync')"><Cloud :size="16" />{{ t('sync.title') }}</button>
                 <button :class="{ active: settingsSection === 'system' }" @click="selectSettingsSection('system')">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
@@ -1899,7 +2088,7 @@ function openSyncSettings() {
                 <template v-else>
                   <h3>{{ t('settings.system') }}</h3>
                   <div class="settings-panel">
-                    <div class="settings-row"><div><strong>MJJSSH</strong><p>{{ t('settings.appDescription') }}</p></div><span class="settings-value">v0.2.4</span></div>
+                    <div class="settings-row"><div><strong>MJJSSH</strong><p>{{ t('settings.appDescription') }}</p></div><span class="settings-value">v0.2.5</span></div>
                     <div class="settings-row"><div><strong>{{ t('settings.repository') }}</strong><p>https://github.com/34892002/mjjssh</p></div><button class="settings-link" type="button" @click="openProjectRepository">GitHub</button></div>
                     <div class="settings-row"><div><strong>{{ t('settings.minimizeToTrayOnClose') }}</strong><p>{{ t('settings.minimizeToTrayOnCloseDescription') }}</p></div><n-switch :value="appSettings.minimizeToTrayOnClose" :loading="appSettingsSaving" @update:value="updateMinimizeToTrayOnClose" /></div>
                     <div class="settings-row"><div><strong>{{ t('settings.theme') }}</strong><p>{{ t('settings.themeDescription', { theme: isDarkTheme ? t('settings.dark') : t('settings.light') }) }}</p></div><span class="settings-value">{{ isDarkTheme ? t('settings.dark') : t('settings.light') }}</span></div>

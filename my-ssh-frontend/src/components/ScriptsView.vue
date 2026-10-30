@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { storeToRefs } from 'pinia'
 import { invoke } from '@tauri-apps/api/core'
 import { CircleCheck, CircleX, Copy, Edit3, Plus, RefreshCw, Search, Trash2 } from '@lucide/vue'
 import {
@@ -25,6 +26,7 @@ import { useVaultStore } from '../stores/vault'
 import type { CreateScriptRequest, ScriptRiskLevel, ScriptView, SubscriptionScriptView } from '../types'
 
 const scriptStore = useScriptStore()
+const { loading: scriptsLoading } = storeToRefs(scriptStore)
 const vaultStore = useVaultStore()
 const { t } = useLocale()
 
@@ -239,7 +241,7 @@ function tagType(level: ScriptRiskLevel) {
             <template #prefix><Search :size="16" /></template>
           </n-input>
         </div>
-        <n-empty v-if="!scriptStore.loading && filteredAllScripts.length === 0" :description="t('scripts.noSearchResults')" />
+        <n-empty v-if="!scriptsLoading && filteredAllScripts.length === 0" :description="t('scripts.noSearchResults')" />
         <div v-else class="script-list">
           <article v-for="script in filteredAllScripts" :key="script.subscription ? `${script.subscriptionId}:${script.id}` : script.id" class="script-card">
             <div class="script-card-heading">
@@ -263,7 +265,7 @@ function tagType(level: ScriptRiskLevel) {
       </n-tab-pane>
 
       <n-tab-pane name="local" :tab="t('scripts.myScripts')">
-        <n-empty v-if="!scriptStore.loading && scriptStore.scripts.length === 0" :description="t('scripts.noLocalScripts')">
+        <n-empty v-if="!scriptsLoading && scriptStore.scripts.length === 0" :description="t('scripts.noLocalScripts')">
           <template #extra><n-button type="primary" @click="openCreateScript">{{ t('scripts.create') }}</n-button></template>
         </n-empty>
         <div v-else class="script-list">
@@ -291,7 +293,7 @@ function tagType(level: ScriptRiskLevel) {
       <n-tab-pane name="subscriptions" :tab="t('scripts.subscriptions')">
         <div class="subscriptions-layout">
           <aside class="subscription-list">
-            <n-empty v-if="!scriptStore.loading && scriptStore.subscriptions.length === 0" :description="t('scripts.noSubscriptions')" size="small" />
+            <n-empty v-if="!scriptsLoading && scriptStore.subscriptions.length === 0" :description="t('scripts.noSubscriptions')" size="small" />
             <button v-for="subscription in scriptStore.subscriptions" :key="subscription.id" class="subscription-item" :class="{ selected: selectedSubscriptionId === subscription.id }" :title="subscription.enabled ? t('scripts.enabled') : t('scripts.disabled')" @click="selectedSubscriptionId = subscription.id">
               <strong>{{ subscription.name }}</strong>
               <CircleCheck v-if="subscription.enabled" :size="17" class="subscription-status enabled" :aria-label="t('scripts.enabled')" />
@@ -306,7 +308,7 @@ function tagType(level: ScriptRiskLevel) {
                   <n-switch
                     size="small"
                     :value="selectedSubscription.enabled"
-                    :disabled="scriptStore.loading"
+                    :disabled="scriptsLoading"
                     :title="selectedSubscription.enabled ? t('scripts.enabled') : t('scripts.disabled')"
                     :aria-label="selectedSubscription.enabled ? t('scripts.enabled') : t('scripts.disabled')"
                     @update:value="toggleSubscription(selectedSubscription.id, $event)"
@@ -332,7 +334,7 @@ function tagType(level: ScriptRiskLevel) {
                 </div>
               </div>
               <n-alert v-if="selectedSubscription.lastError" type="warning" :show-icon="false" style="margin-bottom: 12px">{{ selectedSubscription.lastError }}</n-alert>
-              <n-empty v-if="!scriptStore.loading && filteredSubscriptionScripts.length === 0" :description="t('scripts.noCachedScripts')" />
+              <n-empty v-if="!scriptsLoading && filteredSubscriptionScripts.length === 0" :description="t('scripts.noCachedScripts')" />
               <div v-else class="script-list">
                 <article v-for="script in filteredSubscriptionScripts" :key="`${script.subscriptionId}:${script.id}`" class="script-card">
                   <div class="script-card-heading"><div><h3>{{ script.name }}</h3><p>{{ script.description || selectedSubscription?.name }}</p></div><n-tag size="small" :type="tagType(script.riskLevel)">{{ script.riskLevel }}</n-tag></div>
@@ -356,13 +358,13 @@ function tagType(level: ScriptRiskLevel) {
         <n-form-item :label="t('scripts.riskLevel')" required><n-select v-model:value="scriptForm.riskLevel" :options="riskOptions" /></n-form-item>
         <n-form-item :label="t('scripts.command')" required><n-input v-model:value="scriptForm.command" type="textarea" :rows="10" :autosize="{ minRows: 10, maxRows: 18 }" /></n-form-item>
       </n-form>
-      <template #footer><n-space justify="end"><n-button @click="showScriptForm = false">{{ t('scripts.cancel') }}</n-button><n-button type="primary" :loading="scriptStore.loading" @click="saveScript">{{ t('scripts.save') }}</n-button></n-space></template>
+      <template #footer><n-space justify="end"><n-button @click="showScriptForm = false">{{ t('scripts.cancel') }}</n-button><n-button type="primary" :loading="scriptsLoading" @click="saveScript">{{ t('scripts.save') }}</n-button></n-space></template>
     </n-modal>
 
     <n-modal v-model:show="showSubscriptionForm" preset="card" :title="t('scripts.addSubscriptionTitle')" style="width: min(560px, calc(100vw - 32px))">
       <n-alert v-if="formError" type="error" style="margin-bottom: 16px">{{ formError }}</n-alert>
       <n-form label-placement="top"><n-form-item :label="t('scripts.name')" required><n-input v-model:value="subscriptionForm.name" /></n-form-item><n-form-item :label="t('scripts.httpsUrl')" required><n-input v-model:value="subscriptionForm.url" placeholder="https://" /></n-form-item></n-form>
-      <template #footer><n-space justify="end"><n-button @click="showSubscriptionForm = false">{{ t('scripts.cancel') }}</n-button><n-button type="primary" :loading="scriptStore.loading" @click="saveSubscription">{{ t('scripts.add') }}</n-button></n-space></template>
+      <template #footer><n-space justify="end"><n-button @click="showSubscriptionForm = false">{{ t('scripts.cancel') }}</n-button><n-button type="primary" :loading="scriptsLoading" @click="saveSubscription">{{ t('scripts.add') }}</n-button></n-space></template>
     </n-modal>
 
   </div>
